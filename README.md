@@ -127,7 +127,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-alembic upgrade head
+python scripts/migrate_system_config_singleton.py
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -172,6 +172,16 @@ node scripts/capture-demo-screenshots.mjs
 ```bash
 docker compose -f docker-compose.prod.yml up --build -d
 ```
+
+升级已有部署后，重新构建并启动即可；后端容器会在启动 API 前执行兼容既有数据库的系统配置升级脚本：
+
+```bash
+docker compose -f docker-compose.prod.yml up --build -d
+```
+
+### 邮件测试
+
+在“系统设置 → 邮件服务配置”中，保存 SMTP 配置后可填写任意测试收件人并发送真实测试邮件。选择 **SMTP SSL** 时通常使用 `465` 端口；选择 **STARTTLS / TLS** 时通常使用 `587` 端口。只有 SMTP 服务端接受邮件后，页面才会提示成功。
 
 默认访问地址为 <http://localhost>。前端 Nginx 会代理 `/api` 和 `/uploads` 到后端服务。
 

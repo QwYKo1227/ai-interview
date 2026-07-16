@@ -506,7 +506,7 @@ def _send_hr_review_notification(db: Session, resume: Resume, reviews: List[Depa
     """
     try:
         from app.services.mail_service import MailService
-        from app.models.models import SystemConfig
+        from app.services.system_config_service import get_system_config
         
         hr_users = db.query(User).filter(
             User.role == UserRole.HR,
@@ -520,7 +520,7 @@ def _send_hr_review_notification(db: Session, resume: Resume, reviews: List[Depa
         if not mail_service.config.is_valid():
             return
         
-        system_config = db.query(SystemConfig).first()
+        system_config = get_system_config(db)
         frontend_url = system_config.frontend_url if system_config else "http://localhost:5173"
         
         recommend_count = sum(1 for r in reviews if r.recommendation == ReviewRecommendation.RECOMMEND)

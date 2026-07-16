@@ -10,7 +10,7 @@ from app.models.workflow_models import (
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowNodeExecution,
     WorkflowStatus, ExecutionStatus, NodeType
 )
-from app.models.models import Resume, Position, User, DepartmentReview, SystemConfig, ResumeStatus, UserRole
+from app.models.models import Resume, Position, User, DepartmentReview, ResumeStatus, UserRole
 from app.services.ai_service import _get_client, _get_llm_config, _get_extra_body
 from app.services.mail_service import MailService
 

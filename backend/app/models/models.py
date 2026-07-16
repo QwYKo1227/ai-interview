@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float, CheckConstraint, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
@@ -403,8 +403,13 @@ class CodingSubmission(Base):
 
 class SystemConfig(Base):
     __tablename__ = "system_configs"
+    __table_args__ = (
+        UniqueConstraint("singleton_key", name="uq_system_configs_singleton_key"),
+        CheckConstraint("singleton_key IS TRUE", name="ck_system_configs_singleton_key_true"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    singleton_key = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     llm_provider = Column(String, default="dashscope")
     llm_base_url = Column(String, default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     llm_api_key = Column(String)
@@ -416,6 +421,7 @@ class SystemConfig(Base):
     smtp_port = Column(Integer, default=465)
     smtp_username = Column(String)
     smtp_password = Column(String)
+    smtp_security = Column(String, nullable=False, default="ssl", server_default=text("'ssl'"))
     mail_from = Column(String)  # 发件人邮箱
     mail_from_name = Column(String, default="招聘系统")  # 发件人名称
     mail_enabled = Column(Boolean, default=False)  # 是否启用邮件通知

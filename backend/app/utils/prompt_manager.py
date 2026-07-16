@@ -238,8 +238,8 @@ class PromptManager:
         """从数据库加载提示词配置"""
         db = SessionLocal()
         try:
-            from app.models.models import SystemConfig
-            config = db.query(SystemConfig).first()
+            from app.services.system_config_service import get_system_config
+            config = get_system_config(db)
             if config and config.prompt_configs:
                 # 如果数据库中有配置，使用数据库的配置
                 self._db_prompts = config.prompt_configs

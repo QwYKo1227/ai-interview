@@ -1,0 +1,9 @@
+http://interview.careray.com {
+    redir https://interview.careray.com{uri} permanent
+}
+
+https://interview.careray.com {
+    tls internal
+    header Permissions-Policy "microphone=(self)"
+    reverse_proxy frontend:80
+}

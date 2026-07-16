@@ -51,12 +51,26 @@ services:
       context: ./frontend
     image: ai-interview-frontend:latest
     container_name: ai_interview_frontend
-    ports:
-      - "80:80"
     depends_on:
       - backend
+    restart: always
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: ai_interview_caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
     restart: always
 
 volumes:
   postgres_data:
   backend_uploads:
+  caddy_data:
+  caddy_config:

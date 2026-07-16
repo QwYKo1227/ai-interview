@@ -69,3 +69,7 @@ node_modules/
 # Task files
 # tasks.json
 # tasks/ 
+
+# Internal deployment artifacts
+certs/
+.superpowers/

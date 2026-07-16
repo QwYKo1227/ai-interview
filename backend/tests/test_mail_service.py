@@ -53,3 +53,15 @@ def test_send_test_email_uses_starttls_smtp(mock_smtp):
     server.login.assert_called_once_with("smtp-user", "smtp-password")
     server.sendmail.assert_called_once()
     server.quit.assert_called_once()
+
+
+@patch("app.services.mail_service.smtplib.SMTP_SSL")
+def test_send_test_email_stays_successful_when_quit_fails_after_delivery(mock_smtp_ssl):
+    server = MagicMock()
+    server.quit.side_effect = OSError("connection already closed")
+    mock_smtp_ssl.return_value = server
+    service = MailService(_db_with_mail_config("ssl"))
+
+    assert service.send_test_email("recipient@example.com") is True
+
+    server.sendmail.assert_called_once()

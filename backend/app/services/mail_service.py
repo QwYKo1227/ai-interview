@@ -89,9 +89,13 @@ class MailService:
             server = smtplib.SMTP(
                 self.config.smtp_host, self.config.smtp_port, timeout=15
             )
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
+            try:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+            except Exception:
+                self._close_smtp_connection(server)
+                raise
             return server
         return smtplib.SMTP_SSL(
             self.config.smtp_host,
@@ -99,6 +103,13 @@ class MailService:
             context=context,
             timeout=15,
         )
+
+    @staticmethod
+    def _close_smtp_connection(server) -> None:
+        try:
+            server.quit()
+        except (OSError, smtplib.SMTPException) as error:
+            logger.warning(f"SMTP connection close failed after delivery: {error}")
 
     def _send_email(self, to_email: str, subject: str, html_content: str) -> bool:
         """
@@ -143,7 +154,7 @@ class MailService:
                 server.login(self.config.smtp_username, self.config.smtp_password)
                 server.sendmail(self.config.mail_from, to_email, message.as_string())
             finally:
-                server.quit()
+                self._close_smtp_connection(server)
 
             logger.info(f"Email sent successfully to {to_email}")
             return True

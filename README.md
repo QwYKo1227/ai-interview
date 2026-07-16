@@ -127,7 +127,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-alembic upgrade head
+python scripts/migrate_system_config_singleton.py
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -173,7 +173,7 @@ node scripts/capture-demo-screenshots.mjs
 docker compose -f docker-compose.prod.yml up --build -d
 ```
 
-升级已有部署后，重新构建并启动即可；后端容器会在启动 API 前自动执行数据库迁移：
+升级已有部署后，重新构建并启动即可；后端容器会在启动 API 前执行兼容既有数据库的系统配置升级脚本：
 
 ```bash
 docker compose -f docker-compose.prod.yml up --build -d

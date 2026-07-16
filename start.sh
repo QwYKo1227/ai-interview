@@ -26,6 +26,7 @@ echo ""
 echo "[1/2] 启动后端服务..."
 cd "$BACKEND_DIR"
 source venv/bin/activate
+python scripts/migrate_system_config_singleton.py
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 echo "后端服务已启动 (PID: $BACKEND_PID)"

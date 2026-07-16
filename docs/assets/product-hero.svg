@@ -1,0 +1,53 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" rx="36" fill="#0B1220"/>
+  <rect x="56" y="52" width="1088" height="526" rx="28" fill="#F8FAFC"/>
+  <rect x="56" y="52" width="220" height="526" rx="28" fill="#0F172A"/>
+  <rect x="88" y="90" width="48" height="48" rx="14" fill="#38BDF8"/>
+  <text x="151" y="121" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="800" fill="#FFFFFF">AI Interview</text>
+  <text x="88" y="168" font-family="Inter, Arial, sans-serif" font-size="14" fill="#94A3B8">智能招聘工作台</text>
+  <rect x="88" y="215" width="156" height="38" rx="10" fill="#1D4ED8"/>
+  <text x="117" y="240" font-family="Inter, Arial, sans-serif" font-size="14" fill="#FFFFFF">仪表盘</text>
+  <text x="117" y="292" font-family="Inter, Arial, sans-serif" font-size="14" fill="#CBD5E1">岗位管理</text>
+  <text x="117" y="342" font-family="Inter, Arial, sans-serif" font-size="14" fill="#CBD5E1">简历管理</text>
+  <text x="117" y="392" font-family="Inter, Arial, sans-serif" font-size="14" fill="#CBD5E1">面试管理</text>
+  <text x="117" y="442" font-family="Inter, Arial, sans-serif" font-size="14" fill="#CBD5E1">工作流</text>
+  <text x="314" y="111" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" fill="#0F172A">招聘漏斗概览</text>
+  <text x="314" y="139" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748B">把岗位、简历、面试、笔试、Offer 和 AI 工作流收进同一张运营图。</text>
+  <rect x="314" y="174" width="182" height="104" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="336" y="208" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748B">招聘中岗位</text>
+  <text x="336" y="253" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="800" fill="#2563EB">24</text>
+  <rect x="520" y="174" width="182" height="104" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="542" y="208" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748B">待筛选简历</text>
+  <text x="542" y="253" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="800" fill="#EF4444">118</text>
+  <rect x="726" y="174" width="182" height="104" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="748" y="208" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748B">今日面试</text>
+  <text x="748" y="253" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="800" fill="#059669">9</text>
+  <rect x="932" y="174" width="160" height="104" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="954" y="208" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748B">Offer 待确认</text>
+  <text x="954" y="253" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="800" fill="#7C3AED">6</text>
+  <rect x="314" y="308" width="470" height="218" rx="18" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="340" y="343" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#0F172A">候选人流转</text>
+  <rect x="344" y="376" width="392" height="18" rx="9" fill="#DBEAFE"/>
+  <rect x="344" y="376" width="338" height="18" rx="9" fill="#3B82F6"/>
+  <text x="344" y="421" font-family="Inter, Arial, sans-serif" font-size="14" fill="#475569">简历进入</text>
+  <text x="660" y="421" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700" fill="#0F172A">1,248</text>
+  <rect x="344" y="442" width="392" height="18" rx="9" fill="#DCFCE7"/>
+  <rect x="344" y="442" width="231" height="18" rx="9" fill="#10B981"/>
+  <text x="344" y="487" font-family="Inter, Arial, sans-serif" font-size="14" fill="#475569">通过初筛</text>
+  <text x="668" y="487" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700" fill="#0F172A">736</text>
+  <rect x="820" y="308" width="272" height="218" rx="18" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="846" y="343" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#0F172A">AI 任务</text>
+  <rect x="846" y="374" width="198" height="44" rx="12" fill="#EFF6FF"/>
+  <text x="866" y="402" font-family="Inter, Arial, sans-serif" font-size="14" fill="#1D4ED8">简历解析完成</text>
+  <circle cx="1058" cy="396" r="12" fill="#3B82F6"/>
+  <path d="M1052 396L1056 400L1064 390" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="846" y="436" width="198" height="44" rx="12" fill="#F0FDF4"/>
+  <text x="866" y="464" font-family="Inter, Arial, sans-serif" font-size="14" fill="#047857">面试评价生成</text>
+  <circle cx="1058" cy="458" r="12" fill="#10B981"/>
+  <path d="M1052 458L1056 462L1064 452" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M314 560C412 540 492 566 590 546C688 526 782 536 884 520C970 506 1030 514 1092 496" stroke="#38BDF8" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="314" cy="560" r="7" fill="#38BDF8"/>
+  <circle cx="590" cy="546" r="7" fill="#38BDF8"/>
+  <circle cx="884" cy="520" r="7" fill="#38BDF8"/>
+  <circle cx="1092" cy="496" r="7" fill="#38BDF8"/>
+</svg>

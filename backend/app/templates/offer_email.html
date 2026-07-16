@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>录用通知</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        <tr>
+            <td style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                <!-- Header -->
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); padding: 40px 30px; text-align: center;">
+                            <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 600;">🎉 录用通知</h1>
+                            <p style="margin: 10px 0 0 0; color: rgba(255, 255, 255, 0.9); font-size: 16px;">Offer Letter</p>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- Content -->
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        <td style="padding: 30px;">
+                            <p style="margin: 0 0 20px 0; font-size: 16px; color: #333; line-height: 1.6;">
+                                尊敬的 <strong>{{ candidate_name }}</strong> 您好：
+                            </p>
+                            <p style="margin: 0 0 20px 0; font-size: 16px; color: #333; line-height: 1.6;">
+                                非常高兴地通知您，经过面试评估，您已通过我们的考核。现诚挚邀请您加入 <strong>{{ company_name }}</strong>，担任 <strong>{{ position_title }}</strong> 一职。
+                            </p>
+
+                            <!-- Offer Details -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f8f9fa; border-radius: 8px; margin: 20px 0;">
+                                <tr>
+                                    <td style="padding: 20px;">
+                                        <h3 style="margin: 0 0 15px 0; color: #28a745; font-size: 18px;">📋 录用详情</h3>
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="8">
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px; width: 100px;">岗位名称</td>
+                                                <td style="color: #333; font-size: 14px; font-weight: 500;">{{ position_title }}</td>
+                                            </tr>
+                                            {% if department %}
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px;">所属部门</td>
+                                                <td style="color: #333; font-size: 14px;">{{ department }}</td>
+                                            </tr>
+                                            {% endif %}
+                                            {% if report_to %}
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px;">汇报对象</td>
+                                                <td style="color: #333; font-size: 14px;">{{ report_to }}</td>
+                                            </tr>
+                                            {% endif %}
+                                            {% if work_location %}
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px;">工作地点</td>
+                                                <td style="color: #333; font-size: 14px;">{{ work_location }}</td>
+                                            </tr>
+                                            {% endif %}
+                                            {% if salary_display %}
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px;">薪资待遇</td>
+                                                <td style="color: #28a745; font-size: 14px; font-weight: 600;">{{ salary_display }}</td>
+                                            </tr>
+                                            {% endif %}
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px;">入职日期</td>
+                                                <td style="color: #333; font-size: 14px;">{{ onboard_date }}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="color: #666; font-size: 14px;">试用期</td>
+                                                <td style="color: #333; font-size: 14px;">{{ probation_months }}个月</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            {% if benefits or bonus %}
+                            <!-- Benefits -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #e8f5e9; border-radius: 8px; margin: 20px 0;">
+                                <tr>
+                                    <td style="padding: 20px;">
+                                        <h3 style="margin: 0 0 15px 0; color: #28a745; font-size: 18px;">🎁 福利待遇</h3>
+                                        {% if benefits %}
+                                        <p style="margin: 0; font-size: 14px; color: #333; line-height: 1.8;">{{ benefits }}</p>
+                                        {% endif %}
+                                        {% if bonus %}
+                                        <p style="margin: 10px 0 0 0; font-size: 14px; color: #333; line-height: 1.8;"><strong>奖金：</strong>{{ bonus }}</p>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                            {% if special_terms %}
+                            <!-- Special Terms -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #fff3e0; border-radius: 8px; margin: 20px 0;">
+                                <tr>
+                                    <td style="padding: 20px;">
+                                        <h3 style="margin: 0 0 15px 0; color: #ff9800; font-size: 18px;">📝 特别说明</h3>
+                                        <p style="margin: 0; font-size: 14px; color: #333; line-height: 1.8;">{{ special_terms }}</p>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                            {% if custom_message %}
+                            <!-- Custom Message -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #e3f2fd; border-radius: 8px; margin: 20px 0;">
+                                <tr>
+                                    <td style="padding: 20px;">
+                                        <p style="margin: 0; font-size: 14px; color: #333; line-height: 1.8;">{{ custom_message }}</p>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                            <p style="margin: 20px 0; font-size: 14px; color: #666; line-height: 1.6;">
+                                <strong>有效期：</strong>本Offer有效期至 {{ valid_until }}，请在有效期内确认回复。
+                            </p>
+
+                            {% if confirm_url %}
+                            <!-- Confirmation Buttons -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin: 30px 0;">
+                                <tr>
+                                    <td style="text-align: center;">
+                                        <p style="margin: 0 0 20px 0; font-size: 16px; color: #333; font-weight: 500;">
+                                            请点击下方按钮确认您的决定：
+                                        </p>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="text-align: center;">
+                                        <a href="{{ confirm_url }}" style="display: inline-block; padding: 14px 40px; background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: 500; margin: 0 10px;">
+                                            确认回复 Offer
+                                        </a>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="text-align: center; padding-top: 15px;">
+                                        <p style="margin: 0; font-size: 13px; color: #999;">
+                                            或复制以下链接到浏览器打开：<br>
+                                            <span style="color: #666; word-break: break-all;">{{ confirm_url }}</span>
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                            <p style="margin: 20px 0 0 0; font-size: 16px; color: #333; line-height: 1.6;">
+                                如有任何疑问，请随时与我们联系。期待您的加入！
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- Footer -->
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        <td style="background-color: #f8f9fa; padding: 20px 30px; border-top: 1px solid #e9ecef;">
+                            <p style="margin: 0; font-size: 14px; color: #666; text-align: center;">
+                                此邮件由系统自动发送，请勿直接回复
+                            </p>
+                            <p style="margin: 10px 0 0 0; font-size: 12px; color: #999; text-align: center;">
+                                © {{ company_name }} 人力资源部
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

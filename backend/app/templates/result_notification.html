@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>面试结果通知</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Microsoft YaHei', Arial, sans-serif; background-color: #f5f5f5;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f5f5f5; padding: 40px 0;">
+        <tr>
+            <td align="center">
+                <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background: linear-gradient(135deg, {{header_gradient}}); padding: 30px 40px; border-radius: 8px 8px 0 0;">
+                            <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600;">{{result_title}}</h1>
+                        </td>
+                    </tr>
+
+                    <!-- Content -->
+                    <tr>
+                        <td style="padding: 40px;">
+                            <p style="margin: 0 0 20px; color: #333; font-size: 16px; line-height: 1.6;">
+                                尊敬的 <strong>{{candidate_name}}</strong> 您好！
+                            </p>
+
+                            <p style="margin: 0 0 30px; color: #666; font-size: 14px; line-height: 1.8;">
+                                感谢您参加我司 <strong>{{position_title}}</strong> 岗位的面试。经过综合评估，现通知您面试结果如下：
+                            </p>
+
+                            <!-- Result Card -->
+                            <div style="background-color: {{result_bg_color}}; border: 2px solid {{result_border_color}}; border-radius: 8px; padding: 30px; margin-bottom: 30px; text-align: center;">
+                                <p style="margin: 0 0 15px; color: {{result_text_color}}; font-size: 28px; font-weight: 600;">
+                                    {{result_text}}
+                                </p>
+                                <p style="margin: 0; color: #666; font-size: 14px;">
+                                    {{interview_round_text}}
+                                </p>
+                            </div>
+
+                            {% if is_passed %}
+                            <!-- Next Steps for Passed Candidates -->
+                            <div style="background-color: #d4edda; border-left: 4px solid #28a745; padding: 15px 20px; margin-bottom: 30px; border-radius: 0 8px 8px 0;">
+                                <p style="margin: 0 0 10px; color: #155724; font-size: 14px; font-weight: 600;">
+                                    后续安排：
+                                </p>
+                                <p style="margin: 0; color: #155724; font-size: 13px; line-height: 1.8;">
+                                    {{next_steps}}
+                                </p>
+                            </div>
+                            {% endif %}
+
+                            {% if feedback %}
+                            <!-- Feedback Section -->
+                            <div style="background-color: #f8f9fa; border-radius: 8px; padding: 20px; margin-bottom: 30px;">
+                                <p style="margin: 0 0 10px; color: #333; font-size: 14px; font-weight: 600;">
+                                    面试反馈：
+                                </p>
+                                <p style="margin: 0; color: #666; font-size: 13px; line-height: 1.8;">
+                                    {{feedback}}
+                                </p>
+                            </div>
+                            {% endif %}
+
+                            <p style="margin: 0; color: #666; font-size: 14px; line-height: 1.8;">
+                                如有任何疑问，请随时与我们联系。<br>
+                                感谢您对我司的关注与支持！
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color: #f8f9fa; padding: 20px 40px; border-radius: 0 0 8px 8px; border-top: 1px solid #eee;">
+                            <p style="margin: 0; color: #999; font-size: 12px; line-height: 1.6;">
+                                此邮件由系统自动发送，请勿直接回复。<br>
+                                © {{company_name}} 人力资源部
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

@@ -1,0 +1,19 @@
+name: Feature request
+description: 提出功能建议
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 背景和问题
+      description: 这个功能想解决什么招聘场景？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 方案建议
+      description: 你期待它如何工作？
+    validations:
+      required: true

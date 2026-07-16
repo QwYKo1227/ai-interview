@@ -1,0 +1,45 @@
+<svg width="1200" height="420" viewBox="0 0 1200 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="420" rx="28" fill="#FFFFFF"/>
+  <rect x="32" y="32" width="1136" height="356" rx="24" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="72" y="86" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" fill="#0F172A">从岗位到入职的智能招聘流水线</text>
+  <text x="72" y="116" font-family="Inter, Arial, sans-serif" font-size="15" fill="#64748B">每个关键节点都有数据、协作和 AI 辅助，减少信息断点和重复沟通。</text>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+  <g font-family="Inter, Arial, sans-serif">
+    <rect x="72" y="174" width="130" height="104" rx="16" fill="#FFFFFF" stroke="#CBD5E1"/>
+    <circle cx="137" cy="204" r="18" fill="#DBEAFE"/>
+    <text x="119" y="211" font-size="18" font-weight="800" fill="#1D4ED8">JD</text>
+    <text x="109" y="249" font-size="17" font-weight="700" fill="#0F172A">岗位发布</text>
+    <text x="99" y="270" font-size="12" fill="#64748B">生成与公开职位页</text>
+    <path d="M216 226H266" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="282" y="174" width="130" height="104" rx="16" fill="#FFFFFF" stroke="#CBD5E1"/>
+    <circle cx="347" cy="204" r="18" fill="#FEF3C7"/>
+    <text x="330" y="211" font-size="18" font-weight="800" fill="#B45309">CV</text>
+    <text x="313" y="249" font-size="17" font-weight="700" fill="#0F172A">简历进入</text>
+    <text x="315" y="270" font-size="12" fill="#64748B">上传、查重、解析</text>
+    <path d="M426 226H476" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="492" y="158" width="148" height="136" rx="18" fill="#EFF6FF" stroke="#60A5FA" stroke-width="2"/>
+    <circle cx="566" cy="194" r="20" fill="#2563EB"/>
+    <text x="552" y="201" font-size="18" font-weight="800" fill="#FFFFFF">AI</text>
+    <text x="537" y="239" font-size="18" font-weight="800" fill="#0F172A">智能初筛</text>
+    <text x="523" y="264" font-size="12" fill="#1D4ED8">匹配评分、建议、改投</text>
+    <path d="M656 226H706" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="722" y="174" width="130" height="104" rx="16" fill="#FFFFFF" stroke="#CBD5E1"/>
+    <circle cx="787" cy="204" r="18" fill="#DCFCE7"/>
+    <text x="777" y="211" font-size="18" font-weight="800" fill="#047857">评</text>
+    <text x="754" y="249" font-size="17" font-weight="700" fill="#0F172A">部门评审</text>
+    <text x="750" y="270" font-size="12" fill="#64748B">链接协作与决策</text>
+    <path d="M866 226H916" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="932" y="174" width="130" height="104" rx="16" fill="#FFFFFF" stroke="#CBD5E1"/>
+    <circle cx="997" cy="204" r="18" fill="#EDE9FE"/>
+    <text x="987" y="211" font-size="18" font-weight="800" fill="#6D28D9">面</text>
+    <text x="973" y="249" font-size="17" font-weight="700" fill="#0F172A">面试笔试</text>
+    <text x="958" y="270" font-size="12" fill="#64748B">评分、录音、在线题</text>
+    <path d="M997 292V326" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="932" y="334" width="130" height="42" rx="14" fill="#0F172A"/>
+    <text x="961" y="361" font-size="16" font-weight="800" fill="#FFFFFF">Offer 入职</text>
+  </g>
+</svg>

@@ -1,0 +1,70 @@
+# General
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.sqlite
+*.db
+.claude/
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Backend (Python)
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+backend/venv/
+backend/.venv/
+backend/app.db
+backend/uploads/
+backend/htmlcov/
+backend/.pytest_cache/
+backend/dist/
+backend/build/
+backend/*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+
+# Frontend (Node.js)
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+frontend/.turbo/
+frontend/coverage/
+
+# Logs
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+node_modules/
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

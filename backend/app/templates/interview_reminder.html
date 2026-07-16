@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>面试提醒</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Microsoft YaHei', Arial, sans-serif; background-color: #f5f5f5;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f5f5f5; padding: 40px 0;">
+        <tr>
+            <td align="center">
+                <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 30px 40px; border-radius: 8px 8px 0 0;">
+                            <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600;">面试提醒</h1>
+                        </td>
+                    </tr>
+
+                    <!-- Content -->
+                    <tr>
+                        <td style="padding: 40px;">
+                            <p style="margin: 0 0 20px; color: #333; font-size: 16px; line-height: 1.6;">
+                                {{recipient_name}} 您好！
+                            </p>
+
+                            <p style="margin: 0 0 30px; color: #666; font-size: 14px; line-height: 1.8;">
+                                这是一封面试提醒邮件，请留意以下面试安排：
+                            </p>
+
+                            <!-- Alert Box -->
+                            <div style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 20px; margin-bottom: 30px; text-align: center;">
+                                <p style="margin: 0 0 10px; color: #856404; font-size: 18px; font-weight: 600;">
+                                    ⏰ 面试将在 {{reminder_time}} 后开始
+                                </p>
+                                <p style="margin: 0; color: #856404; font-size: 14px;">
+                                    请提前做好准备
+                                </p>
+                            </div>
+
+                            <!-- Interview Details Card -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f8f9fa; border-radius: 8px; margin-bottom: 30px;">
+                                <tr>
+                                    <td style="padding: 25px 30px;">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                <td style="padding: 8px 0; color: #666; font-size: 14px; width: 100px;">面试时间</td>
+                                                <td style="padding: 8px 0; color: #333; font-size: 14px; font-weight: 600;">{{interview_time}}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 8px 0; color: #666; font-size: 14px;">候选人</td>
+                                                <td style="padding: 8px 0; color: #333; font-size: 14px; font-weight: 600;">{{candidate_name}}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 8px 0; color: #666; font-size: 14px;">面试岗位</td>
+                                                <td style="padding: 8px 0; color: #333; font-size: 14px; font-weight: 600;">{{position_title}}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 8px 0; color: #666; font-size: 14px;">面试轮次</td>
+                                                <td style="padding: 8px 0; color: #333; font-size: 14px; font-weight: 600;">第{{interview_round}}轮</td>
+                                            </tr>
+                                            {% if interview_location %}
+                                            <tr>
+                                                <td style="padding: 8px 0; color: #666; font-size: 14px;">面试地点</td>
+                                                <td style="padding: 8px 0; color: #333; font-size: 14px; font-weight: 600;">{{interview_location}}</td>
+                                            </tr>
+                                            {% endif %}
+                                            {% if meeting_link %}
+                                            <tr>
+                                                <td style="padding: 8px 0; color: #666; font-size: 14px;">会议链接</td>
+                                                <td style="padding: 8px 0; color: #f5576c; font-size: 14px; font-weight: 600;">
+                                                    <a href="{{meeting_link}}" style="color: #f5576c; text-decoration: none;">点击进入会议</a>
+                                                </td>
+                                            </tr>
+                                            {% endif %}
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <p style="margin: 0; color: #666; font-size: 14px; line-height: 1.8;">
+                                祝您面试顺利！
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color: #f8f9fa; padding: 20px 40px; border-radius: 0 0 8px 8px; border-top: 1px solid #eee;">
+                            <p style="margin: 0; color: #999; font-size: 12px; line-height: 1.6;">
+                                此邮件由系统自动发送，请勿直接回复。<br>
+                                © {{company_name}} 人力资源部
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

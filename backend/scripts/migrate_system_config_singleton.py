@@ -19,11 +19,44 @@ MERGE_FIELDS = (
     "smtp_username", "smtp_password", "mail_from", "mail_from_name",
     "mail_enabled", "frontend_url", "prompt_configs",
 )
+PREVIOUS_ALEMBIC_VERSION = "j9k0l1m2n3o4"
+TARGET_ALEMBIC_VERSION = "k0l1m2n3o4p5"
 
 
 def _is_missing(value: Any) -> bool:
     """空字符串和空 JSON 可由旧记录补齐；False 是有效的开关值。"""
     return value is None or (isinstance(value, str) and not value.strip()) or value in ({}, [])
+
+
+def target_alembic_version(current_version: str | None) -> str | None:
+    """仅为本脚本能安全替代的已知 Alembic 版本推进标记。"""
+    if current_version is None:
+        return None
+    if current_version in {PREVIOUS_ALEMBIC_VERSION, TARGET_ALEMBIC_VERSION}:
+        return TARGET_ALEMBIC_VERSION
+    raise RuntimeError(f"未知的 Alembic 版本：{current_version}；请先人工确认升级路径")
+
+
+def get_alembic_version_transition(connection) -> tuple[str | None, str | None]:
+    """在执行任何 DDL 前验证 Alembic 版本，避免未知库被部分修改。"""
+    if not inspect(connection).has_table("alembic_version"):
+        return None, None
+    current_version = connection.execute(
+        text("SELECT version_num FROM alembic_version")
+    ).scalar_one_or_none()
+    return current_version, target_alembic_version(current_version)
+
+
+def synchronize_alembic_version(
+    connection, current_version: str | None, target_version: str | None
+) -> None:
+    """在结构更新成功后同步 Alembic 版本，避免重复执行本次迁移。"""
+    if target_version and current_version != target_version:
+        connection.execute(
+            text("UPDATE alembic_version SET version_num = :version_num"),
+            {"version_num": target_version},
+        )
+        logger.info("Alembic 版本已同步为 %s", target_version)
 
 
 def merge_system_configs(
@@ -53,6 +86,8 @@ def upgrade_system_config_table(connection) -> None:
         logger.info("未发现 system_configs 表；应用首次启动会按当前模型创建该表。")
         return
 
+    current_version, target_version = get_alembic_version_transition(connection)
+
     columns = {column["name"] for column in inspect(connection).get_columns("system_configs")}
     if "smtp_security" not in columns:
         connection.execute(text("ALTER TABLE system_configs ADD COLUMN smtp_security VARCHAR DEFAULT 'ssl'"))
@@ -65,6 +100,7 @@ def upgrade_system_config_table(connection) -> None:
             "WHERE smtp_security IS NULL OR BTRIM(smtp_security) = ''"
         )
     )
+    synchronize_alembic_version(connection, current_version, target_version)
     configs = Table("system_configs", MetaData(), autoload_with=connection)
     rows = connection.execute(
         configs.select().order_by(configs.c.updated_at.desc().nullslast(), configs.c.id.desc())

@@ -5,7 +5,7 @@ import json
 from dotenv import load_dotenv
 from app.utils.prompt_manager import prompt_manager
 from app.config.database import SessionLocal
-from app.models.models import SystemConfig
+from app.services.system_config_service import get_system_config
 
 load_dotenv()
 
@@ -26,7 +26,7 @@ _client_cache_key = None
 def _get_llm_config() -> Dict[str, Any]:
     db = SessionLocal()
     try:
-        cfg = db.query(SystemConfig).first()
+        cfg = get_system_config(db)
         llm_provider = (cfg.llm_provider if cfg else None) or _DEFAULT_PROVIDER
         llm_base_url = (cfg.llm_base_url if cfg else None) or _DEFAULT_BASE_URL_BY_PROVIDER.get(llm_provider) or _DEFAULT_BASE_URL
         llm_model = (cfg.llm_model if cfg else None) or _DEFAULT_MODEL

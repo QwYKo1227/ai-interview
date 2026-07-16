@@ -90,8 +90,8 @@ def send_offer(
     current_user: User = Depends(get_current_user_dep)
 ):
     try:
-        from app.models.models import SystemConfig
-        config = db.query(SystemConfig).first()
+        from app.services.system_config_service import get_system_config
+        config = get_system_config(db)
         base_url = "http://localhost:5173"
         if config and hasattr(config, 'frontend_url') and config.frontend_url:
             base_url = config.frontend_url

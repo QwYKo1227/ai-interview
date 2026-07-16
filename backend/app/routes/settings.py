@@ -6,11 +6,12 @@ import os
 from app.config.database import get_db
 from app.core.security import check_roles
 from app.models.models import SystemConfig, UserRole
+from app.services.system_config_service import get_or_create_system_config
 from app.schemas.settings import (
     SystemModelConfigResponse, SystemModelConfigUpdate,
     MailConfigResponse, MailConfigUpdate,
     SystemConfigResponse, SystemConfigUpdate,
-    PromptConfigsResponse, PromptConfigItem, PromptConfigUpdate
+    PromptConfigsResponse, PromptConfigItem, PromptConfigUpdate, MailTestRequest
 )
 
 
@@ -27,19 +28,12 @@ def _mask_key(api_key: Optional[str]) -> Tuple[bool, Optional[str]]:
 
 
 def _get_or_create_config(db: Session) -> SystemConfig:
-    config = db.query(SystemConfig).first()
-    if config:
-        return config
-    config = SystemConfig(
-        llm_provider=os.getenv("LLM_PROVIDER", "dashscope"),
-        llm_base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        llm_model=os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "qwen3.5-plus",
-        llm_api_key=os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY"),
-    )
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return config
+    return get_or_create_system_config(db, {
+        "llm_provider": os.getenv("LLM_PROVIDER", "dashscope"),
+        "llm_base_url": os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "llm_model": os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "qwen3.5-plus",
+        "llm_api_key": os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY"),
+    })
 
 
 @router.get("/system", response_model=SystemModelConfigResponse)
@@ -111,6 +105,7 @@ def get_mail_settings(
     return MailConfigResponse(
         smtp_host=config.smtp_host,
         smtp_port=config.smtp_port or 465,
+        smtp_security=config.smtp_security or "ssl",
         smtp_username=config.smtp_username,
         smtp_password_set=smtp_password_set,
         mail_from=config.mail_from,
@@ -135,6 +130,9 @@ def update_mail_settings(
 
     if "smtp_port" in data:
         config.smtp_port = data["smtp_port"]
+
+    if "smtp_security" in data:
+        config.smtp_security = data["smtp_security"]
 
     if "smtp_username" in data:
         config.smtp_username = (data["smtp_username"] or "").strip() or None
@@ -163,6 +161,7 @@ def update_mail_settings(
     return MailConfigResponse(
         smtp_host=config.smtp_host,
         smtp_port=config.smtp_port or 465,
+        smtp_security=config.smtp_security or "ssl",
         smtp_username=config.smtp_username,
         smtp_password_set=smtp_password_set,
         mail_from=config.mail_from,
@@ -174,6 +173,7 @@ def update_mail_settings(
 
 @router.post("/mail/test")
 def test_mail_settings(
+    payload: MailTestRequest,
     db: Session = Depends(get_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
@@ -185,9 +185,10 @@ def test_mail_settings(
     if not mail_service.config.is_valid():
         raise HTTPException(status_code=400, detail="邮件配置不完整或未启用")
 
-    # 发送测试邮件给当前用户
-    # 这里简化处理，实际应该发送给当前用户的邮箱
-    return {"message": "邮件配置有效"}
+    if not mail_service.send_test_email(str(payload.recipient)):
+        raise HTTPException(status_code=502, detail="SMTP 连通或测试邮件发送失败，请检查服务器、端口、安全连接和授权信息")
+
+    return {"message": "测试邮件发送成功"}
 
 
 @router.get("/prompts", response_model=PromptConfigsResponse)

@@ -5,6 +5,7 @@
 """
 import os
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr
@@ -17,7 +18,8 @@ import re
 from sqlalchemy.orm import Session
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from app.models.models import SystemConfig, Interview, Resume, Position, User, InterviewResult
+from app.models.models import Interview, Resume, Position, User, InterviewResult
+from app.services.system_config_service import get_system_config
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,11 @@ jinja_env = Environment(
 class EmailConfig:
     """邮件配置类"""
     def __init__(self, db: Session):
-        config = db.query(SystemConfig).first()
+        config = get_system_config(db)
         if config:
             self.smtp_host = config.smtp_host
             self.smtp_port = config.smtp_port or 465
+            self.smtp_security = config.smtp_security or "ssl"
             self.smtp_username = config.smtp_username
             self.smtp_password = config.smtp_password
             self.mail_from = config.mail_from
@@ -46,6 +49,7 @@ class EmailConfig:
         else:
             self.smtp_host = None
             self.smtp_port = 465
+            self.smtp_security = "ssl"
             self.smtp_username = None
             self.smtp_password = None
             self.mail_from = None
@@ -78,6 +82,23 @@ class MailService:
         except Exception as e:
             logger.error(f"Error rendering template {template_name}: {e}")
             raise
+
+    def _create_smtp_connection(self):
+        context = ssl.create_default_context()
+        if self.config.smtp_security == "starttls":
+            server = smtplib.SMTP(
+                self.config.smtp_host, self.config.smtp_port, timeout=15
+            )
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            return server
+        return smtplib.SMTP_SSL(
+            self.config.smtp_host,
+            self.config.smtp_port,
+            context=context,
+            timeout=15,
+        )
 
     def _send_email(self, to_email: str, subject: str, html_content: str) -> bool:
         """
@@ -117,9 +138,12 @@ class MailService:
             message.attach(html_part)
 
             # 发送邮件
-            with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port) as server:
+            server = self._create_smtp_connection()
+            try:
                 server.login(self.config.smtp_username, self.config.smtp_password)
                 server.sendmail(self.config.mail_from, to_email, message.as_string())
+            finally:
+                server.quit()
 
             logger.info(f"Email sent successfully to {to_email}")
             return True
@@ -133,6 +157,14 @@ class MailService:
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {e}")
             return False
+
+    def send_test_email(self, recipient: str) -> bool:
+        """向指定收件人发送真实 SMTP 测试邮件。"""
+        return self._send_email(
+            recipient,
+            "招聘系统 SMTP 测试邮件",
+            "<p>这是一封 SMTP 连通与发信测试邮件。</p>",
+        )
 
     def send_interview_invitation(
         self,

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Button, Card, Form, Input, Space, Typography, message, Result, Switch, InputNumber, Divider, Tabs, Alert, Tag, Tooltip } from 'antd';
+import { Button, Card, Form, Input, Space, Typography, message, Result, Switch, InputNumber, Divider, Tabs, Alert, Tag, Tooltip, Select } from 'antd';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -15,6 +15,7 @@ type SystemSettings = {
 type MailSettings = {
   smtp_host?: string | null;
   smtp_port: number;
+  smtp_security: 'ssl' | 'starttls';
   smtp_username?: string | null;
   smtp_password_set: boolean;
   mail_from?: string | null;
@@ -109,6 +110,7 @@ const SystemSettingsPage: React.FC = () => {
       mailForm.setFieldsValue({
         smtp_host: res.smtp_host || undefined,
         smtp_port: res.smtp_port || 465,
+        smtp_security: res.smtp_security || 'ssl',
         smtp_username: res.smtp_username || undefined,
         smtp_password: '',
         mail_from: res.mail_from || undefined,
@@ -243,6 +245,7 @@ const SystemSettingsPage: React.FC = () => {
       const payload: any = {
         smtp_host: values.smtp_host || null,
         smtp_port: values.smtp_port || 465,
+        smtp_security: values.smtp_security || 'ssl',
         smtp_username: values.smtp_username || null,
         mail_from: values.mail_from || null,
         mail_from_name: values.mail_from_name || '招聘系统',
@@ -314,8 +317,10 @@ const SystemSettingsPage: React.FC = () => {
 
   const testMail = async () => {
     try {
-      await request.post('/settings/mail/test');
-      message.success('邮件配置有效');
+      const values = await mailForm.validateFields(['test_recipient']);
+      const recipient = (values.test_recipient || '').trim();
+      await request.post('/settings/mail/test', { recipient });
+      message.success('测试邮件已发送');
     } catch (e) {
       const status = (e as any)?.response?.status;
       if (status === 400) {
@@ -504,6 +509,30 @@ const SystemSettingsPage: React.FC = () => {
             rules={[{ required: true, message: '请输入 SMTP 端口' }]}
           >
             <InputNumber min={1} max={65535} style={{ width: '100%' }} placeholder="通常为 465 或 587" />
+          </Form.Item>
+
+          <Form.Item
+            name="smtp_security"
+            label="安全连接"
+            rules={[{ required: true, message: '请选择安全连接方式' }]}
+          >
+            <Select
+              options={[
+                { value: 'ssl', label: 'SMTP SSL（通常为 465 端口）' },
+                { value: 'starttls', label: 'STARTTLS / TLS（通常为 587 端口）' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="test_recipient"
+            label="测试收件人"
+            rules={[
+              { required: true, message: '请输入测试收件人邮箱' },
+              { type: 'email', message: '请输入有效的邮箱地址' },
+            ]}
+          >
+            <Input placeholder="可输入任意用于收信验证的邮箱" autoComplete="off" />
           </Form.Item>
 
           <Form.Item

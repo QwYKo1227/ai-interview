@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional, Dict
+from pydantic import BaseModel, EmailStr
+from typing import Optional, Dict, Literal
 
 
 class SystemModelConfigResponse(BaseModel):
@@ -19,6 +19,7 @@ class MailConfigResponse(BaseModel):
     """邮件配置响应"""
     smtp_host: Optional[str] = None
     smtp_port: Optional[int] = 465
+    smtp_security: Literal["ssl", "starttls"] = "ssl"
     smtp_username: Optional[str] = None
     smtp_password_set: bool = False
     mail_from: Optional[str] = None
@@ -31,12 +32,18 @@ class MailConfigUpdate(BaseModel):
     """邮件配置更新"""
     smtp_host: Optional[str] = None
     smtp_port: Optional[int] = None
+    smtp_security: Optional[Literal["ssl", "starttls"]] = None
     smtp_username: Optional[str] = None
     smtp_password: Optional[str] = None
     mail_from: Optional[str] = None
     mail_from_name: Optional[str] = None
     mail_enabled: Optional[bool] = None
     frontend_url: Optional[str] = None
+
+
+class MailTestRequest(BaseModel):
+    """SMTP 连通与发信测试的收件人。"""
+    recipient: EmailStr
 
 
 class SystemConfigResponse(BaseModel):

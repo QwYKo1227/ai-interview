@@ -21,6 +21,31 @@ from datetime import datetime
 from sqlalchemy import or_, and_, func
 import json
 
+
+EXTRACTED_PROFILE_FIELDS = (
+    "highest_degree",
+    "school",
+    "major",
+    "years_of_experience",
+    "recent_company",
+)
+
+
+def extract_contact_details(parsed_data: Dict[str, Any]) -> tuple[str, str]:
+    """Read contact details from both supported AI response shapes."""
+    contact_info = parsed_data.get("contact_info")
+    nested_contact = contact_info if isinstance(contact_info, dict) else {}
+
+    contact = (
+        nested_contact.get("phone")
+        or nested_contact.get("contact")
+        or parsed_data.get("contact")
+        or parsed_data.get("phone")
+        or ""
+    )
+    email = nested_contact.get("email") or parsed_data.get("email") or ""
+    return str(contact), str(email)
+
 def read_file_content(file_path: str) -> str:
     _, ext = os.path.splitext(file_path)
     content = ""
@@ -143,14 +168,8 @@ def process_resume_task(payload: Dict[str, Any]):
             if not ai_review and parsed_data.get("recommendation"):
                 ai_review = "### 💡 综合建议\n" + parsed_data.get("recommendation", "")
 
-        # 提取联系方式
-        contact_info = parsed_data.get("contact_info", {})
-        if isinstance(contact_info, dict):
-            contact = contact_info.get("phone", "")
-            email = contact_info.get("email", "")
-        else:
-            contact = parsed_data.get("contact", "")
-            email = parsed_data.get("email", "")
+        # 提取联系方式，兼容当前提示词的顶层字段和历史嵌套字段。
+        contact, email = extract_contact_details(parsed_data)
 
         # 提取姓名
         candidate_name = parsed_data.get("candidate_name", "")
@@ -332,6 +351,17 @@ def update_resume(db: Session, resume_id: UUID, resume: ResumeUpdate):
         return None
     
     update_data = resume.dict(exclude_unset=True)
+    extracted_profile_updates = {
+        key: update_data.pop(key)
+        for key in EXTRACTED_PROFILE_FIELDS
+        if key in update_data
+    }
+
+    if extracted_profile_updates:
+        parsed_data = dict(db_resume.parsed_data or {})
+        parsed_data.update(extracted_profile_updates)
+        db_resume.parsed_data = parsed_data
+
     for key, value in update_data.items():
         setattr(db_resume, key, value)
     

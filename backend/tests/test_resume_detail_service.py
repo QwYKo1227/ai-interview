@@ -1,0 +1,55 @@
+from app.schemas.resume import ResumeUpdate
+from app.services.resume_service import extract_contact_details, update_resume
+
+
+def test_extract_contact_details_falls_back_to_flat_ai_fields():
+    contact, email = extract_contact_details(
+        {
+            "candidate_name": "张三",
+            "contact": "13800138000",
+            "email": "zhangsan@example.com",
+        }
+    )
+
+    assert contact == "13800138000"
+    assert email == "zhangsan@example.com"
+
+
+def test_extract_contact_details_supports_nested_ai_fields():
+    contact, email = extract_contact_details(
+        {
+            "contact_info": {
+                "phone": "13900139000",
+                "email": "nested@example.com",
+            },
+        }
+    )
+
+    assert contact == "13900139000"
+    assert email == "nested@example.com"
+
+
+def test_update_resume_merges_editable_extracted_fields(db, test_resume):
+    test_resume.parsed_data = {"school": "原学校", "custom_field": "保留"}
+    db.commit()
+
+    updated = update_resume(
+        db,
+        test_resume.id,
+        ResumeUpdate(
+            highest_degree="本科",
+            school="新学校",
+            major="计算机科学",
+            years_of_experience="5",
+            recent_company="示例科技",
+        ),
+    )
+
+    assert updated.parsed_data == {
+        "school": "新学校",
+        "highest_degree": "本科",
+        "major": "计算机科学",
+        "years_of_experience": "5",
+        "recent_company": "示例科技",
+        "custom_field": "保留",
+    }

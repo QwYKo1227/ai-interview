@@ -4,6 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import dayjs from 'dayjs';
 import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import RejectReasonSelector, { REJECT_REASONS } from '../../components/RejectReasonSelector';
 import { useAuth } from '../../contexts/AuthContext';
@@ -125,6 +126,11 @@ const ResumeDetail: React.FC = () => {
               candidate_name: values.candidate_name,
               email: values.email,
               contact: values.contact,
+              highest_degree: values.highest_degree,
+              school: values.school,
+              major: values.major,
+              years_of_experience: values.years_of_experience,
+              recent_company: values.recent_company,
           });
           message.success('更新成功');
           setIsEditing(false);
@@ -140,6 +146,13 @@ const ResumeDetail: React.FC = () => {
       return STATUS_MAP[status] || { text: status, color: 'default' };
   };
 
+  const getParseStatusInfo = (parseStatus?: string) => {
+      if (parseStatus === 'failed') return { text: '解析失败', color: 'error' };
+      if (parseStatus === 'processing') return { text: '解析中', color: 'processing' };
+      if (parseStatus === 'success') return { text: '解析成功', color: 'success' };
+      return { text: '未解析', color: 'default' };
+  };
+
   if (loading || !resume) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -152,7 +165,8 @@ const ResumeDetail: React.FC = () => {
   const fileUrl = resume.file_path ? (resume.file_path.startsWith('/') ? resume.file_path : `/${resume.file_path}`) : '';
   const isPdf = fileUrl.toLowerCase().endsWith('.pdf');
   const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(fileUrl) : '';
-  const statusInfo = getStatusInfo(resume.status, resume.parse_status);
+  const workflowStatusInfo = getStatusInfo(resume.status);
+  const parseStatusInfo = getParseStatusInfo(resume.parse_status);
 
   const handleReparse = () => {
     Modal.confirm({
@@ -526,28 +540,27 @@ const ResumeDetail: React.FC = () => {
           bordered={false}
           style={{ borderRadius: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', border: '1px solid #E2E8F0' }}
         >
+          <Form form={form} component={false}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
             <div style={{ flex: 1 }}>
               {isEditing ? (
-                  <Form form={form} layout="inline">
-                      <Form.Item name="candidate_name" style={{ marginBottom: 0 }}>
-                          <Input placeholder="姓名" style={{ fontSize: 24, fontWeight: 600, width: 150 }} />
-                      </Form.Item>
-                  </Form>
+                  <Form.Item name="candidate_name" style={{ marginBottom: 0 }}>
+                    <Input placeholder="姓名" style={{ fontSize: 24, fontWeight: 600, width: 150 }} />
+                  </Form.Item>
               ) : (
                   <Title level={2} style={{ margin: 0 }}>{resume.candidate_name}</Title>
               )}
 
               <div style={{ marginTop: 8 }}>
                 {isEditing ? (
-                    <Form form={form} layout="inline" style={{ marginTop: 8 }}>
-                         <Form.Item name="email" style={{ marginBottom: 0 }}>
-                             <Input placeholder="邮箱" style={{ width: 200 }} />
-                         </Form.Item>
-                         <Form.Item name="contact" style={{ marginBottom: 0 }}>
-                             <Input placeholder="电话" style={{ width: 150 }} />
-                         </Form.Item>
-                    </Form>
+                    <Space size={8} style={{ marginTop: 8 }}>
+                      <Form.Item name="email" style={{ marginBottom: 0 }}>
+                        <Input placeholder="邮箱" style={{ width: 200 }} />
+                      </Form.Item>
+                      <Form.Item name="contact" style={{ marginBottom: 0 }}>
+                        <Input placeholder="电话" style={{ width: 150 }} />
+                      </Form.Item>
+                    </Space>
                 ) : (
                     <Space wrap size={12}>
                         <Text
@@ -577,8 +590,8 @@ const ResumeDetail: React.FC = () => {
                 </div>
               </div>
               <div>
-                <Tag color={statusInfo.color} style={{ fontSize: 14, padding: '4px 10px', margin: 0 }}>
-                  {statusInfo.text}
+                <Tag color={workflowStatusInfo.color} style={{ fontSize: 14, padding: '4px 10px', margin: 0 }}>
+                  {workflowStatusInfo.text}
                 </Tag>
               </div>
 
@@ -588,15 +601,24 @@ const ResumeDetail: React.FC = () => {
             </div>
           </div>
 
+          <Divider style={{ borderColor: '#E2E8F0' }}>简历信息提取</Divider>
           <Descriptions column={2} bordered size="small">
             <Descriptions.Item label="应聘岗位">{resume.position?.title}</Descriptions.Item>
-            <Descriptions.Item label="学历">{parsedData.highest_degree || '未识别'}</Descriptions.Item>
-            <Descriptions.Item label="毕业院校">{parsedData.school || '未识别'}</Descriptions.Item>
-            <Descriptions.Item label="专业">{parsedData.major || '未识别'}</Descriptions.Item>
-            <Descriptions.Item label="工作年限">{parsedData.years_of_experience || '0'}年</Descriptions.Item>
-            <Descriptions.Item label="最近公司">{parsedData.recent_company || '未识别'}</Descriptions.Item>
-            <Descriptions.Item label="解析状态">{statusInfo.text}</Descriptions.Item>
-            <Descriptions.Item label="失败原因">{resume.parse_status === 'failed' ? (resume.parse_error || '未知') : '-'}</Descriptions.Item>
+            <Descriptions.Item label="学历">
+              {isEditing ? <Form.Item name="highest_degree" noStyle><Input /></Form.Item> : (parsedData.highest_degree || '未识别')}
+            </Descriptions.Item>
+            <Descriptions.Item label="毕业院校">
+              {isEditing ? <Form.Item name="school" noStyle><Input /></Form.Item> : (parsedData.school || '未识别')}
+            </Descriptions.Item>
+            <Descriptions.Item label="专业">
+              {isEditing ? <Form.Item name="major" noStyle><Input /></Form.Item> : (parsedData.major || '未识别')}
+            </Descriptions.Item>
+            <Descriptions.Item label="工作年限">
+              {isEditing ? <Form.Item name="years_of_experience" noStyle><Input /></Form.Item> : `${parsedData.years_of_experience || '0'}年`}
+            </Descriptions.Item>
+            <Descriptions.Item label="最近公司" span={2}>
+              {isEditing ? <Form.Item name="recent_company" noStyle><Input /></Form.Item> : (parsedData.recent_company || '未识别')}
+            </Descriptions.Item>
             {resume.reject_reason_category && (
               <>
                 <Descriptions.Item label="淘汰原因">
@@ -604,6 +626,15 @@ const ResumeDetail: React.FC = () => {
                 </Descriptions.Item>
                 <Descriptions.Item label="详细说明">{resume.reject_reason_detail || '-'}</Descriptions.Item>
               </>
+            )}
+          </Descriptions>
+
+          <Divider style={{ borderColor: '#E2E8F0' }}>解析状态</Divider>
+          <Descriptions column={2} bordered size="small">
+            <Descriptions.Item label="状态">{parseStatusInfo.text}</Descriptions.Item>
+            <Descriptions.Item label="解析时间">{resume.parsed_at ? dayjs(resume.parsed_at).format('YYYY-MM-DD HH:mm') : '-'}</Descriptions.Item>
+            {resume.parse_status === 'failed' && (
+              <Descriptions.Item label="失败原因" span={2}>{resume.parse_error || '未知'}</Descriptions.Item>
             )}
           </Descriptions>
 
@@ -692,6 +723,7 @@ const ResumeDetail: React.FC = () => {
               </div>
             </>
           )}
+          </Form>
         </Card>
 
         {/* 部门评审区域 */}

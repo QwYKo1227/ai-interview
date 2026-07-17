@@ -52,6 +52,11 @@ class ResumeUpdate(BaseModel):
     candidate_name: Optional[str] = None
     contact: Optional[str] = None
     email: Optional[str] = None
+    highest_degree: Optional[str] = None
+    school: Optional[str] = None
+    major: Optional[str] = None
+    years_of_experience: Optional[str] = None
+    recent_company: Optional[str] = None
     stage: Optional[str] = None
     # 淘汰相关字段
     reject_reason_category: Optional[RejectReasonCategory] = None

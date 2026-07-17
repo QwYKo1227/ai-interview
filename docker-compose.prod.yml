@@ -58,6 +58,8 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: ai_interview_caddy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-interview.careray.com}
     ports:
       - "80:80"
       - "443:443"

@@ -43,7 +43,7 @@ sudo update-ca-certificates
 
 ## 验证
 
-客户端必须使用 `https://interview.careray.com` 访问应用。关闭并重新启动浏览器后，在开发者工具控制台确认：
+服务器生产环境使用 `https://interview.careray.com`；本机 Docker 生产验证使用 `https://interview-local.careray.com`，并在 Windows `hosts` 中将该域名指向 `127.0.0.1`。关闭并重新启动浏览器后，在开发者工具控制台确认：
 
 ```js
 window.isSecureContext === true

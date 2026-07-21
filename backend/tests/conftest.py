@@ -142,12 +142,13 @@ def tenant_b(db: Session) -> Tenant:
 
 
 @pytest.fixture
-def test_user(db: Session) -> User:
+def test_user(db: Session, tenant_a: Tenant) -> User:
     """
     创建测试用户（HR 角色）
     """
     user = User(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         email="test_hr@example.com",
         hashed_password=get_password_hash("testpassword"),
         full_name="测试HR",
@@ -161,12 +162,13 @@ def test_user(db: Session) -> User:
 
 
 @pytest.fixture
-def test_admin(db: Session) -> User:
+def test_admin(db: Session, tenant_a: Tenant) -> User:
     """
     创建测试管理员用户
     """
     user = User(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         email="test_admin@example.com",
         hashed_password=get_password_hash("testpassword"),
         full_name="测试管理员",
@@ -180,12 +182,13 @@ def test_admin(db: Session) -> User:
 
 
 @pytest.fixture
-def test_interviewer(db: Session) -> User:
+def test_interviewer(db: Session, tenant_a: Tenant) -> User:
     """
     创建测试面试官用户
     """
     user = User(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         email="test_interviewer@example.com",
         hashed_password=get_password_hash("testpassword"),
         full_name="测试面试官",
@@ -199,12 +202,13 @@ def test_interviewer(db: Session) -> User:
 
 
 @pytest.fixture
-def test_position(db: Session) -> Position:
+def test_position(db: Session, tenant_a: Tenant) -> Position:
     """
     创建测试岗位
     """
     position = Position(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         title="高级Python工程师",
         description="负责后端系统开发和维护",
         requirements="5年以上Python开发经验，熟悉FastAPI",
@@ -229,6 +233,7 @@ def test_resume(db: Session, test_position: Position) -> Resume:
     """
     resume = Resume(
         id=uuid4(),
+        tenant_id=test_position.tenant_id,
         candidate_name="张三",
         contact="13800138000",
         email="zhangsan@example.com",
@@ -251,6 +256,7 @@ def test_interview(db: Session, test_resume: Resume, test_position: Position, te
     """
     interview = Interview(
         id=uuid4(),
+        tenant_id=test_position.tenant_id,
         resume_id=test_resume.id,
         position_id=test_position.id,
         interviewer="主面试官",
@@ -276,6 +282,7 @@ def test_interview_in_progress(db: Session, test_resume: Resume, test_position: 
     """
     interview = Interview(
         id=uuid4(),
+        tenant_id=test_position.tenant_id,
         resume_id=test_resume.id,
         position_id=test_position.id,
         interviewer="主面试官",
@@ -301,6 +308,7 @@ def test_interview_panel(db: Session, test_interview: Interview, test_interviewe
     """
     panel = InterviewPanel(
         id=uuid4(),
+        tenant_id=test_interview.tenant_id,
         interview_id=test_interview.id,
         interviewer_id=test_interviewer.id,
         scores={},

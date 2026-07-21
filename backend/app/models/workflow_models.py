@@ -5,6 +5,7 @@ from datetime import datetime
 from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship
+from app.models.tenant_models import TenantScopedMixin
 
 
 class WorkflowStatus(str, enum.Enum):
@@ -37,7 +38,7 @@ class NodeType(str, enum.Enum):
     HUMAN_INPUT = "human_input"
 
 
-class Workflow(Base):
+class Workflow(TenantScopedMixin, Base):
     __tablename__ = "workflows"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -63,7 +64,7 @@ class Workflow(Base):
     executions = relationship("WorkflowExecution", back_populates="workflow")
 
 
-class WorkflowNode(Base):
+class WorkflowNode(TenantScopedMixin, Base):
     __tablename__ = "workflow_nodes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -85,7 +86,7 @@ class WorkflowNode(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class WorkflowEdge(Base):
+class WorkflowEdge(TenantScopedMixin, Base):
     __tablename__ = "workflow_edges"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -103,7 +104,7 @@ class WorkflowEdge(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class WorkflowExecution(Base):
+class WorkflowExecution(TenantScopedMixin, Base):
     __tablename__ = "workflow_executions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -129,7 +130,7 @@ class WorkflowExecution(Base):
     node_executions = relationship("WorkflowNodeExecution", back_populates="execution")
 
 
-class WorkflowNodeExecution(Base):
+class WorkflowNodeExecution(TenantScopedMixin, Base):
     __tablename__ = "workflow_node_executions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

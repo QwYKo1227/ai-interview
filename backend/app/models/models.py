@@ -1,21 +1,26 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float, CheckConstraint, UniqueConstraint, text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
 from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship
+from app.models.tenant_models import TenantScopedMixin
 
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
     HR = "hr"
     INTERVIEWER = "interviewer"
 
-class User(Base):
+class User(TenantScopedMixin, Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
+        UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id_id"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String)
     role = Column(Enum(UserRole), default=UserRole.HR)
@@ -40,7 +45,7 @@ class PositionType(str, enum.Enum):
     CONTRACT = "contract"
     INTERNSHIP = "internship"
 
-class Position(Base):
+class Position(TenantScopedMixin, Base):
     __tablename__ = "positions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -71,7 +76,7 @@ class QuestionDifficulty(str, enum.Enum):
     INTERMEDIATE = "intermediate"
     SENIOR = "senior"
 
-class QuestionBank(Base):
+class QuestionBank(TenantScopedMixin, Base):
     __tablename__ = "question_banks"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -118,7 +123,7 @@ class RejectReasonCategory(str, enum.Enum):
     CANDIDATE_WITHDRAW = "candidate_withdraw"  # 候选人放弃
     OTHER = "other"  # 其他原因
 
-class Resume(Base):
+class Resume(TenantScopedMixin, Base):
     __tablename__ = "resumes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -157,7 +162,7 @@ class ReviewRecommendation(str, enum.Enum):
     NOT_RECOMMEND = "not_recommend"  # 不推荐
     PENDING = "pending"  # 待定
 
-class DepartmentReview(Base):
+class DepartmentReview(TenantScopedMixin, Base):
     """用人部门评审记录"""
     __tablename__ = "department_reviews"
 
@@ -191,7 +196,7 @@ class InterviewStatus(str, enum.Enum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
-class Interview(Base):
+class Interview(TenantScopedMixin, Base):
     __tablename__ = "interviews"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -224,7 +229,7 @@ class Interview(Base):
     interviewer_user = relationship("User")
     panels = relationship("InterviewPanel", back_populates="interview")
 
-class InterviewPanel(Base):
+class InterviewPanel(TenantScopedMixin, Base):
     __tablename__ = "interview_panels"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -251,7 +256,7 @@ class OfferStatus(str, enum.Enum):
     EXPIRED = "expired"
     WITHDRAWN = "withdrawn"
 
-class Offer(Base):
+class Offer(TenantScopedMixin, Base):
     __tablename__ = "offers"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -297,7 +302,7 @@ class Offer(Base):
     position = relationship("Position")
     creator = relationship("User")
 
-class OfferTemplate(Base):
+class OfferTemplate(TenantScopedMixin, Base):
     __tablename__ = "offer_templates"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -344,7 +349,7 @@ class CodingTestType(str, enum.Enum):
     CHOICE = "choice"
     ESSAY = "essay"
 
-class CodingTest(Base):
+class CodingTest(TenantScopedMixin, Base):
     __tablename__ = "coding_tests"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -380,7 +385,7 @@ class CodingSubmissionStatus(str, enum.Enum):
     SUBMITTED = "submitted"
     EVALUATED = "evaluated"
 
-class CodingSubmission(Base):
+class CodingSubmission(TenantScopedMixin, Base):
     __tablename__ = "coding_submissions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -401,11 +406,10 @@ class CodingSubmission(Base):
 
     coding_test = relationship("CodingTest", back_populates="submissions")
 
-class SystemConfig(Base):
+class SystemConfig(TenantScopedMixin, Base):
     __tablename__ = "system_configs"
     __table_args__ = (
-        UniqueConstraint("singleton_key", name="uq_system_configs_singleton_key"),
-        CheckConstraint("singleton_key IS TRUE", name="ck_system_configs_singleton_key_true"),
+        UniqueConstraint("tenant_id", name="uq_system_configs_tenant"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

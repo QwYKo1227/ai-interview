@@ -67,6 +67,71 @@ def test_tenant_session_can_take_explicit_tenant_id_from_session_info(db, tenant
         assert tenant_db.info["tenant_id"] == tenant_a.id
 
 
+def test_mutating_or_removing_session_info_cannot_change_tenant_scope(
+    db, tenant_session_factory, tenant_a, tenant_b
+):
+    db.add_all(
+        [
+            Position(tenant_id=tenant_a.id, title="A", description="A"),
+            Position(tenant_id=tenant_b.id, title="B", description="B"),
+        ]
+    )
+    db.commit()
+
+    with tenant_session_factory(tenant_a.id) as tenant_db:
+        assert [position.title for position in tenant_db.query(Position).all()] == ["A"]
+
+        tenant_db.info["tenant_id"] = tenant_b.id
+        assert [position.title for position in tenant_db.query(Position).all()] == ["A"]
+
+        tenant_db.info.pop("tenant_id")
+        assert [position.title for position in tenant_db.query(Position).all()] == ["A"]
+
+
+def test_plain_session_info_cannot_enable_tenant_scope(db, tenant_a, tenant_b):
+    db.add_all(
+        [
+            Position(tenant_id=tenant_a.id, title="A", description="A"),
+            Position(tenant_id=tenant_b.id, title="B", description="B"),
+        ]
+    )
+    db.commit()
+
+    plain_db = Session(bind=db.get_bind(), info={"tenant_id": tenant_a.id})
+    try:
+        assert {position.title for position in plain_db.query(Position).all()} == {
+            "A",
+            "B",
+        }
+    finally:
+        plain_db.close()
+
+
+def test_set_tenant_context_cannot_rebind_even_if_info_is_tampered(
+    db, tenant_a, tenant_b
+):
+    tenant_db = Session(bind=db.get_bind())
+    try:
+        set_tenant_context(tenant_db, tenant_a.id)
+        set_tenant_context(tenant_db, tenant_a.id)
+        tenant_db.info["tenant_id"] = tenant_b.id
+
+        with pytest.raises(ValueError, match="does not match session tenant"):
+            set_tenant_context(tenant_db, tenant_b.id)
+    finally:
+        tenant_db.close()
+
+
+def test_tenant_session_without_internal_binding_fails_closed(db):
+    tenant_db = TenantSession.__new__(TenantSession)
+    Session.__init__(tenant_db, bind=db.get_bind())
+    try:
+        with pytest.raises(RuntimeError, match="missing internal tenant binding"):
+            tenant_db.query(Position).all()
+    finally:
+        tenant_db.close()
+
+
 def test_tenant_session_only_reads_own_rows(tenant_session_factory, tenant_a, tenant_b):
     with tenant_session_factory(tenant_a.id) as db:
         db.add(Position(title="A", description="A"))
@@ -92,15 +157,14 @@ def test_new_row_with_different_tenant_id_is_rejected(
     tenant_session_factory, tenant_a, tenant_b
 ):
     with tenant_session_factory(tenant_a.id) as db:
-        db.add(
-            Position(
-                tenant_id=tenant_b.id,
-                title="Cross-tenant",
-                description="must fail",
-            )
-        )
-
         with pytest.raises(ValueError, match="does not match session tenant"):
+            db.add(
+                Position(
+                    tenant_id=tenant_b.id,
+                    title="Cross-tenant",
+                    description="must fail",
+                )
+            )
             db.flush()
 
 
@@ -215,6 +279,100 @@ def test_attaching_existing_object_from_another_tenant_is_rejected(
             tenant_db.add(foreign_position)
         assert object_session(foreign_position) is None
         assert foreign_position not in tenant_db.identity_map.values()
+
+
+def test_failed_cascade_attach_leaves_root_and_foreign_objects_unbound(
+    db, tenant_session_factory, tenant_a, tenant_b
+):
+    foreign_position = Position(
+        tenant_id=tenant_b.id,
+        title="B",
+        description="B",
+    )
+    legitimate_position = Position(
+        tenant_id=tenant_a.id,
+        title="A",
+        description="A",
+    )
+    db.add_all([foreign_position, legitimate_position])
+    db.commit()
+    foreign_position.tenant_id
+    db.expunge(foreign_position)
+    resume = Resume(candidate_name="Candidate A", position=foreign_position)
+
+    with tenant_session_factory(tenant_a.id) as tenant_db:
+        legitimate = tenant_db.get(Position, legitimate_position.id)
+        new_before = set(tenant_db.new)
+
+        with pytest.raises(ValueError, match="does not match session tenant"):
+            tenant_db.add(resume)
+
+        assert object_session(legitimate) is tenant_db
+        assert object_session(resume) is None
+        assert object_session(foreign_position) is None
+        assert set(tenant_db.new) == new_before
+
+
+def test_failed_add_all_preflight_is_atomic(
+    db, tenant_session_factory, tenant_a, tenant_b
+):
+    foreign_position = Position(
+        tenant_id=tenant_b.id,
+        title="B",
+        description="B",
+    )
+    db.add(foreign_position)
+    db.commit()
+    foreign_position.tenant_id
+    db.expunge(foreign_position)
+    valid_root = Position(title="A", description="A")
+    invalid_root = Resume(candidate_name="Candidate A", position=foreign_position)
+
+    with tenant_session_factory(tenant_a.id) as tenant_db:
+        new_before = set(tenant_db.new)
+
+        with pytest.raises(ValueError, match="does not match session tenant"):
+            tenant_db.add_all([valid_root, invalid_root])
+
+        assert object_session(valid_root) is None
+        assert object_session(invalid_root) is None
+        assert object_session(foreign_position) is None
+        assert set(tenant_db.new) == new_before
+
+
+@pytest.mark.parametrize("operation", ["add", "add_all"])
+def test_plain_scoped_session_attach_preflight_is_atomic(
+    operation, db, tenant_a, tenant_b
+):
+    foreign_position = Position(
+        tenant_id=tenant_b.id,
+        title="B",
+        description="B",
+    )
+    db.add(foreign_position)
+    db.commit()
+    foreign_position.tenant_id
+    db.expunge(foreign_position)
+    invalid_root = Resume(candidate_name="Candidate A", position=foreign_position)
+    valid_root = Position(title="A", description="A")
+
+    tenant_db = Session(bind=db.get_bind())
+    try:
+        set_tenant_context(tenant_db, tenant_a.id)
+        new_before = set(tenant_db.new)
+
+        with pytest.raises(ValueError, match="does not match session tenant"):
+            if operation == "add":
+                tenant_db.add(invalid_root)
+            else:
+                tenant_db.add_all([valid_root, invalid_root])
+
+        assert object_session(invalid_root) is None
+        assert object_session(foreign_position) is None
+        assert object_session(valid_root) is None
+        assert set(tenant_db.new) == new_before
+    finally:
+        tenant_db.close()
 
 
 @pytest.mark.parametrize("operation", ["update", "delete"])

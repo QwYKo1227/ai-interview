@@ -36,6 +36,20 @@ def tenant_session_factory(db):
     return open_session
 
 
+@contextmanager
+def _scoped_session(session_kind, bind, tenant_id):
+    if session_kind == "tenant":
+        session = TenantSession(bind=bind, tenant_id=tenant_id, autoflush=False)
+    else:
+        session = Session(bind=bind, autoflush=False)
+        set_tenant_context(session, tenant_id)
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+
+
 def test_tenant_context_contains_only_trusted_tenant_metadata():
     tenant_id = uuid4()
 
@@ -373,6 +387,136 @@ def test_plain_scoped_session_attach_preflight_is_atomic(
         assert set(tenant_db.new) == new_before
     finally:
         tenant_db.close()
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+def test_repeated_add_of_pending_object_is_idempotent(
+    session_kind, db, tenant_a
+):
+    position = Position(title="A", description="A")
+
+    with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
+        tenant_db.add(position)
+        tenant_db.add(position)
+
+        assert object_session(position) is tenant_db
+        assert position in tenant_db.new
+        assert position.tenant_id == tenant_a.id
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+def test_shared_pending_child_can_be_reused_by_another_legal_root(
+    session_kind, db, tenant_a
+):
+    shared_position = Position(title="A", description="A")
+    first_resume = Resume(candidate_name="First", position=shared_position)
+    second_resume = Resume(candidate_name="Second", position=shared_position)
+
+    with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
+        tenant_db.add(first_resume)
+        tenant_db.add(second_resume)
+
+        assert {first_resume, second_resume, shared_position}.issubset(tenant_db.new)
+        assert shared_position.tenant_id == tenant_a.id
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+def test_merge_rejects_cross_tenant_graph_without_session_residue(
+    session_kind, db, tenant_a, tenant_b
+):
+    foreign_position = Position(
+        tenant_id=tenant_b.id,
+        title="B",
+        description="B",
+    )
+    foreign_resume = Resume(
+        tenant_id=tenant_b.id,
+        candidate_name="Candidate B",
+        position=foreign_position,
+    )
+    db.add_all([foreign_position, foreign_resume])
+    db.commit()
+    foreign_resume.tenant_id
+    foreign_resume.position.tenant_id
+    tenant_a_id = tenant_a.id
+    db.expunge_all()
+
+    with _scoped_session(session_kind, db.get_bind(), tenant_a_id) as tenant_db:
+        new_before = set(tenant_db.new)
+        identity_before = set(tenant_db.identity_map.values())
+
+        with pytest.raises(ValueError, match="does not match session tenant"):
+            tenant_db.merge(foreign_resume, load=True)
+
+        assert set(tenant_db.new) == new_before
+        assert set(tenant_db.identity_map.values()) == identity_before
+        assert object_session(foreign_resume) is None
+        assert object_session(foreign_position) is None
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+def test_merge_allows_same_tenant_detached_object(session_kind, db, tenant_a):
+    position = Position(
+        tenant_id=tenant_a.id,
+        title="Original",
+        description="A",
+    )
+    db.add(position)
+    db.commit()
+    position.tenant_id
+    db.expunge(position)
+    position.title = "Updated"
+
+    with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
+        merged = tenant_db.merge(position, load=True)
+        tenant_db.flush()
+
+        assert merged is not position
+        assert merged.title == "Updated"
+        assert merged.tenant_id == tenant_a.id
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+def test_merge_load_false_preserves_sqlalchemy_clean_state_semantics(
+    session_kind, db, tenant_a
+):
+    position = Position(
+        tenant_id=tenant_a.id,
+        title="Clean",
+        description="A",
+    )
+    db.add(position)
+    db.commit()
+    position.tenant_id
+    position.title
+    db.expunge(position)
+
+    with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
+        merged = tenant_db.merge(position, load=False)
+
+        assert merged is not position
+        assert merged.title == "Clean"
+        assert merged.tenant_id == tenant_a.id
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+def test_merge_load_false_keeps_sqlalchemy_dirty_object_rejection(
+    session_kind, db, tenant_a
+):
+    position = Position(
+        tenant_id=tenant_a.id,
+        title="Original",
+        description="A",
+    )
+    db.add(position)
+    db.commit()
+    position.tenant_id
+    db.expunge(position)
+    position.title = "Dirty"
+
+    with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
+        with pytest.raises(InvalidRequestError, match="load=False"):
+            tenant_db.merge(position, load=False)
 
 
 @pytest.mark.parametrize("operation", ["update", "delete"])

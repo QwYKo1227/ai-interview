@@ -15,6 +15,7 @@ _SET_POSTGRES_TENANT = text(
     "SELECT set_config('app.current_tenant_id', :tenant_id, true)"
 )
 _TENANT_BINDINGS: WeakKeyDictionary[Session, UUID] = WeakKeyDictionary()
+_MERGE_DEPTHS: WeakKeyDictionary[Session, int] = WeakKeyDictionary()
 
 
 def _require_uuid(tenant_id: UUID) -> UUID:
@@ -39,20 +40,22 @@ def _bind_tenant_scope(session: Session, tenant_id: UUID) -> None:
     session.info["tenant_id"] = tenant_id
 
 
-def _validate_tenant_object(obj, tenant_id: UUID) -> None:
+def _validate_tenant_object(obj, tenant_id: UUID, session: Session) -> None:
     if not isinstance(obj, TenantScopedMixin):
         return
 
     state = inspect(obj)
     object_tenant = state.dict.get("tenant_id")
-    if state.transient:
-        if object_tenant not in (None, tenant_id):
-            raise ValueError("tenant_id does not match session tenant")
+    if object_tenant is None and (
+        state.transient or (state.pending and state.session is session)
+        or _MERGE_DEPTHS.get(session, 0) > 0
+    ):
+        obj.tenant_id = tenant_id
     elif object_tenant != tenant_id:
         raise ValueError("tenant_id does not match session tenant")
 
 
-def _preflight_save_update(session: Session, instances) -> None:
+def _preflight_graph(session: Session, instances, cascade: str) -> None:
     tenant_id = _tenant_scope(session)
     seen = set()
     for root in instances:
@@ -61,7 +64,7 @@ def _preflight_save_update(session: Session, instances) -> None:
         graph.extend(
             (obj, state)
             for obj, _mapper, state, _dict in root_state.mapper.cascade_iterator(
-                "save-update", root_state
+                cascade, root_state
             )
         )
         for obj, state in graph:
@@ -72,24 +75,38 @@ def _preflight_save_update(session: Session, instances) -> None:
                 raise InvalidRequestError(
                     "object is already attached to a different Session"
                 )
-            _validate_tenant_object(obj, tenant_id)
+            _validate_tenant_object(obj, tenant_id, session)
 
 
 def _scoped_add(session: Session, instance, _warn: bool = True) -> None:
-    _preflight_save_update(session, [instance])
+    _preflight_graph(session, [instance], "save-update")
     Session.add(session, instance, _warn=_warn)
 
 
 def _scoped_add_all(session: Session, instances) -> None:
     instances = list(instances)
-    _preflight_save_update(session, instances)
+    _preflight_graph(session, instances, "save-update")
     Session.add_all(session, instances)
+
+
+def _scoped_merge(session: Session, instance, *, load: bool = True, options=None):
+    _preflight_graph(session, [instance], "merge")
+    _MERGE_DEPTHS[session] = _MERGE_DEPTHS.get(session, 0) + 1
+    try:
+        return Session.merge(session, instance, load=load, options=options)
+    finally:
+        depth = _MERGE_DEPTHS[session] - 1
+        if depth:
+            _MERGE_DEPTHS[session] = depth
+        else:
+            del _MERGE_DEPTHS[session]
 
 
 def _install_scoped_write_methods(session: Session) -> None:
     if not isinstance(session, TenantSession):
         session.add = MethodType(_scoped_add, session)
         session.add_all = MethodType(_scoped_add_all, session)
+        session.merge = MethodType(_scoped_merge, session)
 
 
 class TenantSession(Session):
@@ -119,6 +136,9 @@ class TenantSession(Session):
 
     def add_all(self, instances) -> None:
         _scoped_add_all(self, instances)
+
+    def merge(self, instance, *, load: bool = True, options=None):
+        return _scoped_merge(self, instance, load=load, options=options)
 
     def get(self, entity, ident, **kwargs):
         tenant_id = _tenant_scope(self)
@@ -170,7 +190,7 @@ def fill_tenant_id(session, _flush_context, _instances) -> None:
 def reject_cross_tenant_attach(session, obj) -> None:
     tenant_id = _tenant_scope(session)
     if tenant_id is not None:
-        _validate_tenant_object(obj, tenant_id)
+        _validate_tenant_object(obj, tenant_id, session)
 
 
 @event.listens_for(Session, "after_begin")

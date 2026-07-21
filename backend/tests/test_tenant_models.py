@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import Column, Integer
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import IntegrityError, StatementError
 
 from app.models.base import Base
@@ -34,6 +35,28 @@ def test_tenant_code_accepts_only_lowercase_letters_digits_and_hyphens():
 
     with pytest.raises(ValidationError):
         TenantCreate(code="Care_Ray", name="CareRay")
+
+
+def test_tenant_code_length_is_limited_in_schema_and_orm():
+    valid_code = "a" * 64
+    assert TenantCreate(code=valid_code, name="CareRay").code == valid_code
+    assert Tenant(code=valid_code, name="CareRay").code == valid_code
+
+    with pytest.raises(ValidationError):
+        TenantCreate(code="a" * 65, name="CareRay")
+    with pytest.raises(ValueError):
+        Tenant(code="a" * 65, name="CareRay")
+
+
+def test_tenant_name_length_is_limited_in_schema_and_orm():
+    valid_name = "n" * 255
+    assert TenantCreate(code="careray", name=valid_name).name == valid_name
+    assert Tenant(code="careray", name=valid_name).name == valid_name
+
+    with pytest.raises(ValidationError):
+        TenantCreate(code="careray", name="n" * 256)
+    with pytest.raises(ValueError):
+        Tenant(code="careray", name="n" * 256)
 
 
 def test_tenant_code_cannot_be_changed_after_creation(db):
@@ -69,6 +92,15 @@ def test_tenant_domain_is_normalized_before_uniqueness_check(db, tenant_a, tenan
     db.add(TenantDomain(tenant_id=tenant_b.id, domain="interview.careray.com", is_primary=True))
     with pytest.raises(IntegrityError):
         db.commit()
+
+
+@pytest.mark.parametrize(
+    "invalid_domain",
+    ["", "   ", "https://example.com", "example.com/path", "example..com", "bad_domain.example"],
+)
+def test_tenant_domain_rejects_non_host_values(invalid_domain):
+    with pytest.raises(ValueError):
+        TenantDomain(tenant_id=uuid4(), domain=invalid_domain, is_primary=True)
 
 
 def test_tenant_has_at_most_one_primary_domain(db, tenant_a):
@@ -144,7 +176,12 @@ def test_tenant_scoped_mixin_allows_null_tenant_id_during_migration():
 
         id = Column(Integer, primary_key=True)
 
-    assert TenantScopedRecord.__table__.c.tenant_id.nullable is True
+    tenant_id = TenantScopedRecord.__table__.c.tenant_id
+
+    assert isinstance(tenant_id.type, UUID)
+    assert tenant_id.nullable is True
+    assert tenant_id.index is True
+    assert {foreign_key.target_fullname for foreign_key in tenant_id.foreign_keys} == {"tenants.id"}
 
 
 def test_tenant_schemas_expose_summary_create_and_response():

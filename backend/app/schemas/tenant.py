@@ -18,8 +18,8 @@ class TenantSummary(BaseModel):
 
 
 class TenantCreate(BaseModel):
-    code: str = Field(pattern=r"^[a-z0-9-]+$")
-    name: str
+    code: str = Field(pattern=r"^[a-z0-9-]+$", max_length=64)
+    name: str = Field(max_length=255)
     logo_url: Optional[str] = None
 
 

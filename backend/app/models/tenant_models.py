@@ -16,6 +16,7 @@ def utcnow():
 
 TENANT_CODE_PATTERN = re.compile(r"^[a-z0-9-]+$")
 SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class TenantStatus(str, enum.Enum):
@@ -46,8 +47,18 @@ class Tenant(Base):
 
     @validates("code")
     def validate_code(self, key, value):
-        if not isinstance(value, str) or not TENANT_CODE_PATTERN.fullmatch(value):
+        if (
+            not isinstance(value, str)
+            or len(value) > 64
+            or not TENANT_CODE_PATTERN.fullmatch(value)
+        ):
             raise ValueError("tenant code must contain only lowercase letters, digits, and hyphens")
+        return value
+
+    @validates("name")
+    def validate_name(self, key, value):
+        if not isinstance(value, str) or len(value) > 255:
+            raise ValueError("tenant name must be at most 255 characters")
         return value
 
 
@@ -83,7 +94,23 @@ class TenantDomain(Base):
 
     @validates("domain")
     def normalize_domain(self, key, value):
-        return value.strip().lower().split(":", 1)[0]
+        if not isinstance(value, str):
+            raise ValueError("domain must be a hostname")
+
+        candidate = value.strip().lower()
+        if not candidate or "://" in candidate or any(char in candidate for char in "/?#"):
+            raise ValueError("domain must be a bare hostname")
+
+        hostname, separator, port = candidate.partition(":")
+        if separator and (not port.isdecimal() or not 1 <= int(port) <= 65535):
+            raise ValueError("domain port must be between 1 and 65535")
+        if not hostname or len(hostname) > 253:
+            raise ValueError("domain must be a valid hostname")
+
+        labels = hostname.split(".")
+        if any(not HOST_LABEL_PATTERN.fullmatch(label) for label in labels):
+            raise ValueError("domain must be a valid hostname")
+        return hostname
 
 
 class PlatformUser(Base):

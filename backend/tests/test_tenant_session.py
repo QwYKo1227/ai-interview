@@ -6,11 +6,27 @@ from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session, object_session, sessionmaker
 
-from app.config import database, tenant_session as tenant_session_module
+
+class PreGuardSession(Session):
+    def add(self, instance, _warn=True):
+        return Session.add(self, instance, _warn=_warn)
+
+
+from app.config import database
 from app.config.database import get_unscoped_db
-from app.config.tenant_session import TenantSession, set_tenant_context, tenant_session
+from app.config.tenant_session import (
+    TenantCapableSession,
+    TenantSession,
+    set_tenant_context,
+    tenant_session,
+)
 from app.core.tenant_context import TenantContext
 from app.models.models import Position, Resume
+
+
+class OverridingTenantCapableSession(TenantCapableSession):
+    def add(self, instance, _warn=True):
+        return Session.add(self, instance, _warn=_warn)
 
 
 @pytest.fixture
@@ -41,7 +57,7 @@ def _scoped_session(session_kind, bind, tenant_id):
     if session_kind == "tenant":
         session = TenantSession(bind=bind, tenant_id=tenant_id, autoflush=False)
     else:
-        session = Session(bind=bind, autoflush=False)
+        session = TenantCapableSession(bind=bind, autoflush=False)
         set_tenant_context(session, tenant_id)
     try:
         yield session
@@ -121,10 +137,46 @@ def test_plain_session_info_cannot_enable_tenant_scope(db, tenant_a, tenant_b):
         plain_db.close()
 
 
+def test_tenant_capable_session_is_a_dedicated_session_class():
+    assert TenantCapableSession is not Session
+    assert issubclass(TenantCapableSession, Session)
+
+
+@pytest.mark.parametrize(
+    "session_class",
+    [Session, PreGuardSession, OverridingTenantCapableSession],
+)
+def test_set_tenant_context_rejects_sessions_without_exact_safe_type(
+    session_class, db, tenant_a
+):
+    unsafe_db = session_class(bind=db.get_bind())
+    try:
+        with pytest.raises(TypeError, match="TenantCapableSession"):
+            set_tenant_context(unsafe_db, tenant_a.id)
+
+        assert "tenant_id" not in unsafe_db.info
+    finally:
+        unsafe_db.close()
+
+
+def test_database_session_factory_uses_exact_tenant_capable_session_type():
+    factory_db = database.SessionLocal()
+    try:
+        assert type(factory_db) is database.SessionLocal.class_
+        assert type(factory_db).__bases__ == (TenantCapableSession,)
+        assert not any(
+            method_name in type(factory_db).__dict__
+            for method_name in ("add", "add_all", "merge", "get")
+        )
+        set_tenant_context(factory_db, uuid4())
+    finally:
+        factory_db.close()
+
+
 def test_set_tenant_context_cannot_rebind_even_if_info_is_tampered(
     db, tenant_a, tenant_b
 ):
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         set_tenant_context(tenant_db, tenant_a.id)
         set_tenant_context(tenant_db, tenant_a.id)
@@ -250,7 +302,7 @@ def test_set_tenant_context_scopes_a_plain_session(db, tenant_a, tenant_b):
     )
     db.commit()
 
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         set_tenant_context(tenant_db, tenant_a.id)
 
@@ -265,7 +317,7 @@ def test_set_tenant_context_rejects_a_session_with_tenant_objects_already_loaded
     db.add(Position(tenant_id=tenant_b.id, title="B", description="B"))
     db.commit()
 
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         loaded_position = tenant_db.query(Position).one()
         assert loaded_position.tenant_id == tenant_b.id
@@ -370,7 +422,7 @@ def test_plain_scoped_session_attach_preflight_is_atomic(
     invalid_root = Resume(candidate_name="Candidate A", position=foreign_position)
     valid_root = Position(title="A", description="A")
 
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         set_tenant_context(tenant_db, tenant_a.id)
         new_before = set(tenant_db.new)
@@ -405,7 +457,7 @@ def test_cached_plain_session_write_method_enforces_scope_without_residue(
     invalid_root = Resume(candidate_name="Candidate A", position=foreign_position)
     valid_root = Position(title="A", description="A")
 
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         cached_method = getattr(tenant_db, operation)
         set_tenant_context(tenant_db, tenant_a.id)
@@ -433,7 +485,7 @@ def test_cached_plain_session_write_method_enforces_scope_without_residue(
 
 
 def test_cached_plain_session_add_accepts_legal_object_after_binding(db, tenant_a):
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         cached_add = tenant_db.add
         set_tenant_context(tenant_db, tenant_a.id)
@@ -460,7 +512,7 @@ def test_cached_plain_session_merge_is_disabled_after_binding(db, tenant_a):
     position.tenant_id
     db.expunge(position)
 
-    tenant_db = Session(bind=db.get_bind())
+    tenant_db = TenantCapableSession(bind=db.get_bind())
     try:
         cached_merge = tenant_db.merge
         set_tenant_context(tenant_db, tenant_a.id)
@@ -513,16 +565,9 @@ def test_cached_write_methods_keep_unscoped_plain_session_native_semantics(
         unscoped_db.close()
 
 
-def test_session_write_guard_installation_is_idempotent():
-    installed_methods = (Session.add, Session.add_all, Session.merge)
-
-    tenant_session_module._install_session_write_guards()
-    tenant_session_module._install_session_write_guards()
-
-    assert (Session.add, Session.add_all, Session.merge) == installed_methods
-    for method in installed_methods:
-        assert method._tenant_scope_guard is True
-        assert method._tenant_scope_original is not method
+def test_sqlalchemy_session_write_methods_are_not_globally_replaced():
+    for method in (Session.add, Session.add_all, Session.merge):
+        assert not getattr(method, "_tenant_scope_guard", False)
 
 
 @pytest.mark.parametrize("session_kind", ["tenant", "plain"])

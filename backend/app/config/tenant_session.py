@@ -14,15 +14,6 @@ _SET_POSTGRES_TENANT = text(
     "SELECT set_config('app.current_tenant_id', :tenant_id, true)"
 )
 _TENANT_BINDINGS: WeakKeyDictionary[Session, UUID] = WeakKeyDictionary()
-_ORIGINAL_SESSION_ADD = getattr(
-    Session.add, "_tenant_scope_original", Session.add
-)
-_ORIGINAL_SESSION_ADD_ALL = getattr(
-    Session.add_all, "_tenant_scope_original", Session.add_all
-)
-_ORIGINAL_SESSION_MERGE = getattr(
-    Session.merge, "_tenant_scope_original", Session.merge
-)
 
 
 def _require_uuid(tenant_id: UUID) -> UUID:
@@ -86,13 +77,13 @@ def _preflight_graph(session: Session, instances, cascade: str) -> None:
 
 def _scoped_add(session: Session, instance, _warn: bool = True) -> None:
     _preflight_graph(session, [instance], "save-update")
-    _ORIGINAL_SESSION_ADD(session, instance, _warn=_warn)
+    Session.add(session, instance, _warn=_warn)
 
 
 def _scoped_add_all(session: Session, instances) -> None:
     instances = list(instances)
     _preflight_graph(session, instances, "save-update")
-    _ORIGINAL_SESSION_ADD_ALL(session, instances)
+    Session.add_all(session, instances)
 
 
 def _scoped_merge(session: Session, instance, *, load: bool = True, options=None):
@@ -100,47 +91,26 @@ def _scoped_merge(session: Session, instance, *, load: bool = True, options=None
     raise InvalidRequestError("merge() is disabled for tenant-scoped sessions")
 
 
-def _tenant_aware_add(session: Session, instance, _warn: bool = True) -> None:
-    if _tenant_scope(session) is None:
-        return _ORIGINAL_SESSION_ADD(session, instance, _warn=_warn)
-    return _scoped_add(session, instance, _warn=_warn)
+class TenantCapableSession(Session):
+    """A Session that can be safely bound to a tenant after construction."""
+
+    def add(self, instance, _warn: bool = True) -> None:
+        if _tenant_scope(self) is None:
+            return super().add(instance, _warn=_warn)
+        return _scoped_add(self, instance, _warn=_warn)
+
+    def add_all(self, instances) -> None:
+        if _tenant_scope(self) is None:
+            return super().add_all(instances)
+        return _scoped_add_all(self, instances)
+
+    def merge(self, instance, *, load: bool = True, options=None):
+        if _tenant_scope(self) is None:
+            return super().merge(instance, load=load, options=options)
+        return _scoped_merge(self, instance, load=load, options=options)
 
 
-def _tenant_aware_add_all(session: Session, instances) -> None:
-    if _tenant_scope(session) is None:
-        return _ORIGINAL_SESSION_ADD_ALL(session, instances)
-    return _scoped_add_all(session, instances)
-
-
-def _tenant_aware_merge(
-    session: Session, instance, *, load: bool = True, options=None
-):
-    if _tenant_scope(session) is None:
-        return _ORIGINAL_SESSION_MERGE(
-            session, instance, load=load, options=options
-        )
-    return _scoped_merge(session, instance, load=load, options=options)
-
-
-def _install_session_write_guards() -> None:
-    guards = {
-        "add": (_tenant_aware_add, _ORIGINAL_SESSION_ADD),
-        "add_all": (_tenant_aware_add_all, _ORIGINAL_SESSION_ADD_ALL),
-        "merge": (_tenant_aware_merge, _ORIGINAL_SESSION_MERGE),
-    }
-    for method_name, (guard, original) in guards.items():
-        current = getattr(Session, method_name)
-        if getattr(current, "_tenant_scope_guard", False):
-            continue
-        guard._tenant_scope_guard = True
-        guard._tenant_scope_original = original
-        setattr(Session, method_name, guard)
-
-
-_install_session_write_guards()
-
-
-class TenantSession(Session):
+class TenantSession(TenantCapableSession):
     """A Session explicitly bound to one tenant for ORM operations.
 
     The authoritative binding is private and immutable; ``Session.info`` is
@@ -162,15 +132,6 @@ class TenantSession(Session):
         super().__init__(*args, info=info, **kwargs)
         _bind_tenant_scope(self, tenant_id)
 
-    def add(self, instance, _warn: bool = True) -> None:
-        _scoped_add(self, instance, _warn=_warn)
-
-    def add_all(self, instances) -> None:
-        _scoped_add_all(self, instances)
-
-    def merge(self, instance, *, load: bool = True, options=None):
-        return _scoped_merge(self, instance, load=load, options=options)
-
     def get(self, entity, ident, **kwargs):
         tenant_id = _tenant_scope(self)
         instance = super().get(entity, ident, **kwargs)
@@ -180,6 +141,25 @@ class TenantSession(Session):
         ):
             return None
         return instance
+
+
+_SAFE_TENANT_SESSION_TYPES = {TenantCapableSession, TenantSession}
+
+
+def _register_tenant_session_factory_type(session_type: type[Session]) -> None:
+    """Register a sessionmaker-generated class after proving it has no overrides."""
+
+    if len(session_type.__bases__) != 1 or session_type.__bases__[0] not in (
+        TenantCapableSession,
+        TenantSession,
+    ):
+        raise TypeError("tenant session factory class has an unsafe base")
+    if any(
+        method_name in session_type.__dict__
+        for method_name in ("add", "add_all", "merge", "get")
+    ):
+        raise TypeError("tenant session factory class overrides protected methods")
+    _SAFE_TENANT_SESSION_TYPES.add(session_type)
 
 
 @event.listens_for(Session, "do_orm_execute")
@@ -234,9 +214,14 @@ def set_postgres_tenant_on_transaction_begin(session, _transaction, connection) 
         )
 
 
-def set_tenant_context(db: Session, tenant_id: UUID) -> None:
+def set_tenant_context(db: TenantCapableSession, tenant_id: UUID) -> None:
     """Bind a Session to a tenant and configure its current PostgreSQL transaction."""
 
+    if type(db) not in _SAFE_TENANT_SESSION_TYPES:
+        raise TypeError(
+            "set_tenant_context requires an exact TenantCapableSession "
+            "or TenantSession"
+        )
     tenant_id = _require_uuid(tenant_id)
     configured_tenant = _TENANT_BINDINGS.get(db)
     if configured_tenant not in (None, tenant_id):

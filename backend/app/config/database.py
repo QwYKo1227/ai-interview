@@ -3,7 +3,11 @@ from sqlalchemy.orm import sessionmaker
 import os
 from dotenv import load_dotenv
 
-from app.config.tenant_session import TenantSession
+from app.config.tenant_session import (
+    TenantCapableSession,
+    TenantSession,
+    _register_tenant_session_factory_type,
+)
 
 load_dotenv()
 
@@ -15,13 +19,20 @@ if not DATABASE_URL:
     )
 
 engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    class_=TenantCapableSession,
+)
 TenantSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine,
     class_=TenantSession,
 )
+_register_tenant_session_factory_type(SessionLocal.class_)
+_register_tenant_session_factory_type(TenantSessionLocal.class_)
 
 from app.models.base import Base
 

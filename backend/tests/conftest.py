@@ -30,6 +30,7 @@ from app.models.tenant_models import (
     PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
 )
 from app.config.database import get_db
+from app.config.tenant_session import TenantCapableSession
 from app.core.security import get_password_hash, create_access_token
 
 
@@ -45,7 +46,12 @@ test_engine = create_engine(
 )
 
 # 创建测试会话工厂
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+TestingSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=test_engine,
+    class_=TenantCapableSession,
+)
 
 
 @pytest.fixture(scope="function")
@@ -114,8 +120,9 @@ def client(db: Session) -> Generator[TestClient, None, None]:
             pass
 
     # 使用 dependency_overrides 正确覆盖
-    from app.config.database import get_db as original_get_db
+    from app.config.database import get_db as original_get_db, get_unscoped_db
     test_app.dependency_overrides[original_get_db] = override_get_db
+    test_app.dependency_overrides[get_unscoped_db] = override_get_db
 
     with TestClient(test_app) as c:
         yield c
@@ -326,7 +333,11 @@ def auth_headers(test_user: User) -> dict:
     """
     生成HR认证请求头
     """
-    access_token = create_access_token(data={"sub": test_user.email})
+    access_token = create_access_token(
+        user_id=test_user.id,
+        tenant_id=test_user.tenant_id,
+        role=test_user.role.value,
+    )
     return {"Authorization": f"Bearer {access_token}"}
 
 
@@ -341,7 +352,11 @@ def admin_auth_headers(test_admin: User, db: Session) -> dict:
     if not existing:
         db.add(test_admin)
         db.commit()
-    access_token = create_access_token(data={"sub": test_admin.email})
+    access_token = create_access_token(
+        user_id=test_admin.id,
+        tenant_id=test_admin.tenant_id,
+        role=test_admin.role.value,
+    )
     return {"Authorization": f"Bearer {access_token}"}
 
 
@@ -350,7 +365,11 @@ def interviewer_auth_headers(test_interviewer: User) -> dict:
     """
     生成面试官认证请求头
     """
-    access_token = create_access_token(data={"sub": test_interviewer.email})
+    access_token = create_access_token(
+        user_id=test_interviewer.id,
+        tenant_id=test_interviewer.tenant_id,
+        role=test_interviewer.role.value,
+    )
     return {"Authorization": f"Bearer {access_token}"}
 
 

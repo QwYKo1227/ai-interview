@@ -7,7 +7,7 @@ from app.schemas.offer_template import (
     OfferTemplateCreate, OfferTemplateUpdate, OfferTemplateResponse, OfferTemplateListResponse
 )
 from app.services import offer_template_service
-from app.core.security import get_current_user_dep
+from app.core.tenant_dependencies import get_current_user_dep
 from app.models.models import User
 
 router = APIRouter(

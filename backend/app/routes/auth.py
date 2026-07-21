@@ -1,14 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from jose import JWTError, jwt
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.config.tenant_session import tenant_session
 from app.models.models import User, UserRole
-from app.schemas.user import Token, UserResponse, UserLogin, TokenData, UserCreate, UserUpdateMe, ChangePasswordRequest
-from app.core.security import verify_password, create_access_token, SECRET_KEY, ALGORITHM, check_roles, get_password_hash, get_current_user_dep
+from app.models.tenant_models import Tenant, TenantDomain, TenantStatus
+from app.schemas.tenant import TenantSummary
+from app.schemas.user import Token, UserResponse, UserLogin, UserCreate, UserUpdateMe, ChangePasswordRequest
+from app.core.security import verify_password, create_access_token, check_roles, get_password_hash
+from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from datetime import timedelta
 from typing import List
 import re
+
+
+LOGIN_ERROR = "公司、账号或密码错误"
 
 router = APIRouter(
     prefix="/auth",
@@ -41,54 +47,102 @@ def validate_password_strength(password: str) -> None:
             detail="密码必须包含数字"
         )
 
-@router.post("/token", response_model=Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    print(f"Login attempt: {form_data.username}")
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user:
-        print(f"User not found: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not verify_password(form_data.password, user.hashed_password):
-        print(f"Invalid password for user: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="账户已被禁用，请联系管理员",
-        )
-    access_token_expires = timedelta(minutes=60 * 24 * 30) # 30 days
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+def _login_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=LOGIN_ERROR,
+        headers={"WWW-Authenticate": "Bearer"},
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+
+
+def _authenticate_tenant_user(
+    db: Session, *, tenant_code: str, email: str, password: str
+) -> tuple[Tenant, User]:
+    tenant = (
+        db.query(Tenant)
+        .filter(
+            Tenant.code == tenant_code,
+            Tenant.status == TenantStatus.ACTIVE,
+        )
+        .first()
+    )
+    if tenant is None:
+        raise _login_error()
+
+    with tenant_session(tenant.id) as tenant_db:
+        user = (
+            tenant_db.query(User)
+            .filter(User.tenant_id == tenant.id, User.email == email)
+            .first()
+        )
+        if (
+            user is None
+            or not user.is_active
+            or not verify_password(password, user.hashed_password)
+        ):
+            raise _login_error()
+
+    return tenant, user
+
+
+def _token_for_user(tenant: Tenant, user: User) -> Token:
+    access_token_expires = timedelta(minutes=60 * 24 * 30)  # 30 days
+    access_token = create_access_token(
+        user_id=user.id,
+        tenant_id=tenant.id,
+        role=user.role.value,
+        expires_delta=access_token_expires,
+    )
+    return Token(access_token=access_token, token_type="bearer")
+
+
+@router.get("/tenants", response_model=List[TenantSummary])
+def list_login_tenants(db: Session = Depends(get_unscoped_db)):
+    rows = (
+        db.query(Tenant, TenantDomain.domain)
+        .outerjoin(
+            TenantDomain,
+            (TenantDomain.tenant_id == Tenant.id) & TenantDomain.is_primary,
+        )
+        .filter(Tenant.status == TenantStatus.ACTIVE)
+        .order_by(Tenant.code)
+        .all()
+    )
+    return [
+        TenantSummary(
+            id=tenant.id,
+            code=tenant.code,
+            name=tenant.name,
+            logo_url=tenant.logo_url,
+            primary_domain=primary_domain,
+        )
+        for tenant, primary_domain in rows
+    ]
+
+
+@router.post("/token", response_model=Token, deprecated=True)
+def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    tenant_code: str = Form(...),
+    db: Session = Depends(get_unscoped_db),
+):
+    tenant, user = _authenticate_tenant_user(
+        db,
+        tenant_code=tenant_code,
+        email=form_data.username,
+        password=form_data.password,
+    )
+    return _token_for_user(tenant, user)
 
 @router.post("/login", response_model=Token)
-def login(login_data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == login_data.email).first()
-    if not user or not verify_password(login_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="账户已被禁用，请联系管理员",
-        )
-    access_token_expires = timedelta(minutes=60 * 24 * 30)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+def login(login_data: UserLogin, db: Session = Depends(get_unscoped_db)):
+    tenant, user = _authenticate_tenant_user(
+        db,
+        tenant_code=login_data.tenant_code,
+        email=str(login_data.email),
+        password=login_data.password,
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return _token_for_user(tenant, user)
 
 @router.get("/me", response_model=UserResponse)
 def read_users_me(current_user: User = Depends(get_current_user)):
@@ -97,7 +151,7 @@ def read_users_me(current_user: User = Depends(get_current_user)):
 @router.put("/me", response_model=UserResponse)
 def update_users_me(
     payload: UserUpdateMe,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     data = payload.dict(exclude_unset=True)
@@ -111,7 +165,7 @@ def update_users_me(
 @router.post("/change-password")
 def change_password(
     payload: ChangePasswordRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if not verify_password(payload.current_password, current_user.hashed_password):
@@ -128,7 +182,7 @@ def change_password(
 def get_users(
     skip: int = 0, 
     limit: int = 100, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     return db.query(User).offset(skip).limit(limit).all()
@@ -136,7 +190,7 @@ def get_users(
 @router.post("/users", response_model=UserResponse)
 def create_user(
     user: UserCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     db_user = db.query(User).filter(User.email == user.email).first()
@@ -159,7 +213,7 @@ def create_user(
     return new_user
 
 @router.get("/interviewers", response_model=List[UserResponse])
-def get_interviewers(db: Session = Depends(get_db)):
+def get_interviewers(db: Session = Depends(get_tenant_db)):
     # Helper to get all interviewers (HR and Interviewer roles can be assigned)
     # Accessible by authenticated users to assign to interviews
     return db.query(User).filter(User.role.in_([UserRole.HR, UserRole.INTERVIEWER, UserRole.ADMIN])).all()
@@ -168,7 +222,7 @@ def get_interviewers(db: Session = Depends(get_db)):
 def update_user(
     user_id: str,
     user_update: UserUpdateMe,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """更新用户信息"""
@@ -195,7 +249,7 @@ def update_user(
 def update_user_role(
     user_id: str,
     role: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """更新用户角色"""
@@ -226,7 +280,7 @@ def update_user_role(
 @router.put("/users/{user_id}/status")
 def toggle_user_status(
     user_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """切换用户状态（启用/禁用）"""
@@ -252,7 +306,7 @@ def toggle_user_status(
 @router.delete("/users/{user_id}")
 def delete_user(
     user_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """删除用户"""

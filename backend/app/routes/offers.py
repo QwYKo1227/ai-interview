@@ -10,7 +10,7 @@ from app.schemas.offer import (
     OfferSendRequest, OfferAcceptRequest, OfferRejectRequest, OfferStats
 )
 from app.services import offer_service
-from app.core.security import get_current_user_dep
+from app.core.tenant_dependencies import get_current_user_dep
 from app.models.models import User
 
 router = APIRouter(

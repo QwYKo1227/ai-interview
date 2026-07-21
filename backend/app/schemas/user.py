@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, Field
 from typing import Optional
 from uuid import UUID
 from app.models.models import UserRole
@@ -12,6 +12,7 @@ class UserCreate(UserBase):
     password: str
 
 class UserLogin(BaseModel):
+    tenant_code: str = Field(min_length=1, max_length=64)
     email: EmailStr
     password: str
 
@@ -37,4 +38,6 @@ class Token(BaseModel):
     token_type: str
 
 class TokenData(BaseModel):
-    email: Optional[str] = None
+    user_id: UUID
+    tenant_id: UUID
+    role: str

@@ -8,10 +8,23 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, BackgroundTasks
 
-from app.models.models import CodingTest, CodingTestStatus, CodingSubmission, CodingSubmissionStatus, QuestionBank
+from app.models.models import CodingTest, CodingTestStatus, CodingSubmission, CodingSubmissionStatus, Position, QuestionBank, Resume
 from app.schemas.coding_test import CodingTestCreate, CodingTestUpdate
 from app.services.code_runner_service import run_code_against_tests
 from app.services.coding_test_ai_service import generate_coding_evaluation_background
+from app.services.tenant_reference_service import require_tenant_entity
+
+
+def _validate_references(db: Session, data: Dict[str, Any]) -> None:
+    references = (
+        ("question_bank_id", QuestionBank, "Question bank not found"),
+        ("resume_id", Resume, "Resume not found"),
+        ("position_id", Position, "Position not found"),
+    )
+    for field, model, detail in references:
+        entity_id = data.get(field)
+        if entity_id is not None:
+            require_tenant_entity(db, model, entity_id, detail)
 
 
 def _generate_public_token() -> str:
@@ -19,6 +32,7 @@ def _generate_public_token() -> str:
 
 
 def create_coding_test(db: Session, coding_test: CodingTestCreate, creator_id: UUID) -> CodingTest:
+    _validate_references(db, coding_test.model_dump())
     token = _generate_public_token()
     for _ in range(5):
         exists = db.query(CodingTest).filter(CodingTest.public_token == token).first()
@@ -69,7 +83,8 @@ def update_coding_test(db: Session, coding_test_id: UUID, payload: CodingTestUpd
     db_test = get_coding_test(db, coding_test_id)
     if not db_test:
         return None
-    data = payload.dict(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True)
+    _validate_references(db, data)
     for k, v in data.items():
         setattr(db_test, k, v)
     db.commit()

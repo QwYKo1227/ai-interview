@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID
 import logging
 import secrets
+from fastapi import HTTPException
 
 from app.services.mail_service import MailService
 
@@ -17,11 +18,11 @@ logger = logging.getLogger(__name__)
 def create_offer(db: Session, offer_data: OfferCreate, user_id: UUID) -> Offer:
     resume = db.query(Resume).filter(Resume.id == offer_data.resume_id).first()
     if not resume:
-        raise ValueError("简历不存在")
+        raise HTTPException(status_code=404, detail="Resume not found")
     
     position = db.query(Position).filter(Position.id == offer_data.position_id).first()
     if not position:
-        raise ValueError("岗位不存在")
+        raise HTTPException(status_code=404, detail="Position not found")
     
     existing_offer = db.query(Offer).filter(
         Offer.resume_id == offer_data.resume_id,
@@ -399,13 +400,15 @@ def get_pending_offers_for_resume(db: Session, resume_id: UUID) -> List[Offer]:
     ).all()
 
 def mark_expired_offers(db: Session) -> int:
-    expired_count = db.query(Offer).filter(
+    expired_offers = db.query(Offer).filter(
         Offer.status == OfferStatus.SENT,
         Offer.valid_until < datetime.utcnow()
-    ).update({"status": OfferStatus.EXPIRED})
+    ).all()
+    for offer in expired_offers:
+        offer.status = OfferStatus.EXPIRED
     
     db.commit()
-    return expired_count
+    return len(expired_offers)
 
 def get_offer_by_token(db: Session, token: str) -> Optional[Dict[str, Any]]:
     offer = db.query(Offer).filter(Offer.token == token).first()

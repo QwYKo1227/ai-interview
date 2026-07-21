@@ -291,6 +291,9 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
     return db_resume
 
 def batch_upload_resumes(db: Session, files: List[UploadFile], position_id: UUID, background_tasks: BackgroundTasks):
+    from app.services.tenant_reference_service import require_tenant_entity
+
+    require_tenant_entity(db, Position, position_id, "Position not found")
     uploaded_resumes = []
     for file in files:
         resume = upload_resume(db, file, position_id, background_tasks)
@@ -379,16 +382,24 @@ def delete_resume(db: Session, resume_id: UUID):
 
     # Delete associated interview panels first (due to foreign key constraint)
     if interview_ids:
-        db.query(InterviewPanel).filter(InterviewPanel.interview_id.in_(interview_ids)).delete(synchronize_session=False)
+        panels = db.query(InterviewPanel).filter(InterviewPanel.interview_id.in_(interview_ids)).all()
+        for panel in panels:
+            db.delete(panel)
 
     # Delete associated interviews
-    db.query(Interview).filter(Interview.resume_id == resume_id).delete(synchronize_session=False)
+    interviews = db.query(Interview).filter(Interview.resume_id == resume_id).all()
+    for interview in interviews:
+        db.delete(interview)
 
     # Delete associated department reviews
-    db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).delete(synchronize_session=False)
+    department_reviews = db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).all()
+    for review in department_reviews:
+        db.delete(review)
 
     # Delete associated offers
-    db.query(Offer).filter(Offer.resume_id == resume_id).delete(synchronize_session=False)
+    offers = db.query(Offer).filter(Offer.resume_id == resume_id).all()
+    for offer in offers:
+        db.delete(offer)
 
     # Solution: Eager load position before deletion, so it's in memory.
     # Re-query with options
@@ -476,12 +487,13 @@ def get_department_reviews(db: Session, resume_id: UUID) -> List[DepartmentRevie
     return reviews
 
 
-def complete_department_review(db: Session, review_id: UUID, reviewer_id: UUID, review_data: DepartmentReviewUpdate) -> DepartmentReview:
+def complete_department_review(db: Session, resume_id: UUID, review_id: UUID, reviewer_id: UUID, review_data: DepartmentReviewUpdate) -> DepartmentReview:
     """
     完成部门评审
     """
     review = db.query(DepartmentReview).filter(
         DepartmentReview.id == review_id,
+        DepartmentReview.resume_id == resume_id,
         DepartmentReview.reviewer_id == reviewer_id
     ).first()
 
@@ -610,6 +622,10 @@ def aggregate_department_reviews(db: Session, resume_id: UUID) -> Dict[str, Any]
     """
     聚合多人评审结果
     """
+    resume = db.query(Resume).filter(Resume.id == resume_id).first()
+    if resume is None:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
     reviews = get_department_reviews(db, resume_id)
 
     if not reviews:
@@ -815,7 +831,9 @@ def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID
     resume.status = ResumeStatus.PENDING_SCREENING
 
     # 清除部门评审记录
-    db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).delete()
+    department_reviews = db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).all()
+    for review in department_reviews:
+        db.delete(review)
 
     # 清除HR评审
     resume.hr_review = None

@@ -86,7 +86,8 @@ def confirm_interview_result_route(
     interview_id: UUID,
     confirm_data: ConfirmResult,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_tenant_db)
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
 ):
     db_interview = confirm_interview_result(db, interview_id, confirm_data.result, background_tasks)
     if not db_interview:
@@ -133,6 +134,7 @@ def export_interview_route(
     interview_id: UUID,
     format: str = "markdown",
     db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
 ):
     content = export_interview_result(db, interview_id, format)
     if not content:
@@ -145,6 +147,7 @@ def update_questions_route(
     interview_id: UUID,
     questions: List[dict],
     db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
 ):
     db_interview = update_interview_questions(db, interview_id, questions)
     if not db_interview:
@@ -257,6 +260,7 @@ def preview_email_before_create(
 def get_interview_route(
     interview_id: UUID,
     db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
 ):
     interview = get_interview(db, interview_id)
     if not interview:
@@ -295,6 +299,7 @@ def update_interview_route(
     interview_id: UUID,
     interview: InterviewUpdate,
     db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
 ):
     db_interview = update_interview(db, interview_id, interview)
     if not db_interview:

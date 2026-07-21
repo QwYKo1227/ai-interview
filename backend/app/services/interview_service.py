@@ -271,6 +271,20 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
 
+    panel_member_ids = []
+    for interviewer_id in interview.panel_members or []:
+        try:
+            interviewer_uuid = UUID(interviewer_id) if isinstance(interviewer_id, str) else interviewer_id
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid panel member ID")
+        if not db.query(User).filter(User.id == interviewer_uuid).first():
+            raise HTTPException(status_code=404, detail="Panel member not found")
+        panel_member_ids.append(interviewer_uuid)
+
+    for question_bank_id in interview.question_bank_ids or []:
+        if not db.query(QuestionBank).filter(QuestionBank.id == question_bank_id).first():
+            raise HTTPException(status_code=404, detail="Question bank not found")
+
     interview_category = interview.interview_category or 'technical'
 
     db_interview = Interview(
@@ -280,7 +294,7 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
         interview_time=_normalize_dt_utc(interview.interview_time),
         questions=None if not interview.skip_ai_questions else [], # None means generating, [] means skipped
         status=InterviewStatus.SCHEDULED,
-        panel_members=interview.panel_members,
+        panel_members=[str(member_id) for member_id in panel_member_ids],
         round=interview.round or 1,
         # 正确保存面试类型和地点字段
         interview_type=interview.interview_type or "onsite",
@@ -293,13 +307,8 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     db.commit()
     db.refresh(db_interview)
 
-    if interview.panel_members:
-        for interviewer_id in interview.panel_members:
-            try:
-                interviewer_uuid = UUID(interviewer_id) if isinstance(interviewer_id, str) else interviewer_id
-            except (ValueError, TypeError):
-                print(f"Invalid interviewer_id: {interviewer_id}")
-                continue
+    if panel_member_ids:
+        for interviewer_uuid in panel_member_ids:
             panel = InterviewPanel(
                 interview_id=db_interview.id,
                 interviewer_id=interviewer_uuid,

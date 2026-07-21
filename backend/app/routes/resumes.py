@@ -202,7 +202,7 @@ def complete_department_review_route(
         recommendation=recommendation,
         comment=comment
     )
-    return complete_department_review(db, review_id, reviewer_id, review_data)
+    return complete_department_review(db, resume_id, review_id, reviewer_id, review_data)
 
 # ==================== HR决策 ====================
 

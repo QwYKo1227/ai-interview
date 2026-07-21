@@ -14,7 +14,7 @@ def create_position(db: Session, position: PositionCreate):
         hiring_manager = db.query(User).filter(User.id == position.hiring_manager_id).first()
         if not hiring_manager:
             raise HTTPException(
-                status_code=400,
+                status_code=404,
                 detail=f"招聘经理 (hiring_manager_id: {position.hiring_manager_id}) 不存在"
             )
 
@@ -114,6 +114,11 @@ def update_position(db: Session, position_id: UUID, position: PositionUpdate):
         return None
     
     update_data = position.dict(exclude_unset=True)
+    hiring_manager_id = update_data.get("hiring_manager_id")
+    if hiring_manager_id is not None:
+        hiring_manager = db.query(User).filter(User.id == hiring_manager_id).first()
+        if not hiring_manager:
+            raise HTTPException(status_code=404, detail="Hiring manager not found")
     for key, value in update_data.items():
         setattr(db_position, key, value)
     

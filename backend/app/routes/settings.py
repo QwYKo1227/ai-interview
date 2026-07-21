@@ -199,7 +199,7 @@ def get_prompt_configs(
     """获取所有提示词配置"""
     from app.utils.prompt_manager import prompt_manager
 
-    prompts = prompt_manager.get_all_prompts()
+    prompts = prompt_manager.get_all_prompts(db)
     prompt_items = {}
     for key, config in prompts.items():
         prompt_items[key] = PromptConfigItem(
@@ -224,7 +224,7 @@ def update_prompt_config(
 
     # 确保配置已初始化
     if not config.prompt_configs:
-        config.prompt_configs = prompt_manager._prompts.get('prompts', {})
+        config.prompt_configs = prompt_manager.default_prompts()
 
     # 获取现有配置
     existing_config = config.prompt_configs.get(key, {})
@@ -245,7 +245,7 @@ def update_prompt_config(
     db.refresh(config)
 
     # 清除缓存，强制重新加载
-    prompt_manager.reload_from_db()
+    prompt_manager.reload_from_db(db)
 
     return {"message": "提示词配置已更新", "key": key}
 
@@ -258,7 +258,7 @@ def reload_prompt_configs(
     """强制重新加载提示词配置（清除缓存）"""
     from app.utils.prompt_manager import prompt_manager
 
-    prompt_manager.reload_from_db()
+    prompt_manager.reload_from_db(db)
     return {"message": "提示词配置已重新加载"}
 
 

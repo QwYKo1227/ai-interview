@@ -1,9 +1,10 @@
 import ast
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -11,16 +12,22 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession
-from app.core.security import create_access_token, get_password_hash
+from app.core.security import AccessTokenClaims, create_access_token, get_password_hash
+from app.core.tenant_dependencies import get_current_user_dep
 from app.models.models import (
     CodingTest,
     CodingTestStatus,
+    DepartmentReview,
+    Interview,
+    InterviewPanel,
     Offer,
     OfferStatus,
     OfferTemplate,
     Position,
     PositionStatus,
     QuestionBank,
+    QuestionCategory,
+    QuestionDifficulty,
     Resume,
     ResumeStatus,
     SystemConfig,
@@ -39,12 +46,27 @@ from app.models.workflow_models import (
 from app.routes import (
     coding_tests,
     dashboard,
+    interviews,
     offer_templates,
     offers,
+    resumes,
     settings,
     workflows,
 )
 from app.schemas.offer_template import OfferTemplateCreate
+from app.schemas.coding_test import CodingTestCreate, CodingTestUpdate
+from app.schemas.interview import InterviewCreate
+from app.schemas.offer import OfferCreate
+from app.schemas.position import PositionCreate, PositionUpdate
+from app.schemas.resume import DepartmentReviewUpdate
+from app.services import (
+    coding_test_service,
+    interview_service,
+    offer_service,
+    position_service,
+    question_bank_service,
+    resume_service,
+)
 from app.services.offer_template_service import create_template
 
 
@@ -88,6 +110,29 @@ def question_bank_table(db: Session):
         yield
     finally:
         QuestionBank.__table__.drop(bind=db.get_bind(), checkfirst=True)
+
+
+@pytest.fixture
+def tenant_b_question_bank(
+    db: Session,
+    tenant_b: Tenant,
+    tenant_b_position: Position,
+    question_bank_table,
+) -> QuestionBank:
+    bank = QuestionBank(
+        tenant_id=tenant_b.id,
+        name="Tenant B bank",
+        category=QuestionCategory.TECHNICAL,
+        difficulty=QuestionDifficulty.INTERMEDIATE,
+        tags=None,
+        questions=[],
+        source_file="tenant-b.txt",
+        position_id=tenant_b_position.id,
+    )
+    db.add(bank)
+    db.commit()
+    db.refresh(bank)
+    return bank
 
 
 @pytest.fixture
@@ -151,11 +196,60 @@ def tenant_b_position(db: Session, tenant_b: Tenant) -> Position:
 
 
 @pytest.fixture
+def tenant_b_resume(
+    db: Session, tenant_b: Tenant, tenant_b_position: Position
+) -> Resume:
+    resume = Resume(
+        tenant_id=tenant_b.id,
+        candidate_name="Tenant B Candidate",
+        position_id=tenant_b_position.id,
+        status=ResumeStatus.PENDING_INTERVIEW,
+    )
+    db.add(resume)
+    db.commit()
+    db.refresh(resume)
+    return resume
+
+
+@pytest.fixture
+def tenant_a_db(db: Session, tenant_a: Tenant):
+    with TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id) as tenant_db:
+        yield tenant_db
+
+
+@pytest.fixture
 def tenant_b_headers(tenant_b_user: User) -> dict[str, str]:
     token = create_access_token(
         user_id=tenant_b_user.id,
         tenant_id=tenant_b_user.tenant_id,
         role=tenant_b_user.role.value,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def tenant_b_admin(db: Session, tenant_b: Tenant) -> User:
+    user = User(
+        id=uuid4(),
+        tenant_id=tenant_b.id,
+        email="tenant-b-admin@example.com",
+        hashed_password=get_password_hash("Password123"),
+        full_name="Tenant B Admin",
+        role=UserRole.ADMIN,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@pytest.fixture
+def tenant_b_admin_headers(tenant_b_admin: User) -> dict[str, str]:
+    token = create_access_token(
+        user_id=tenant_b_admin.id,
+        tenant_id=tenant_b_admin.tenant_id,
+        role=tenant_b_admin.role.value,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -177,8 +271,10 @@ def dashboard_client(db: Session):
 def business_client(db: Session):
     app = FastAPI()
     app.include_router(coding_tests.router, prefix="/api")
+    app.include_router(interviews.router, prefix="/api")
     app.include_router(offer_templates.router, prefix="/api")
     app.include_router(offers.router, prefix="/api")
+    app.include_router(resumes.router, prefix="/api")
     app.include_router(settings.router, prefix="/api")
     app.include_router(workflows.router, prefix="/api")
 
@@ -507,6 +603,510 @@ def test_settings_read_and_update_only_current_tenant(
     db.expire_all()
     assert db.get(SystemConfig, config_a.id).llm_model == "tenant-a-updated-model"
     assert db.get(SystemConfig, config_b.id).llm_model == "tenant-b-model"
+
+
+def test_prompt_settings_get_put_and_reload_are_tenant_scoped(
+    business_client: TestClient,
+    db: Session,
+    admin_auth_headers: dict[str, str],
+    tenant_b_admin_headers: dict[str, str],
+    tenant_a: Tenant,
+    tenant_b: Tenant,
+):
+    config_a = SystemConfig(
+        tenant_id=tenant_a.id,
+        prompt_configs={"tenant_prompt": {"system": "A system", "user": "A user"}},
+    )
+    config_b = SystemConfig(
+        tenant_id=tenant_b.id,
+        prompt_configs={"tenant_prompt": {"system": "B system", "user": "B user"}},
+    )
+    db.add_all([config_a, config_b])
+    db.commit()
+
+    response_a = business_client.get(
+        "/api/settings/prompts", headers=admin_auth_headers
+    )
+    response_b = business_client.get(
+        "/api/settings/prompts", headers=tenant_b_admin_headers
+    )
+    update_a = business_client.put(
+        "/api/settings/prompts/tenant_prompt",
+        headers=admin_auth_headers,
+        json={"system": "A updated"},
+    )
+    reload_b = business_client.post(
+        "/api/settings/prompts/reload", headers=tenant_b_admin_headers
+    )
+    response_b_after = business_client.get(
+        "/api/settings/prompts", headers=tenant_b_admin_headers
+    )
+
+    assert response_a.status_code == 200
+    assert response_a.json()["prompts"]["tenant_prompt"]["system"] == "A system"
+    assert response_b.status_code == 200
+    assert response_b.json()["prompts"]["tenant_prompt"]["system"] == "B system"
+    assert update_a.status_code == 200
+    assert reload_b.status_code == 200
+    assert response_b_after.json()["prompts"]["tenant_prompt"]["system"] == "B system"
+    db.expire_all()
+    assert db.get(SystemConfig, config_a.id).prompt_configs["tenant_prompt"]["system"] == "A updated"
+    assert db.get(SystemConfig, config_b.id).prompt_configs["tenant_prompt"]["system"] == "B system"
+
+
+def test_prompt_settings_first_update_initializes_new_tenant(
+    business_client: TestClient,
+    db: Session,
+    admin_auth_headers: dict[str, str],
+    tenant_a: Tenant,
+):
+    response = business_client.put(
+        "/api/settings/prompts/custom_prompt",
+        headers=admin_auth_headers,
+        json={"system": "custom system", "user": "custom user"},
+    )
+
+    assert response.status_code == 200
+    config = db.query(SystemConfig).filter(SystemConfig.tenant_id == tenant_a.id).one()
+    assert config.prompt_configs["custom_prompt"] == {
+        "system": "custom system",
+        "user": "custom user",
+    }
+
+
+@pytest.mark.parametrize("reference_field", ["question_bank_id", "resume_id", "position_id"])
+def test_coding_test_create_rejects_cross_tenant_references(
+    tenant_a_db: Session,
+    test_user: User,
+    tenant_b_question_bank: QuestionBank,
+    tenant_b_resume: Resume,
+    tenant_b_position: Position,
+    reference_field: str,
+):
+    foreign_ids = {
+        "question_bank_id": tenant_b_question_bank.id,
+        "resume_id": tenant_b_resume.id,
+        "position_id": tenant_b_position.id,
+    }
+    before = tenant_a_db.query(CodingTest).count()
+
+    with pytest.raises(HTTPException) as exc_info:
+        coding_test_service.create_coding_test(
+            tenant_a_db,
+            CodingTestCreate(title="Cross-tenant test", **{reference_field: foreign_ids[reference_field]}),
+            test_user.id,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert tenant_a_db.query(CodingTest).count() == before
+
+
+@pytest.mark.parametrize("reference_field", ["question_bank_id", "resume_id", "position_id"])
+def test_coding_test_update_rejects_cross_tenant_references(
+    tenant_a_db: Session,
+    test_user: User,
+    tenant_b_question_bank: QuestionBank,
+    tenant_b_resume: Resume,
+    tenant_b_position: Position,
+    reference_field: str,
+):
+    db_test = coding_test_service.create_coding_test(
+        tenant_a_db, CodingTestCreate(title="Tenant A test"), test_user.id
+    )
+    foreign_ids = {
+        "question_bank_id": tenant_b_question_bank.id,
+        "resume_id": tenant_b_resume.id,
+        "position_id": tenant_b_position.id,
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        coding_test_service.update_coding_test(
+            tenant_a_db,
+            db_test.id,
+            CodingTestUpdate(**{reference_field: foreign_ids[reference_field]}),
+        )
+
+    assert exc_info.value.status_code == 404
+    tenant_a_db.refresh(db_test)
+    assert getattr(db_test, reference_field) is None
+
+
+def test_question_bank_create_rejects_cross_tenant_position_before_file_write(
+    tenant_a_db: Session,
+    tenant_b_position: Position,
+    question_bank_table,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    writes: list[str] = []
+    monkeypatch.setattr(
+        question_bank_service,
+        "save_upload_file",
+        lambda *_args, **_kwargs: writes.append("written") or "should-not-exist.txt",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        question_bank_service.create_question_bank(
+            tenant_a_db,
+            "Cross-tenant bank",
+            QuestionCategory.TECHNICAL,
+            QuestionDifficulty.INTERMEDIATE,
+            [],
+            UploadFile(filename="bank.txt", file=BytesIO(b"questions")),
+            tenant_b_position.id,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert writes == []
+    assert tenant_a_db.query(QuestionBank).count() == 0
+
+
+def test_resume_batch_upload_rejects_cross_tenant_position_before_file_write(
+    tenant_a_db: Session,
+    tenant_b_position: Position,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    writes: list[str] = []
+    monkeypatch.setattr(
+        resume_service,
+        "save_upload_file",
+        lambda *_args, **_kwargs: writes.append("written") or "should-not-exist.pdf",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resume_service.batch_upload_resumes(
+            tenant_a_db,
+            [UploadFile(filename="resume.pdf", file=BytesIO(b"resume"))],
+            tenant_b_position.id,
+            BackgroundTasks(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert writes == []
+    assert tenant_a_db.query(Resume).count() == 0
+
+
+@pytest.mark.parametrize("reference_field", ["panel_members", "question_bank_ids"])
+def test_interview_create_rejects_cross_tenant_participants_and_question_banks(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    test_position: Position,
+    tenant_b_user: User,
+    tenant_b_question_bank: QuestionBank,
+    reference_field: str,
+):
+    data = {
+        "resume_id": test_resume.id,
+        "position_id": test_position.id,
+        "panel_members": [],
+        "question_bank_ids": [],
+        "skip_ai_questions": True,
+        "skip_email": True,
+    }
+    if reference_field == "panel_members":
+        data[reference_field] = [str(tenant_b_user.id)]
+    else:
+        data[reference_field] = [tenant_b_question_bank.id]
+
+    with pytest.raises(HTTPException) as exc_info:
+        interview_service.create_interview(
+            tenant_a_db, InterviewCreate(**data), BackgroundTasks()
+        )
+
+    assert exc_info.value.status_code == 404
+    assert tenant_a_db.query(Interview).count() == 0
+
+
+def test_interview_create_rejects_malformed_panel_member_id(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    test_position: Position,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        interview_service.create_interview(
+            tenant_a_db,
+            InterviewCreate(
+                resume_id=test_resume.id,
+                position_id=test_position.id,
+                panel_members=["not-a-uuid"],
+                skip_ai_questions=True,
+                skip_email=True,
+            ),
+            BackgroundTasks(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert tenant_a_db.query(Interview).count() == 0
+
+
+def test_position_create_and_update_reject_cross_tenant_hiring_manager(
+    tenant_a_db: Session,
+    test_position: Position,
+    tenant_b_user: User,
+):
+    before = tenant_a_db.query(Position).count()
+    with pytest.raises(HTTPException) as create_exc:
+        position_service.create_position(
+            tenant_a_db,
+            PositionCreate(
+                title="Blocked position",
+                description="Must not be created",
+                hiring_manager_id=tenant_b_user.id,
+            ),
+        )
+
+    with pytest.raises(HTTPException) as update_exc:
+        position_service.update_position(
+            tenant_a_db,
+            test_position.id,
+            PositionUpdate(hiring_manager_id=tenant_b_user.id),
+        )
+
+    assert create_exc.value.status_code == 404
+    assert update_exc.value.status_code == 404
+    assert tenant_a_db.query(Position).count() == before
+    stored_position = tenant_a_db.query(Position).filter(Position.id == test_position.id).one()
+    assert stored_position.hiring_manager_id is None
+
+
+@pytest.mark.parametrize("foreign_reference", ["resume", "position"])
+def test_offer_create_rejects_cross_tenant_resume_or_position(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    test_position: Position,
+    tenant_b_resume: Resume,
+    tenant_b_position: Position,
+    test_user: User,
+    special_resource_tables,
+    foreign_reference: str,
+):
+    resume_id = tenant_b_resume.id if foreign_reference == "resume" else test_resume.id
+    position_id = tenant_b_position.id if foreign_reference == "position" else test_position.id
+
+    with pytest.raises(HTTPException) as exc_info:
+        offer_service.create_offer(
+            tenant_a_db,
+            OfferCreate(
+                resume_id=resume_id,
+                position_id=position_id,
+                candidate_name="Blocked candidate",
+                candidate_email="blocked@example.com",
+                position_title="Blocked position",
+            ),
+            test_user.id,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert tenant_a_db.query(Offer).count() == 0
+
+
+def test_department_review_summary_rejects_cross_tenant_resume(
+    tenant_a_db: Session,
+    tenant_b_resume: Resume,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        resume_service.aggregate_department_reviews(tenant_a_db, tenant_b_resume.id)
+
+    assert exc_info.value.status_code == 404
+
+
+def test_department_review_completion_requires_matching_parent_resume(
+    tenant_a_db: Session,
+    db: Session,
+    tenant_a: Tenant,
+    test_position: Position,
+    test_resume: Resume,
+    test_user: User,
+):
+    other_resume = Resume(
+        tenant_id=tenant_a.id,
+        candidate_name="Other Tenant A candidate",
+        position_id=test_position.id,
+        status=ResumeStatus.PENDING_DEPT_REVIEW,
+    )
+    db.add(other_resume)
+    db.commit()
+    review = DepartmentReview(
+        tenant_id=tenant_a.id,
+        resume_id=other_resume.id,
+        reviewer_id=test_user.id,
+        is_completed=False,
+    )
+    db.add(review)
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        resume_service.complete_department_review(
+            tenant_a_db,
+            test_resume.id,
+            review.id,
+            test_user.id,
+            DepartmentReviewUpdate(overall_score=9),
+        )
+
+    assert exc_info.value.status_code == 404
+    db.refresh(review)
+    assert review.is_completed is False
+    assert review.overall_score is None
+
+
+def test_active_user_dependency_rejects_disabled_user(
+    tenant_a_db: Session,
+    db: Session,
+    test_user: User,
+):
+    test_user.is_active = False
+    db.commit()
+    claims = AccessTokenClaims(
+        user_id=test_user.id,
+        tenant_id=test_user.tenant_id,
+        role=test_user.role.value,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user_dep(claims=claims, db=tenant_a_db)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_active_user_dependency_rejects_deleted_user(
+    tenant_a_db: Session,
+    db: Session,
+    test_user: User,
+):
+    claims = AccessTokenClaims(
+        user_id=test_user.id,
+        tenant_id=test_user.tenant_id,
+        role=test_user.role.value,
+    )
+    db.delete(test_user)
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user_dep(claims=claims, db=tenant_a_db)
+
+    assert exc_info.value.status_code == 401
+
+
+def test_resume_delete_preserves_cross_tenant_children_with_same_parent_id(
+    tenant_a_db: Session,
+    db: Session,
+    tenant_b: Tenant,
+    tenant_b_user: User,
+    test_resume: Resume,
+    special_resource_tables,
+):
+    foreign_review = DepartmentReview(
+        tenant_id=tenant_b.id,
+        resume_id=test_resume.id,
+        reviewer_id=tenant_b_user.id,
+        is_completed=False,
+    )
+    db.add(foreign_review)
+    db.commit()
+    foreign_review_id = foreign_review.id
+
+    deleted = resume_service.delete_resume(tenant_a_db, test_resume.id)
+
+    assert deleted is not None
+    db.expire_all()
+    assert db.get(DepartmentReview, foreign_review_id) is not None
+
+
+def test_resume_transfer_preserves_cross_tenant_reviews_with_same_parent_id(
+    tenant_a_db: Session,
+    db: Session,
+    tenant_a: Tenant,
+    tenant_b: Tenant,
+    tenant_b_user: User,
+    test_resume: Resume,
+):
+    new_position = Position(
+        tenant_id=tenant_a.id,
+        title="Tenant A transfer target",
+        description="Transfer target",
+        status=PositionStatus.OPEN,
+    )
+    foreign_review = DepartmentReview(
+        tenant_id=tenant_b.id,
+        resume_id=test_resume.id,
+        reviewer_id=tenant_b_user.id,
+        is_completed=False,
+    )
+    db.add_all([new_position, foreign_review])
+    db.commit()
+    foreign_review_id = foreign_review.id
+
+    transferred = resume_service.transfer_resume_position(
+        tenant_a_db, test_resume.id, new_position.id, BackgroundTasks()
+    )
+
+    assert transferred.position_id == new_position.id
+    db.expire_all()
+    assert db.get(DepartmentReview, foreign_review_id) is not None
+
+
+def test_prompt_manager_does_not_open_an_unscoped_session():
+    prompt_manager_path = Path(__file__).parents[1] / "app" / "utils" / "prompt_manager.py"
+    source = prompt_manager_path.read_text(encoding="utf-8")
+
+    assert "SessionLocal" not in source
+
+
+def test_sensitive_interview_endpoints_require_active_user_dependency():
+    interviews_path = Path(__file__).parents[1] / "app" / "routes" / "interviews.py"
+    tree = ast.parse(interviews_path.read_text(encoding="utf-8"))
+    required_functions = {
+        "confirm_interview_result_route",
+        "export_interview_route",
+        "update_questions_route",
+        "get_interview_route",
+        "update_interview_route",
+    }
+    found = set()
+
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in required_functions:
+            continue
+        found.add(node.name)
+        dependencies = {
+            call.args[0].id
+            for call in ast.walk(node.args)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "Depends"
+            and call.args
+            and isinstance(call.args[0], ast.Name)
+        }
+        assert "get_current_user" in dependencies, node.name
+
+    assert found == required_functions
+
+
+def test_tenant_critical_services_do_not_use_query_bulk_writes():
+    service_dir = Path(__file__).parents[1] / "app" / "services"
+    filenames = {
+        "coding_test_service.py",
+        "interview_service.py",
+        "offer_service.py",
+        "position_service.py",
+        "question_bank_service.py",
+        "resume_service.py",
+    }
+
+    for filename in filenames:
+        tree = ast.parse((service_dir / filename).read_text(encoding="utf-8"))
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            if not isinstance(call.func, ast.Attribute) or call.func.attr not in {"update", "delete"}:
+                continue
+            uses_query = any(
+                isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Attribute)
+                and candidate.func.attr == "query"
+                for candidate in ast.walk(call.func.value)
+            )
+            assert not uses_query, f"{filename}:{call.lineno} uses a query bulk write"
 
 
 def test_business_route_database_dependencies_are_explicitly_scoped():

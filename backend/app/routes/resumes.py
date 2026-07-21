@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.resume import (
     ResumeResponse, ResumeCreate, ResumeUpdate,
     DepartmentReviewCreate, DepartmentReviewUpdate, DepartmentReviewResponse,
@@ -35,7 +36,7 @@ def get_resumes_route(
     status: str = None,
     position_id: Optional[UUID] = None,
     reviewer_id: Optional[UUID] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_resumes(db, skip=skip, limit=limit, candidate_name=candidate_name, status=status, position_id=position_id, reviewer_id=reviewer_id)
@@ -45,7 +46,7 @@ def get_resumes_route(
 @router.post("/check-duplicate", response_model=DuplicateCheckResponse)
 def check_duplicate_route(
     request: DuplicateCheckRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -86,7 +87,7 @@ def create_resume_route(
     candidate_name: str = Form(None),  # 公开链接上传时由应聘者填写
     email: str = Form(None),
     contact: str = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_unscoped_db)
 ):
     validate_pdf_file(file)
     return upload_resume(db, file, position_id, background_tasks, candidate_name, email, contact)
@@ -96,7 +97,7 @@ def batch_upload_resumes_route(
     background_tasks: BackgroundTasks,
     position_id: UUID = Form(...),
     files: List[UploadFile] = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     for f in files:
@@ -108,7 +109,7 @@ def batch_upload_resumes_route(
 @router.get("/{resume_id}", response_model=ResumeResponse)
 def get_resume_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     resume = get_resume_with_reviews(db, resume_id)
@@ -120,7 +121,7 @@ def get_resume_route(
 def update_resume_route(
     resume_id: UUID,
     resume: ResumeUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_resume = update_resume(db, resume_id, resume)
@@ -131,7 +132,7 @@ def update_resume_route(
 @router.delete("/{resume_id}", response_model=ResumeResponse)
 def delete_resume_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_resume = delete_resume(db, resume_id)
@@ -143,7 +144,7 @@ def delete_resume_route(
 def reparse_resume_route(
     resume_id: UUID,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     resume = reparse_resume(db, resume_id, background_tasks)
@@ -156,7 +157,7 @@ def reparse_resume_route(
 @router.get("/{resume_id}/department-reviews", response_model=DepartmentReviewSummary)
 def get_department_reviews_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -169,7 +170,7 @@ def get_department_reviews_route(
 def create_department_review_route(
     resume_id: UUID,
     reviewer_id: UUID = Form(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -188,7 +189,7 @@ def complete_department_review_route(
     overall_score: int = Form(None),
     recommendation: str = Form(None),
     comment: str = Form(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -209,7 +210,7 @@ def complete_department_review_route(
 def submit_hr_decision_route(
     resume_id: UUID,
     decision_data: HRDecisionCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -223,7 +224,7 @@ def confirm_rejection_route(
     resume_id: UUID,
     reason_category: str = Form(...),
     reason_detail: str = Form(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -242,7 +243,7 @@ def confirm_rejection_route(
 @router.post("/{resume_id}/override-rejection", response_model=ResumeResponse)
 def override_rejection_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -257,7 +258,7 @@ def transfer_resume_position_route(
     resume_id: UUID,
     background_tasks: BackgroundTasks,
     new_position_id: UUID = Form(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -290,7 +291,7 @@ def get_task_status(
 
 @router.post("/fix-stuck")
 def fix_stuck_resumes(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     from datetime import datetime, timedelta

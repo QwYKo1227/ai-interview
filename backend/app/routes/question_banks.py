@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.question_bank import QuestionBankResponse, QuestionCategory, QuestionDifficulty, QuestionBankCreate, QuestionBankUpdate
 from app.services.question_bank_service import (
     create_question_bank, get_question_banks, get_question_bank, update_question_bank, delete_question_bank
@@ -24,7 +24,7 @@ def create_question_bank_route(
     tags: str = Form(None),
     position_id: UUID = Form(...),
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     tags_list = tags.split(",") if tags else []
@@ -42,7 +42,7 @@ def create_question_bank_route(
 def get_question_banks_route(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_question_banks(db, skip=skip, limit=limit)
@@ -50,7 +50,7 @@ def get_question_banks_route(
 @router.get("/{question_bank_id}", response_model=QuestionBankResponse)
 def get_question_bank_route(
     question_bank_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     question_bank = get_question_bank(db, question_bank_id)
@@ -62,7 +62,7 @@ def get_question_bank_route(
 def update_question_bank_route(
     question_bank_id: UUID,
     update_data: QuestionBankUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """更新题库信息"""
@@ -74,7 +74,7 @@ def update_question_bank_route(
 @router.delete("/{question_bank_id}", response_model=QuestionBankResponse)
 def delete_question_bank_route(
     question_bank_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_question_bank = delete_question_bank(db, question_bank_id)

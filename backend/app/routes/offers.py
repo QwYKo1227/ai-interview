@@ -4,7 +4,8 @@ from typing import Optional
 from uuid import UUID
 from pydantic import BaseModel
 from datetime import datetime
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.offer import (
     OfferCreate, OfferUpdate, OfferResponse, OfferListResponse,
     OfferSendRequest, OfferAcceptRequest, OfferRejectRequest, OfferStats
@@ -25,10 +26,15 @@ class OfferConfirmRequest(BaseModel):
     accepted_salary: Optional[float] = None
     accepted_onboard_date: Optional[datetime] = None
 
+
+def _require_offer(db: Session, offer_id: UUID) -> None:
+    if offer_service.get_offer(db, offer_id) is None:
+        raise HTTPException(status_code=404, detail="Offer不存在")
+
 @router.post("", response_model=OfferResponse)
 def create_offer(
     offer_data: OfferCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     try:
@@ -44,14 +50,14 @@ def list_offers(
     status: Optional[str] = None,
     position_id: Optional[UUID] = None,
     search: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     return offer_service.get_offers(db, page, page_size, status, position_id, search)
 
 @router.get("/stats", response_model=OfferStats)
 def get_offer_stats(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     return offer_service.get_offer_stats(db)
@@ -59,7 +65,7 @@ def get_offer_stats(
 @router.get("/{offer_id}", response_model=OfferResponse)
 def get_offer(
     offer_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     offer = offer_service.get_offer(db, offer_id)
@@ -71,7 +77,7 @@ def get_offer(
 def update_offer(
     offer_id: UUID,
     offer_data: OfferUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     try:
@@ -86,9 +92,10 @@ def update_offer(
 def send_offer(
     offer_id: UUID,
     request: OfferSendRequest = OfferSendRequest(),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
+    _require_offer(db, offer_id)
     try:
         from app.services.system_config_service import get_system_config
         config = get_system_config(db)
@@ -104,9 +111,10 @@ def send_offer(
 def accept_offer(
     offer_id: UUID,
     request: OfferAcceptRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
+    _require_offer(db, offer_id)
     try:
         offer = offer_service.accept_offer(
             db, offer_id, 
@@ -122,9 +130,10 @@ def accept_offer(
 def reject_offer(
     offer_id: UUID,
     request: OfferRejectRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
+    _require_offer(db, offer_id)
     try:
         offer = offer_service.reject_offer(db, offer_id, request.reason, request.feedback)
         return {"success": True, "message": "Offer已拒绝", "offer_id": str(offer.id)}
@@ -135,9 +144,10 @@ def reject_offer(
 def withdraw_offer(
     offer_id: UUID,
     reason: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
+    _require_offer(db, offer_id)
     try:
         offer = offer_service.withdraw_offer(db, offer_id, reason)
         return {"success": True, "message": "Offer已撤回", "offer_id": str(offer.id)}
@@ -147,9 +157,10 @@ def withdraw_offer(
 @router.post("/{offer_id}/reopen")
 def reopen_offer(
     offer_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
+    _require_offer(db, offer_id)
     try:
         offer = offer_service.reopen_offer(db, offer_id)
         return {"success": True, "message": "Offer已重新打开", "offer_id": str(offer.id)}
@@ -159,7 +170,7 @@ def reopen_offer(
 @router.delete("/{offer_id}")
 def delete_offer(
     offer_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     from app.models.models import Offer, OfferStatus
@@ -182,7 +193,7 @@ public_router = APIRouter(
 @public_router.get("/confirm/{token}")
 def get_offer_by_token(
     token: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_unscoped_db)
 ):
     offer = offer_service.get_offer_by_token(db, token)
     if not offer:
@@ -193,7 +204,7 @@ def get_offer_by_token(
 def confirm_offer_by_token(
     token: str,
     request: OfferConfirmRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_unscoped_db)
 ):
     result = offer_service.confirm_offer_by_token(
         db, token, request.action, request.reason,

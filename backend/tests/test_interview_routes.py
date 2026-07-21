@@ -342,7 +342,8 @@ class TestUpdateInterviewRoute:
         fake_id = uuid4()
         response = client.put(
             f"/api/interviews/{fake_id}",
-            json={"interviewer": "新面试官"}
+            json={"interviewer": "新面试官"},
+            headers=auth_headers,
         )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -459,7 +460,8 @@ class TestUpdateQuestionsRoute:
         fake_id = uuid4()
         response = client.put(
             f"/api/interviews/{fake_id}/questions",
-            json=[]
+            json=[],
+            headers=auth_headers,
         )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -505,6 +507,7 @@ class TestAggregateScoresRoute:
         # 创建已提交的面试官评分
         panel = InterviewPanel(
             id=uuid4(),
+            tenant_id=test_interview.tenant_id,
             interview_id=test_interview.id,
             interviewer_id=test_interviewer.id,
             scores={"0": 8, "1": 9},

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response, File, UploadFile, Form
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore
 from app.services.interview_service import (
     create_interview, get_interviews, get_interview, update_interview, delete_interview,
@@ -47,7 +47,7 @@ def submit_panel_score_route(
     interview_id: UUID, 
     score_data: InterviewScore, 
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     panel, all_submitted = submit_interview_panel_score(db, interview_id, current_user.id, score_data)
@@ -73,7 +73,7 @@ def submit_panel_score_route(
 def aggregate_scores_route(
     interview_id: UUID, 
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user) # Only allowed users (HR/Admin) should do this ideally
 ):
     db_interview = aggregate_panel_scores(db, interview_id, background_tasks)
@@ -86,7 +86,7 @@ def confirm_interview_result_route(
     interview_id: UUID,
     confirm_data: ConfirmResult,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     db_interview = confirm_interview_result(db, interview_id, confirm_data.result, background_tasks)
     if not db_interview:
@@ -97,7 +97,7 @@ def confirm_interview_result_route(
 def cancel_interview_route(
     interview_id: UUID,
     reason: str = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -116,7 +116,7 @@ def cancel_interview_route(
 @router.get("/{interview_id}/submission-status")
 def get_submission_status_route(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -129,7 +129,11 @@ def get_submission_status_route(
     return status
 
 @router.get("/{interview_id}/export")
-def export_interview_route(interview_id: UUID, format: str = "markdown", db: Session = Depends(get_db)):
+def export_interview_route(
+    interview_id: UUID,
+    format: str = "markdown",
+    db: Session = Depends(get_tenant_db),
+):
     content = export_interview_result(db, interview_id, format)
     if not content:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -137,7 +141,11 @@ def export_interview_route(interview_id: UUID, format: str = "markdown", db: Ses
     return PlainTextResponse(content=content)
 
 @router.put("/{interview_id}/questions", response_model=InterviewResponse)
-def update_questions_route(interview_id: UUID, questions: List[dict], db: Session = Depends(get_db)):
+def update_questions_route(
+    interview_id: UUID,
+    questions: List[dict],
+    db: Session = Depends(get_tenant_db),
+):
     db_interview = update_interview_questions(db, interview_id, questions)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -147,7 +155,7 @@ def update_questions_route(interview_id: UUID, questions: List[dict], db: Sessio
 def create_interview_route(
     interview: InterviewCreate, 
     background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return create_interview(db, interview, background_tasks)
@@ -157,7 +165,7 @@ def get_interviews_route(
     skip: int = 0, 
     limit: int = 100, 
     status: str = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     # Filter for interviewers: only see interviews where they are panel members
@@ -177,7 +185,7 @@ def get_interviews_route(
 @router.post("/email-preview")
 def preview_email_before_create(
     preview_data: EmailPreviewRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """在创建面试前预览邮件内容"""
@@ -246,7 +254,10 @@ def preview_email_before_create(
     }
 
 @router.get("/{interview_id}", response_model=InterviewResponse)
-def get_interview_route(interview_id: UUID, db: Session = Depends(get_db)):
+def get_interview_route(
+    interview_id: UUID,
+    db: Session = Depends(get_tenant_db),
+):
     interview = get_interview(db, interview_id)
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -268,7 +279,7 @@ def get_interview_route(interview_id: UUID, db: Session = Depends(get_db)):
 @router.post("/{interview_id}/start", response_model=InterviewResponse)
 def start_interview_route(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -280,7 +291,11 @@ def start_interview_route(
     return db_interview
 
 @router.put("/{interview_id}", response_model=InterviewResponse)
-def update_interview_route(interview_id: UUID, interview: InterviewUpdate, db: Session = Depends(get_db)):
+def update_interview_route(
+    interview_id: UUID,
+    interview: InterviewUpdate,
+    db: Session = Depends(get_tenant_db),
+):
     db_interview = update_interview(db, interview_id, interview)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -291,7 +306,7 @@ def submit_score_route(
     interview_id: UUID, 
     score_data: InterviewScore, 
     background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     db_interview = submit_interview_score(db, interview_id, current_user.id, score_data, background_tasks)
@@ -311,7 +326,7 @@ def upload_audio_route(
     interview_id: UUID,
     question_index: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -372,7 +387,7 @@ def upload_audio_route(
 @router.delete("/{interview_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_interview_route(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_interview = delete_interview(db, interview_id)
@@ -384,7 +399,7 @@ def delete_interview_route(
 @router.get("/{interview_id}/email-preview")
 def get_email_preview(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """获取面试邀请邮件预览"""
@@ -461,7 +476,7 @@ def get_email_preview(
 def send_interview_email(
     interview_id: UUID,
     email_data: EmailSendRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """发送面试邀请邮件"""
@@ -503,7 +518,7 @@ def upload_full_interview_audio(
     interview_id: UUID,
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """上传整场面试录音并进行AI分析"""
@@ -559,7 +574,7 @@ def submit_direct_evaluation(
     interview_id: UUID,
     evaluation_data: DirectEvaluationRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """直接提交面试评价（无需面试题），支持结合录音转写内容"""
@@ -680,7 +695,7 @@ def submit_direct_evaluation_with_audio(
     evaluation: str = Form(...),
     suggestion: str = Form(None),
     score: int = Form(5),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """同时上传录音和评价，AI综合分析生成最终评价"""

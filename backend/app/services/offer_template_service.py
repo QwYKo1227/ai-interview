@@ -5,13 +5,36 @@ from app.schemas.offer_template import OfferTemplateCreate, OfferTemplateUpdate
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from uuid import UUID
+from fastapi import HTTPException
+
+
+def _require_position(db: Session, position_id: Optional[UUID]) -> None:
+    if position_id is None:
+        return
+    if db.query(Position).filter(Position.id == position_id).first() is None:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+
+
+def _clear_default_templates(
+    db: Session,
+    position_id: Optional[UUID],
+    *,
+    exclude_template_id: Optional[UUID] = None,
+) -> None:
+    query = db.query(OfferTemplate).filter(
+        OfferTemplate.position_id == position_id,
+        OfferTemplate.is_default.is_(True),
+    )
+    if exclude_template_id is not None:
+        query = query.filter(OfferTemplate.id != exclude_template_id)
+    for template in query.all():
+        template.is_default = False
+
 
 def create_template(db: Session, template_data: OfferTemplateCreate, user_id: UUID) -> OfferTemplate:
+    _require_position(db, template_data.position_id)
     if template_data.is_default:
-        db.query(OfferTemplate).filter(
-            OfferTemplate.position_id == template_data.position_id,
-            OfferTemplate.is_default == True
-        ).update({"is_default": False})
+        _clear_default_templates(db, template_data.position_id)
     
     template = OfferTemplate(
         name=template_data.name,
@@ -44,6 +67,7 @@ def get_templates(
     position_id: Optional[UUID] = None,
     include_inactive: bool = False
 ) -> List[Dict[str, Any]]:
+    _require_position(db, position_id)
     query = db.query(OfferTemplate)
     
     if not include_inactive:
@@ -130,6 +154,7 @@ def get_template(db: Session, template_id: UUID) -> Optional[Dict[str, Any]]:
     }
 
 def get_default_template_for_position(db: Session, position_id: UUID) -> Optional[Dict[str, Any]]:
+    _require_position(db, position_id)
     template = db.query(OfferTemplate).filter(
         OfferTemplate.position_id == position_id,
         OfferTemplate.is_default == True,
@@ -154,13 +179,15 @@ def update_template(db: Session, template_id: UUID, template_data: OfferTemplate
     template = db.query(OfferTemplate).filter(OfferTemplate.id == template_id).first()
     if not template:
         return None
+
+    _require_position(db, template_data.position_id)
     
     if template_data.is_default:
-        db.query(OfferTemplate).filter(
-            OfferTemplate.position_id == template.position_id,
-            OfferTemplate.id != template_id,
-            OfferTemplate.is_default == True
-        ).update({"is_default": False})
+        _clear_default_templates(
+            db,
+            template.position_id,
+            exclude_template_id=template_id,
+        )
     
     update_fields = [
         'name', 'position_id', 'salary_monthly', 'salary_annual', 'salary_structure',

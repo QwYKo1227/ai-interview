@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.position import (
     PositionCreate, PositionUpdate, PositionResponse,
     PositionWithStats, PositionStats, JDGenerateRequest,
@@ -28,7 +29,7 @@ router = APIRouter(
 @router.post("", response_model=PositionResponse)
 def create_position_route(
     position: PositionCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return create_position(db, position)
@@ -39,13 +40,17 @@ def get_positions_route(
     limit: int = 100,
     status: str = None,
     title: str = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_positions_with_stats(db, skip=skip, limit=limit, status=status, title=title)
 
 @router.get("/public", response_model=List[PositionResponse])
-def get_public_positions_route(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def get_public_positions_route(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_unscoped_db),
+):
     return get_positions(db, skip=skip, limit=limit, status="published")
 
 @router.post("/generate-jd", response_model=JDGenerateResponse)
@@ -95,7 +100,7 @@ def chat_jd_stream_route(
 @router.get("/{position_id}", response_model=PositionDetailResponse)
 def get_position_route(
     position_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     position = get_position(db, position_id)
@@ -122,7 +127,7 @@ def get_position_route(
 @router.get("/{position_id}/stats", response_model=PositionStats)
 def get_position_stats_route(
     position_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     position = get_position(db, position_id)
@@ -133,7 +138,7 @@ def get_position_stats_route(
 @router.get("/{position_id}/question-banks", response_model=List[QuestionBankBrief])
 def get_position_question_banks_route(
     position_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     position = get_position(db, position_id)
@@ -145,7 +150,7 @@ def get_position_question_banks_route(
 def update_position_route(
     position_id: UUID,
     position: PositionUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_position = update_position(db, position_id, position)
@@ -156,7 +161,7 @@ def update_position_route(
 @router.delete("/{position_id}", response_model=PositionResponse)
 def delete_position_route(
     position_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_position = delete_position(db, position_id)

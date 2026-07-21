@@ -26,6 +26,9 @@ from app.models.models import (
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
     InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission
 )
+from app.models.tenant_models import (
+    PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
+)
 from app.config.database import get_db
 from app.core.security import get_password_hash, create_access_token
 
@@ -54,6 +57,11 @@ def db() -> Generator[Session, None, None]:
     """
     # 只创建面试测试需要的表（排除使用 ARRAY 类型的 QuestionBank）
     tables_to_create = [
+        Tenant.__table__,
+        TenantDomain.__table__,
+        PlatformUser.__table__,
+        PlatformAuditLog.__table__,
+        PublicAccessToken.__table__,
         User.__table__,
         Position.__table__,
         Resume.__table__,
@@ -113,6 +121,24 @@ def client(db: Session) -> Generator[TestClient, None, None]:
         yield c
 
     test_app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def tenant_a(db: Session) -> Tenant:
+    tenant = Tenant(code="careray", name="CareRay", status=TenantStatus.ACTIVE)
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    return tenant
+
+
+@pytest.fixture
+def tenant_b(db: Session) -> Tenant:
+    tenant = Tenant(code="photonthix", name="Photonthix", status=TenantStatus.ACTIVE)
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    return tenant
 
 
 @pytest.fixture

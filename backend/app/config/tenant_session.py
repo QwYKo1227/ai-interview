@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from types import MethodType
 from typing import Iterator
 from uuid import UUID
 from weakref import WeakKeyDictionary
@@ -15,6 +14,15 @@ _SET_POSTGRES_TENANT = text(
     "SELECT set_config('app.current_tenant_id', :tenant_id, true)"
 )
 _TENANT_BINDINGS: WeakKeyDictionary[Session, UUID] = WeakKeyDictionary()
+_ORIGINAL_SESSION_ADD = getattr(
+    Session.add, "_tenant_scope_original", Session.add
+)
+_ORIGINAL_SESSION_ADD_ALL = getattr(
+    Session.add_all, "_tenant_scope_original", Session.add_all
+)
+_ORIGINAL_SESSION_MERGE = getattr(
+    Session.merge, "_tenant_scope_original", Session.merge
+)
 
 
 def _require_uuid(tenant_id: UUID) -> UUID:
@@ -78,13 +86,13 @@ def _preflight_graph(session: Session, instances, cascade: str) -> None:
 
 def _scoped_add(session: Session, instance, _warn: bool = True) -> None:
     _preflight_graph(session, [instance], "save-update")
-    Session.add(session, instance, _warn=_warn)
+    _ORIGINAL_SESSION_ADD(session, instance, _warn=_warn)
 
 
 def _scoped_add_all(session: Session, instances) -> None:
     instances = list(instances)
     _preflight_graph(session, instances, "save-update")
-    Session.add_all(session, instances)
+    _ORIGINAL_SESSION_ADD_ALL(session, instances)
 
 
 def _scoped_merge(session: Session, instance, *, load: bool = True, options=None):
@@ -92,11 +100,44 @@ def _scoped_merge(session: Session, instance, *, load: bool = True, options=None
     raise InvalidRequestError("merge() is disabled for tenant-scoped sessions")
 
 
-def _install_scoped_write_methods(session: Session) -> None:
-    if not isinstance(session, TenantSession):
-        session.add = MethodType(_scoped_add, session)
-        session.add_all = MethodType(_scoped_add_all, session)
-        session.merge = MethodType(_scoped_merge, session)
+def _tenant_aware_add(session: Session, instance, _warn: bool = True) -> None:
+    if _tenant_scope(session) is None:
+        return _ORIGINAL_SESSION_ADD(session, instance, _warn=_warn)
+    return _scoped_add(session, instance, _warn=_warn)
+
+
+def _tenant_aware_add_all(session: Session, instances) -> None:
+    if _tenant_scope(session) is None:
+        return _ORIGINAL_SESSION_ADD_ALL(session, instances)
+    return _scoped_add_all(session, instances)
+
+
+def _tenant_aware_merge(
+    session: Session, instance, *, load: bool = True, options=None
+):
+    if _tenant_scope(session) is None:
+        return _ORIGINAL_SESSION_MERGE(
+            session, instance, load=load, options=options
+        )
+    return _scoped_merge(session, instance, load=load, options=options)
+
+
+def _install_session_write_guards() -> None:
+    guards = {
+        "add": (_tenant_aware_add, _ORIGINAL_SESSION_ADD),
+        "add_all": (_tenant_aware_add_all, _ORIGINAL_SESSION_ADD_ALL),
+        "merge": (_tenant_aware_merge, _ORIGINAL_SESSION_MERGE),
+    }
+    for method_name, (guard, original) in guards.items():
+        current = getattr(Session, method_name)
+        if getattr(current, "_tenant_scope_guard", False):
+            continue
+        guard._tenant_scope_guard = True
+        guard._tenant_scope_original = original
+        setattr(Session, method_name, guard)
+
+
+_install_session_write_guards()
 
 
 class TenantSession(Session):
@@ -206,7 +247,6 @@ def set_tenant_context(db: Session, tenant_id: UUID) -> None:
         raise ValueError(
             "cannot set tenant context after tenant-scoped objects were loaded"
         )
-    _install_scoped_write_methods(db)
     _bind_tenant_scope(db, tenant_id)
 
     bind = db.get_bind()

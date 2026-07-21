@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session, object_session, sessionmaker
 
-from app.config import database
+from app.config import database, tenant_session as tenant_session_module
 from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession, set_tenant_context, tenant_session
 from app.core.tenant_context import TenantContext
@@ -387,6 +387,142 @@ def test_plain_scoped_session_attach_preflight_is_atomic(
         assert set(tenant_db.new) == new_before
     finally:
         tenant_db.close()
+
+
+@pytest.mark.parametrize("operation", ["add", "add_all", "merge"])
+def test_cached_plain_session_write_method_enforces_scope_without_residue(
+    operation, db, tenant_a, tenant_b
+):
+    foreign_position = Position(
+        tenant_id=tenant_b.id,
+        title="B",
+        description="B",
+    )
+    db.add(foreign_position)
+    db.commit()
+    foreign_position.tenant_id
+    db.expunge(foreign_position)
+    invalid_root = Resume(candidate_name="Candidate A", position=foreign_position)
+    valid_root = Position(title="A", description="A")
+
+    tenant_db = Session(bind=db.get_bind())
+    try:
+        cached_method = getattr(tenant_db, operation)
+        set_tenant_context(tenant_db, tenant_a.id)
+        new_before = set(tenant_db.new)
+        identity_before = set(tenant_db.identity_map.values())
+
+        expected_error = InvalidRequestError if operation == "merge" else ValueError
+        expected_message = "disabled" if operation == "merge" else "session tenant"
+        with pytest.raises(expected_error, match=expected_message):
+            if operation == "add":
+                cached_method(invalid_root)
+            elif operation == "add_all":
+                cached_method([valid_root, invalid_root])
+            else:
+                cached_method(foreign_position, load=True)
+
+        assert set(tenant_db.new) == new_before
+        assert set(tenant_db.identity_map.values()) == identity_before
+        assert object_session(valid_root) is None
+        assert object_session(invalid_root) is None
+        assert object_session(foreign_position) is None
+    finally:
+        tenant_db.rollback()
+        tenant_db.close()
+
+
+def test_cached_plain_session_add_accepts_legal_object_after_binding(db, tenant_a):
+    tenant_db = Session(bind=db.get_bind())
+    try:
+        cached_add = tenant_db.add
+        set_tenant_context(tenant_db, tenant_a.id)
+        position = Position(title="A", description="A")
+
+        cached_add(position)
+
+        assert object_session(position) is tenant_db
+        assert position in tenant_db.new
+        assert position.tenant_id == tenant_a.id
+    finally:
+        tenant_db.rollback()
+        tenant_db.close()
+
+
+def test_cached_plain_session_merge_is_disabled_after_binding(db, tenant_a):
+    position = Position(
+        tenant_id=tenant_a.id,
+        title="A",
+        description="A",
+    )
+    db.add(position)
+    db.commit()
+    position.tenant_id
+    db.expunge(position)
+
+    tenant_db = Session(bind=db.get_bind())
+    try:
+        cached_merge = tenant_db.merge
+        set_tenant_context(tenant_db, tenant_a.id)
+        new_before = set(tenant_db.new)
+        identity_before = set(tenant_db.identity_map.values())
+
+        with pytest.raises(InvalidRequestError, match="disabled"):
+            cached_merge(position, load=True)
+
+        assert set(tenant_db.new) == new_before
+        assert set(tenant_db.identity_map.values()) == identity_before
+        assert object_session(position) is None
+    finally:
+        tenant_db.rollback()
+        tenant_db.close()
+
+
+def test_cached_write_methods_keep_unscoped_plain_session_native_semantics(
+    db, tenant_a
+):
+    unscoped_db = Session(bind=db.get_bind())
+    try:
+        cached_add = unscoped_db.add
+        cached_add_all = unscoped_db.add_all
+        cached_merge = unscoped_db.merge
+        first = Position(
+            tenant_id=tenant_a.id,
+            title="First",
+            description="A",
+        )
+        second = Position(
+            tenant_id=tenant_a.id,
+            title="Second",
+            description="A",
+        )
+
+        cached_add(first)
+        cached_add_all([second])
+        unscoped_db.flush()
+        unscoped_db.expunge(first)
+        first.title = "Updated"
+        merged = cached_merge(first, load=True)
+
+        assert object_session(second) is unscoped_db
+        assert merged is not first
+        assert merged.title == "Updated"
+        assert merged.tenant_id == tenant_a.id
+    finally:
+        unscoped_db.rollback()
+        unscoped_db.close()
+
+
+def test_session_write_guard_installation_is_idempotent():
+    installed_methods = (Session.add, Session.add_all, Session.merge)
+
+    tenant_session_module._install_session_write_guards()
+    tenant_session_module._install_session_write_guards()
+
+    assert (Session.add, Session.add_all, Session.merge) == installed_methods
+    for method in installed_methods:
+        assert method._tenant_scope_guard is True
+        assert method._tenant_scope_original is not method
 
 
 @pytest.mark.parametrize("session_kind", ["tenant", "plain"])

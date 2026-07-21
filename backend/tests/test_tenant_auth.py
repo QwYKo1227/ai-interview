@@ -5,6 +5,7 @@ import pytest
 from jose import jwt
 from sqlalchemy.orm import sessionmaker
 
+from app.routes import auth as auth_routes
 from app.core.security import ALGORITHM, SECRET_KEY, create_access_token, get_password_hash
 from app.core.tenant_context import TenantContext
 from app.config.tenant_session import TenantSession
@@ -112,7 +113,7 @@ def test_tenant_a_password_cannot_login_to_tenant_b(client, db, tenant_a, tenant
     ],
 )
 def test_login_failures_share_one_unauthorized_response(
-    client, db, tenant_a, tenant_code, email, password
+    client, db, tenant_a, tenant_code, email, password, monkeypatch
 ):
     db.add(
         Tenant(
@@ -122,14 +123,22 @@ def test_login_failures_share_one_unauthorized_response(
         )
     )
     db.commit()
-    create_user(db, tenant_a.id, "member@example.com", "Password123")
-    create_user(
+    member = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    disabled_user = create_user(
         db,
         tenant_a.id,
         "disabled@example.com",
         "Password123",
         is_active=False,
     )
+    password_checks = []
+    original_verify_password = auth_routes.verify_password
+
+    def spy_verify_password(plain_password, hashed_password):
+        password_checks.append((plain_password, hashed_password))
+        return original_verify_password(plain_password, hashed_password)
+
+    monkeypatch.setattr(auth_routes, "verify_password", spy_verify_password)
 
     response = client.post(
         "/api/auth/login",
@@ -143,6 +152,39 @@ def test_login_failures_share_one_unauthorized_response(
     assert response.status_code == 401
     assert response.json() == {"detail": LOGIN_ERROR}
     assert response.headers["www-authenticate"] == "Bearer"
+    assert len(password_checks) == 1
+
+    if tenant_code == "careray" and email == member.email:
+        expected_hash = member.hashed_password
+    else:
+        expected_hash = getattr(auth_routes, "DUMMY_PASSWORD_HASH", None)
+    assert password_checks[0] == (password, expected_hash)
+
+
+def test_successful_login_verifies_the_real_password_hash_once(
+    client, db, tenant_a, monkeypatch
+):
+    user = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    password_checks = []
+    original_verify_password = auth_routes.verify_password
+
+    def spy_verify_password(plain_password, hashed_password):
+        password_checks.append((plain_password, hashed_password))
+        return original_verify_password(plain_password, hashed_password)
+
+    monkeypatch.setattr(auth_routes, "verify_password", spy_verify_password)
+
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": tenant_a.code,
+            "email": user.email,
+            "password": "Password123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert password_checks == [("Password123", user.hashed_password)]
 
 
 def test_create_access_token_uses_tenant_scoped_identity_claims(tenant_a):

@@ -15,6 +15,7 @@ import re
 
 
 LOGIN_ERROR = "公司、账号或密码错误"
+DUMMY_PASSWORD_HASH = "$2b$12$b2EfUH39fOFct42kb2HHv.Uq3Dml9R3urPsHrAu.F5E87KLizmY5C"
 
 router = APIRouter(
     prefix="/auth",
@@ -67,6 +68,7 @@ def _authenticate_tenant_user(
         .first()
     )
     if tenant is None:
+        verify_password(password, DUMMY_PASSWORD_HASH)
         raise _login_error()
 
     with tenant_session(tenant.id) as tenant_db:
@@ -75,10 +77,16 @@ def _authenticate_tenant_user(
             .filter(User.tenant_id == tenant.id, User.email == email)
             .first()
         )
+        password_hash = (
+            user.hashed_password
+            if user is not None and user.is_active
+            else DUMMY_PASSWORD_HASH
+        )
+        password_matches = verify_password(password, password_hash)
         if (
             user is None
             or not user.is_active
-            or not verify_password(password, user.hashed_password)
+            or not password_matches
         ):
             raise _login_error()
 

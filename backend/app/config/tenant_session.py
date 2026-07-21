@@ -15,7 +15,6 @@ _SET_POSTGRES_TENANT = text(
     "SELECT set_config('app.current_tenant_id', :tenant_id, true)"
 )
 _TENANT_BINDINGS: WeakKeyDictionary[Session, UUID] = WeakKeyDictionary()
-_MERGE_DEPTHS: WeakKeyDictionary[Session, int] = WeakKeyDictionary()
 
 
 def _require_uuid(tenant_id: UUID) -> UUID:
@@ -48,7 +47,6 @@ def _validate_tenant_object(obj, tenant_id: UUID, session: Session) -> None:
     object_tenant = state.dict.get("tenant_id")
     if object_tenant is None and (
         state.transient or (state.pending and state.session is session)
-        or _MERGE_DEPTHS.get(session, 0) > 0
     ):
         obj.tenant_id = tenant_id
     elif object_tenant != tenant_id:
@@ -90,16 +88,8 @@ def _scoped_add_all(session: Session, instances) -> None:
 
 
 def _scoped_merge(session: Session, instance, *, load: bool = True, options=None):
-    _preflight_graph(session, [instance], "merge")
-    _MERGE_DEPTHS[session] = _MERGE_DEPTHS.get(session, 0) + 1
-    try:
-        return Session.merge(session, instance, load=load, options=options)
-    finally:
-        depth = _MERGE_DEPTHS[session] - 1
-        if depth:
-            _MERGE_DEPTHS[session] = depth
-        else:
-            del _MERGE_DEPTHS[session]
+    _tenant_scope(session)
+    raise InvalidRequestError("merge() is disabled for tenant-scoped sessions")
 
 
 def _install_scoped_write_methods(session: Session) -> None:

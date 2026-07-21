@@ -2,7 +2,7 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session, object_session, sessionmaker
 
@@ -445,7 +445,7 @@ def test_merge_rejects_cross_tenant_graph_without_session_residue(
         new_before = set(tenant_db.new)
         identity_before = set(tenant_db.identity_map.values())
 
-        with pytest.raises(ValueError, match="does not match session tenant"):
+        with pytest.raises(InvalidRequestError, match="disabled"):
             tenant_db.merge(foreign_resume, load=True)
 
         assert set(tenant_db.new) == new_before
@@ -455,7 +455,10 @@ def test_merge_rejects_cross_tenant_graph_without_session_residue(
 
 
 @pytest.mark.parametrize("session_kind", ["tenant", "plain"])
-def test_merge_allows_same_tenant_detached_object(session_kind, db, tenant_a):
+@pytest.mark.parametrize("load", [True, False])
+def test_scoped_merge_is_rejected_without_side_effects(
+    session_kind, load, db, tenant_a
+):
     position = Position(
         tenant_id=tenant_a.id,
         title="Original",
@@ -468,41 +471,18 @@ def test_merge_allows_same_tenant_detached_object(session_kind, db, tenant_a):
     position.title = "Updated"
 
     with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
-        merged = tenant_db.merge(position, load=True)
-        tenant_db.flush()
+        new_before = set(tenant_db.new)
+        identity_before = set(tenant_db.identity_map.values())
 
-        assert merged is not position
-        assert merged.title == "Updated"
-        assert merged.tenant_id == tenant_a.id
+        with pytest.raises(InvalidRequestError, match="disabled"):
+            tenant_db.merge(position, load=load)
 
-
-@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
-def test_merge_load_false_preserves_sqlalchemy_clean_state_semantics(
-    session_kind, db, tenant_a
-):
-    position = Position(
-        tenant_id=tenant_a.id,
-        title="Clean",
-        description="A",
-    )
-    db.add(position)
-    db.commit()
-    position.tenant_id
-    position.title
-    db.expunge(position)
-
-    with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
-        merged = tenant_db.merge(position, load=False)
-
-        assert merged is not position
-        assert merged.title == "Clean"
-        assert merged.tenant_id == tenant_a.id
+        assert set(tenant_db.new) == new_before
+        assert set(tenant_db.identity_map.values()) == identity_before
+        assert object_session(position) is None
 
 
-@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
-def test_merge_load_false_keeps_sqlalchemy_dirty_object_rejection(
-    session_kind, db, tenant_a
-):
+def test_unscoped_plain_session_keeps_native_merge_behavior(db, tenant_a):
     position = Position(
         tenant_id=tenant_a.id,
         title="Original",
@@ -512,11 +492,59 @@ def test_merge_load_false_keeps_sqlalchemy_dirty_object_rejection(
     db.commit()
     position.tenant_id
     db.expunge(position)
-    position.title = "Dirty"
+    position.title = "Updated"
+
+    unscoped_db = Session(bind=db.get_bind())
+    try:
+        merged = unscoped_db.merge(position, load=True)
+
+        assert merged.title == "Updated"
+        assert merged.tenant_id == tenant_a.id
+    finally:
+        unscoped_db.rollback()
+        unscoped_db.close()
+
+
+@pytest.mark.parametrize("session_kind", ["tenant", "plain"])
+@pytest.mark.parametrize("reentrant_operation", ["add", "merge"])
+def test_scoped_merge_cannot_leak_authorization_to_reentrant_operations(
+    session_kind, reentrant_operation, db, tenant_a, tenant_b
+):
+    foreign_position = Position(
+        tenant_id=tenant_b.id,
+        title="B",
+        description="B",
+    )
+    db.add(foreign_position)
+    db.commit()
+    foreign_id = foreign_position.id
+    db.expire(foreign_position, ["tenant_id"])
+    db.expunge(foreign_position)
+    assert "tenant_id" not in inspect(foreign_position).dict
+    outer_source = Position(title="Outer", description="Outer")
 
     with _scoped_session(session_kind, db.get_bind(), tenant_a.id) as tenant_db:
-        with pytest.raises(InvalidRequestError, match="load=False"):
-            tenant_db.merge(position, load=False)
+        tenant_db.add(Position(title="Pending", description="Pending"))
+        callback_entered = []
+
+        def reenter(session, _flush_context, _instances):
+            callback_entered.append(True)
+            if reentrant_operation == "add":
+                session.add(foreign_position)
+            else:
+                session.merge(foreign_position, load=True)
+
+        event.listen(tenant_db, "before_flush", reenter, once=True)
+
+        with pytest.raises(InvalidRequestError, match="disabled"):
+            tenant_db.merge(outer_source, load=True)
+
+        assert callback_entered == []
+        assert object_session(foreign_position) is None
+        assert "tenant_id" not in inspect(foreign_position).dict
+
+    db.expire_all()
+    assert db.get(Position, foreign_id).tenant_id == tenant_b.id
 
 
 @pytest.mark.parametrize("operation", ["update", "delete"])

@@ -143,25 +143,6 @@ class TenantSession(TenantCapableSession):
         return instance
 
 
-_SAFE_TENANT_SESSION_TYPES = {TenantCapableSession, TenantSession}
-
-
-def _register_tenant_session_factory_type(session_type: type[Session]) -> None:
-    """Register a sessionmaker-generated class after proving it has no overrides."""
-
-    if len(session_type.__bases__) != 1 or session_type.__bases__[0] not in (
-        TenantCapableSession,
-        TenantSession,
-    ):
-        raise TypeError("tenant session factory class has an unsafe base")
-    if any(
-        method_name in session_type.__dict__
-        for method_name in ("add", "add_all", "merge", "get")
-    ):
-        raise TypeError("tenant session factory class overrides protected methods")
-    _SAFE_TENANT_SESSION_TYPES.add(session_type)
-
-
 @event.listens_for(Session, "do_orm_execute")
 def add_tenant_filter(execute_state) -> None:
     tenant_id = _tenant_scope(execute_state.session)
@@ -217,7 +198,7 @@ def set_postgres_tenant_on_transaction_begin(session, _transaction, connection) 
 def set_tenant_context(db: TenantCapableSession, tenant_id: UUID) -> None:
     """Bind a Session to a tenant and configure its current PostgreSQL transaction."""
 
-    if type(db) not in _SAFE_TENANT_SESSION_TYPES:
+    if type(db) not in (TenantCapableSession, TenantSession):
         raise TypeError(
             "set_tenant_context requires an exact TenantCapableSession "
             "or TenantSession"

@@ -12,7 +12,7 @@ class PreGuardSession(Session):
         return Session.add(self, instance, _warn=_warn)
 
 
-from app.config import database
+from app.config import database, tenant_session as tenant_session_module
 from app.config.database import get_unscoped_db
 from app.config.tenant_session import (
     TenantCapableSession,
@@ -27,6 +27,18 @@ from app.models.models import Position, Resume
 class OverridingTenantCapableSession(TenantCapableSession):
     def add(self, instance, _warn=True):
         return Session.add(self, instance, _warn=_warn)
+
+
+class NoOpCloseTenantCapableSession(TenantCapableSession):
+    def close(self):
+        return None
+
+
+class DynamicAttributeTenantSession(TenantSession):
+    def __getattribute__(self, name):
+        if name == "merge":
+            return Session.merge.__get__(self, type(self))
+        return super().__getattribute__(name)
 
 
 @pytest.fixture
@@ -162,15 +174,48 @@ def test_set_tenant_context_rejects_sessions_without_exact_safe_type(
 def test_database_session_factory_uses_exact_tenant_capable_session_type():
     factory_db = database.SessionLocal()
     try:
-        assert type(factory_db) is database.SessionLocal.class_
-        assert type(factory_db).__bases__ == (TenantCapableSession,)
-        assert not any(
-            method_name in type(factory_db).__dict__
-            for method_name in ("add", "add_all", "merge", "get")
-        )
+        assert type(factory_db) is TenantCapableSession
         set_tenant_context(factory_db, uuid4())
     finally:
         factory_db.close()
+
+
+def test_tenant_session_factory_returns_exact_tenant_session_type():
+    factory_db = database.TenantSessionLocal(tenant_id=uuid4())
+    try:
+        assert type(factory_db) is TenantSession
+    finally:
+        factory_db.close()
+
+
+def test_tenant_session_type_registration_entry_point_does_not_exist():
+    assert not hasattr(
+        tenant_session_module, "_register_tenant_session_factory_type"
+    )
+
+
+@pytest.mark.parametrize(
+    "session_class",
+    [NoOpCloseTenantCapableSession, DynamicAttributeTenantSession],
+)
+def test_malicious_session_subclass_cannot_be_registered_or_bound(
+    session_class, db, tenant_a
+):
+    register = getattr(
+        tenant_session_module, "_register_tenant_session_factory_type", None
+    )
+    if register is not None:
+        register(session_class)
+
+    if issubclass(session_class, TenantSession):
+        unsafe_db = session_class(bind=db.get_bind(), tenant_id=tenant_a.id)
+    else:
+        unsafe_db = session_class(bind=db.get_bind())
+    try:
+        with pytest.raises(TypeError, match="TenantCapableSession"):
+            set_tenant_context(unsafe_db, tenant_a.id)
+    finally:
+        Session.close(unsafe_db)
 
 
 def test_set_tenant_context_cannot_rebind_even_if_info_is_tampered(

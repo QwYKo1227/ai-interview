@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_, or_
+from sqlalchemy import desc, and_, or_, update
 from app.models.models import (
     Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User
 )
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app.services.mail_service import MailService
 from app.services.public_token_service import issue_public_token, resolve_public_token, revoke_public_tokens
+from app.config.tenant_session import get_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -262,9 +263,17 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
                 confirm_url=confirm_url
             )
             result["email_sent"] = email_result
+            if not email_result:
+                raise RuntimeError("mail delivery returned false")
         except Exception as e:
             logger.error("Failed to send offer email (%s)", type(e).__name__)
+            revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
+            offer.status = OfferStatus.PENDING
+            offer.sent_at = None
+            db.commit()
+            result["success"] = False
             result["error"] = "Failed to send offer email"
+            result["token"] = None
     
     return result
 
@@ -460,7 +469,64 @@ def get_offer_by_token(db: Session, token: str) -> Optional[Dict[str, Any]]:
         } if offer.resume else None
     }
 
-def confirm_offer_by_token(db: Session, token: str, action: str, reason: Optional[str] = None, 
+def confirm_offer_by_token(
+    db: Session, token: str, action: str, reason: Optional[str] = None,
+    accepted_salary: Optional[float] = None,
+    accepted_onboard_date: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    offer = resolve_public_token(db, token, "offer").resource
+    tenant_id = get_tenant_id(db)
+    offer_id, resume_id = offer.id, offer.resume_id
+    if offer.valid_until and datetime.utcnow() > offer.valid_until:
+        db.execute(
+            update(Offer).where(
+                Offer.id == offer_id,
+                Offer.tenant_id == tenant_id,
+                Offer.status == OfferStatus.SENT,
+            ).values(status=OfferStatus.EXPIRED)
+        )
+        revoke_public_tokens(db, tenant_id, "offer", offer_id)
+        db.commit()
+        return {"success": False, "error": "Offer expired"}
+
+    if action == "accept":
+        values = {"status": OfferStatus.ACCEPTED, "accepted_at": datetime.utcnow()}
+        if accepted_salary is not None:
+            values["salary_monthly"] = accepted_salary
+        if accepted_onboard_date is not None:
+            values["onboard_date"] = accepted_onboard_date
+        resume_status, action_name = ResumeStatus.OFFER_ACCEPTED, "accepted"
+    elif action == "reject":
+        values = {
+            "status": OfferStatus.REJECTED,
+            "rejected_at": datetime.utcnow(),
+            "rejected_reason": reason,
+        }
+        resume_status, action_name = ResumeStatus.OFFER_REJECTED, "rejected"
+    else:
+        return {"success": False, "error": "Invalid action"}
+
+    transition = db.execute(
+        update(Offer).where(
+            Offer.id == offer_id,
+            Offer.tenant_id == tenant_id,
+            Offer.status == OfferStatus.SENT,
+        ).values(**values)
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    db.execute(
+        update(Resume).where(
+            Resume.id == resume_id, Resume.tenant_id == tenant_id
+        ).values(status=resume_status)
+    )
+    revoke_public_tokens(db, tenant_id, "offer", offer_id)
+    db.commit()
+    return {"success": True, "action": action_name, "message": "Offer response recorded"}
+
+
+def _confirm_offer_by_token_legacy(db: Session, token: str, action: str, reason: Optional[str] = None,
                            accepted_salary: Optional[float] = None, accepted_onboard_date: Optional[datetime] = None) -> Dict[str, Any]:
     offer = resolve_public_token(db, token, "offer").resource
     if not offer:

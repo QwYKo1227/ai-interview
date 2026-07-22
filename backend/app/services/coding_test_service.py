@@ -136,6 +136,19 @@ def get_public_coding_test(db: Session, token: str) -> Optional[CodingTest]:
     return resolve_public_token(db, token, "coding_test").resource
 
 
+def reissue_coding_test_public_token(db: Session, coding_test_id: UUID) -> str:
+    db_test = get_coding_test(db, coding_test_id)
+    if db_test is None:
+        raise HTTPException(status_code=404, detail="Coding test not found")
+    return issue_public_token(
+        db,
+        get_tenant_id(db),
+        "coding_test",
+        db_test.id,
+        datetime.now(timezone.utc) + timedelta(days=30),
+    )
+
+
 def run_public_code(db: Session, token: str, code: str, language: str) -> dict:
     db_test = get_public_coding_test(db, token)
     if not db_test or db_test.status != CodingTestStatus.PUBLISHED:

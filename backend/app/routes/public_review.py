@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.config.database import get_unscoped_db
 from app.models.models import DepartmentReview
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 from app.services.resume_service import get_public_review_payload, submit_public_department_review
+from app.schemas.resume import PublicDepartmentReviewSubmit
 
 
 router = APIRouter(prefix="/public/review", tags=["public-review"])
@@ -32,20 +33,16 @@ def get_resume_for_review(
 def submit_review(
     token: str,
     request: Request,
-    technical_score: int = Query(None),
-    experience_score: int = Query(None),
-    overall_score: int = Query(None),
-    recommendation: str = Query(None),
-    comment: str = Query(None),
+    payload: PublicDepartmentReviewSubmit,
     db: Session = Depends(get_unscoped_db),
 ):
     review = _resolve_review(db, token, request)
     return submit_public_department_review(
         db,
         review,
-        technical_score=technical_score,
-        experience_score=experience_score,
-        overall_score=overall_score,
-        recommendation=recommendation,
-        comment=comment,
+        technical_score=payload.technical_score,
+        experience_score=payload.experience_score,
+        overall_score=payload.overall_score,
+        recommendation=payload.recommendation.value,
+        comment=payload.comment,
     )

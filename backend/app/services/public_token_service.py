@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import re
 import secrets
 from typing import Any
 from uuid import UUID
@@ -17,6 +18,7 @@ from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, Te
 
 PUBLIC_NOT_FOUND = "Public resource not found"
 SUPPORTED_RESOURCE_TYPES = frozenset({"offer", "coding_test", "department_review"})
+RAW_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{40,128}$")
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,11 @@ def resolve_public_token(
     raw_token: str,
     resource_type: str,
 ) -> TenantContextAndResource:
-    if resource_type not in SUPPORTED_RESOURCE_TYPES:
+    if (
+        resource_type not in SUPPORTED_RESOURCE_TYPES
+        or not isinstance(raw_token, str)
+        or RAW_TOKEN_PATTERN.fullmatch(raw_token) is None
+    ):
         raise _not_found()
     digest = hash_token(raw_token)
     record = (
@@ -148,14 +154,7 @@ def resolve_public_token(
     try:
         bound_tenant = get_tenant_id(db)
     except RuntimeError:
-        try:
-            set_tenant_context(db, record.tenant_id)
-        except TypeError:
-            # Some tests deliberately reload the tenant-session module while
-            # retaining an older sessionmaker. Bind through that session's
-            # defining module so its own safety checks and event state apply.
-            legacy_globals = db.__class__.add.__globals__
-            legacy_globals["_bind_tenant_scope"](db, record.tenant_id)
+        set_tenant_context(db, record.tenant_id)
     else:
         if bound_tenant != record.tenant_id:
             raise _not_found()
@@ -227,8 +226,5 @@ def resolve_public_tenant(
     ).first()
     if tenant is None:
         raise _not_found()
-    try:
-        set_tenant_context(db, tenant.id)
-    except TypeError:
-        db.__class__.add.__globals__["_bind_tenant_scope"](db, tenant.id)
+    set_tenant_context(db, tenant.id)
     return tenant.id

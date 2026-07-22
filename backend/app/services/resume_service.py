@@ -18,12 +18,12 @@ import PyPDF2
 import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import or_, and_, func
+from sqlalchemy import or_, and_, func, update
 import json
 import logging
 
-from app.config.tenant_session import tenant_session
-from app.services.public_token_service import issue_public_token
+from app.config.tenant_session import get_tenant_id, tenant_session
+from app.services.public_token_service import issue_public_token, revoke_public_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +316,22 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
 
     return db_resume
 
+
+def upload_public_resume(
+    db: Session, file: UploadFile, position_id: UUID,
+    background_tasks: BackgroundTasks, candidate_name: str = None,
+    email: str = None, contact: str = None,
+):
+    position = db.query(Position).filter(
+        Position.id == position_id,
+        Position.status == PositionStatus.PUBLISHED,
+    ).first()
+    if position is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return upload_resume(
+        db, file, position_id, background_tasks, candidate_name, email, contact
+    )
+
 def batch_upload_resumes(db: Session, files: List[UploadFile], position_id: UUID, background_tasks: BackgroundTasks):
     from app.services.tenant_reference_service import require_tenant_entity
 
@@ -505,25 +521,42 @@ def submit_public_department_review(
     experience_score: int | None, overall_score: int | None,
     recommendation: str | None, comment: str | None,
 ) -> Dict[str, str]:
-    if review.is_completed:
-        raise HTTPException(status_code=400, detail="Review already completed")
-    resume = db.query(Resume).filter(Resume.id == review.resume_id).first()
+    tenant_id = get_tenant_id(db)
+    review_id, resume_id = review.id, review.resume_id
+    resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if resume is None:
         raise HTTPException(status_code=404, detail="Public resource not found")
-    review.technical_score = technical_score
-    review.experience_score = experience_score
-    review.overall_score = overall_score
-    review.recommendation = recommendation
-    review.comment = comment
-    review.is_completed = True
+    transition = db.execute(
+        update(DepartmentReview).where(
+            DepartmentReview.id == review_id,
+            DepartmentReview.tenant_id == tenant_id,
+            DepartmentReview.is_completed.is_(False),
+        ).values(
+            technical_score=technical_score,
+            experience_score=experience_score,
+            overall_score=overall_score,
+            recommendation=recommendation,
+            comment=comment,
+            is_completed=True,
+            updated_at=datetime.utcnow(),
+        )
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    revoke_public_tokens(db, tenant_id, "department_review", review_id)
+    incomplete = db.query(DepartmentReview).filter(
+        DepartmentReview.resume_id == resume_id,
+        DepartmentReview.is_completed.is_(False),
+    ).count()
+    if incomplete == 0:
+        db.execute(
+            update(Resume).where(
+                Resume.id == resume_id, Resume.tenant_id == tenant_id
+            ).values(status=ResumeStatus.PENDING_HR_DECISION)
+        )
     db.commit()
-    all_reviews = db.query(DepartmentReview).filter(
-        DepartmentReview.resume_id == resume.id
-    ).all()
-    if all_reviews and all(item.is_completed for item in all_reviews):
-        resume.status = ResumeStatus.PENDING_HR_DECISION
-        db.commit()
-    return {"message": "Review submitted", "review_id": str(review.id)}
+    return {"message": "Review submitted", "review_id": str(review_id)}
 
 
 def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) -> DepartmentReview:

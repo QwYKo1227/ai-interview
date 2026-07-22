@@ -115,6 +115,14 @@ class DepartmentReviewUpdate(BaseModel):
     comment: Optional[str] = None
 
 
+class PublicDepartmentReviewSubmit(BaseModel):
+    technical_score: Optional[int] = Field(default=None, ge=1, le=10)
+    experience_score: Optional[int] = Field(default=None, ge=1, le=10)
+    overall_score: Optional[int] = Field(default=None, ge=1, le=10)
+    recommendation: ReviewRecommendation
+    comment: Optional[str] = Field(default=None, max_length=5000)
+
+
 class DepartmentReviewResponse(DepartmentReviewBase):
     id: UUID
     resume_id: UUID

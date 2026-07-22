@@ -82,7 +82,13 @@ def db() -> Generator[Session, None, None]:
     for table in tables_to_create:
         table.create(bind=test_engine, checkfirst=True)
 
-    db = TestingSessionLocal()
+    # Resolve the session class at fixture runtime so every test uses the same
+    # currently imported tenant-session module as production dependencies.
+    db = TenantCapableSession(
+        bind=test_engine,
+        autoflush=False,
+        expire_on_commit=True,
+    )
     try:
         yield db
     finally:

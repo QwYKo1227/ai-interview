@@ -233,20 +233,68 @@ const ResumeDetail: React.FC = () => {
   };
 
   // 指派评审人
+  const copyReviewLink = async (rawToken: string) => {
+    const url = `${window.location.origin}/public/review/${rawToken}`;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = url;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      message.success('评审链接已复制');
+    } catch (_error) {
+      message.info(url);
+    }
+  };
+
+  const showReviewLinks = (rawTokens: string[]) => {
+    Modal.info({
+      title: '部门评审链接',
+      width: 720,
+      content: (
+        <Space direction="vertical" style={{ width: '100%', marginTop: 16 }}>
+          {rawTokens.map((rawToken, index) => {
+            const url = `${window.location.origin}/public/review/${rawToken}`;
+            return (
+              <Space.Compact key={rawToken} style={{ width: '100%' }}>
+                <Input value={url} readOnly aria-label={`评审链接 ${index + 1}`} />
+                <Button type="primary" onClick={() => copyReviewLink(rawToken)}>复制</Button>
+              </Space.Compact>
+            );
+          })}
+        </Space>
+      ),
+    });
+  };
+
   const handleAssignReviewer = async () => {
     try {
       const values = await deptReviewForm.validateFields();
       const reviewerIds = values.reviewer_ids; // 多选
+      const rawTokens: string[] = [];
 
       // 批量指派评审人
       for (const reviewerId of reviewerIds) {
         const formData = new FormData();
         formData.append('reviewer_id', reviewerId);
-        await request.post(`/resumes/${id}/department-reviews`, formData, {
+        const created = await request.post(`/resumes/${id}/department-reviews`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
+        if (created?.public_token) {
+          rawTokens.push(created.public_token);
+        }
       }
 
+      if (rawTokens.length > 0) {
+        showReviewLinks(rawTokens);
+      }
       message.success(`已指派 ${reviewerIds.length} 位评审人`);
       setIsAssignReviewerModalVisible(false);
       deptReviewForm.resetFields();

@@ -52,6 +52,10 @@ const router = createBrowserRouter([
     element: <PublicJobDetail />,
   },
   {
+    path: '/public/:tenantCode/jobs/:id',
+    element: <PublicJobDetail />,
+  },
+  {
     path: '/public/coding-tests/:token',
     element: <PublicCodingTest />,
   },

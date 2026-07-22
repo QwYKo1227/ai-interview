@@ -77,14 +77,13 @@ const PublicReview: React.FC = () => {
 
     setSubmitting(true);
     try {
-      const params = new URLSearchParams({
-        technical_score: String(technicalScore),
-        experience_score: String(experienceScore),
-        overall_score: String(overallScore),
+      await request.post(`/public/review/${token}/submit`, {
+        technical_score: technicalScore,
+        experience_score: experienceScore,
+        overall_score: overallScore,
         recommendation,
         comment,
       });
-      await request.post(`/public/review/${token}/submit?${params.toString()}`);
       message.success('审核已提交');
       fetchResume();
     } catch (e: any) {

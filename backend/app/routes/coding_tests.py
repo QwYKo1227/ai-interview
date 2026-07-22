@@ -41,6 +41,7 @@ from app.services.coding_test_service import (
     submit_essay_answers,
     get_public_submission,
     generate_questions_from_bank,
+    reissue_coding_test_public_token,
 )
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 
@@ -176,6 +177,15 @@ def close_coding_test_route(
     if not db_test:
         raise HTTPException(status_code=404, detail="Coding test not found")
     return db_test
+
+
+@router.post("/{coding_test_id}/public-token")
+def reissue_coding_test_public_token_route(
+    coding_test_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    return {"public_token": reissue_coding_test_public_token(db, coding_test_id)}
 
 
 @router.get("/{coding_test_id}/submissions", response_model=List[CodingSubmissionResponse])

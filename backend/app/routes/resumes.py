@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_tenant_db
@@ -9,7 +9,7 @@ from app.schemas.resume import (
     DuplicateCheckRequest, DuplicateCheckResponse, DepartmentReviewSummary
 )
 from app.services.resume_service import (
-    upload_resume, get_resumes, get_resume, update_resume, delete_resume,
+    upload_resume, upload_public_resume, get_resumes, get_resume, update_resume, delete_resume,
     batch_upload_resumes, reparse_resume,
     check_duplicate_resume, create_department_review, get_department_reviews,
     complete_department_review, aggregate_department_reviews, submit_hr_decision,
@@ -20,6 +20,7 @@ from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List, Dict, Any, Optional
 from uuid import UUID
+from app.services.public_token_service import resolve_public_tenant
 
 router = APIRouter(
     prefix="/resumes",
@@ -82,7 +83,9 @@ def validate_pdf_file(file: UploadFile):
 @router.post("", response_model=ResumeResponse)
 def create_resume_route(
     background_tasks: BackgroundTasks,
+    request: Request,
     position_id: UUID = Form(...),
+    tenant_code: str = Form(None),
     file: UploadFile = File(...),
     candidate_name: str = Form(None),  # 公开链接上传时由应聘者填写
     email: str = Form(None),
@@ -90,7 +93,12 @@ def create_resume_route(
     db: Session = Depends(get_unscoped_db)
 ):
     validate_pdf_file(file)
-    return upload_resume(db, file, position_id, background_tasks, candidate_name, email, contact)
+    resolve_public_tenant(
+        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+    )
+    return upload_public_resume(
+        db, file, position_id, background_tasks, candidate_name, email, contact
+    )
 
 @router.post("/batch", response_model=List[ResumeResponse])
 def batch_upload_resumes_route(

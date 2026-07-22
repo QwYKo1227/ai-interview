@@ -9,7 +9,9 @@ import remarkGfm from 'remark-gfm';
 const { Title, Paragraph, Text } = Typography;
 
 const PublicJobDetail: React.FC = () => {
-  const { id } = useParams();
+  const { id, tenantCode: pathTenantCode } = useParams();
+  const queryTenantCode = new URLSearchParams(window.location.search).get('tenant_code');
+  const tenantCode = pathTenantCode || queryTenantCode || undefined;
   const [position, setPosition] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -25,7 +27,10 @@ const PublicJobDetail: React.FC = () => {
   const fetchPosition = async (positionId: string) => {
     setLoading(true);
     try {
-      const res = await request.get(`/public/positions/${positionId}`);
+      const endpoint = tenantCode
+        ? `/public/${encodeURIComponent(tenantCode)}/positions/${positionId}`
+        : `/public/positions/${positionId}`;
+      const res = await request.get(endpoint);
       if (res.status !== 'published') {
         message.error('该岗位已下架或不存在');
         setPosition(null);
@@ -48,6 +53,9 @@ const PublicJobDetail: React.FC = () => {
       formData.append('email', values.email);
       formData.append('contact', values.phone);
       formData.append('file', values.file.file);
+      if (tenantCode) {
+        formData.append('tenant_code', tenantCode);
+      }
 
       await request.post('/resumes', formData, {
         headers: {

@@ -239,7 +239,11 @@ const OffersList: React.FC = () => {
   const handleSend = async (values: any) => {
     if (!currentOffer) return;
     try {
-      await request.post(`/offers/${currentOffer.id}/send`, values);
+      const result = await request.post(`/offers/${currentOffer.id}/send`, values);
+      if (!result?.email_sent) {
+        message.error(result?.error || 'Offer 邮件发送失败');
+        return;
+      }
       message.success('Offer发送成功');
       setSendModalVisible(false);
       sendForm.resetFields();
@@ -352,7 +356,17 @@ const OffersList: React.FC = () => {
       cancelText: '取消',
       onOk: async () => {
         try {
-          await Promise.all(selectedRowKeys.map(id => request.post(`/offers/${id}/send`)));
+          const results = await Promise.all(
+            selectedRowKeys.map(id => request.post(`/offers/${id}/send`))
+          );
+          const failed = results.filter(result => !result?.email_sent);
+          if (failed.length > 0) {
+            const reason = failed.find(result => result?.error)?.error;
+            message.error(reason || `${failed.length} 个 Offer 邮件发送失败`);
+            fetchOffers();
+            fetchStats();
+            return;
+          }
           message.success(`成功发送 ${selectedRowKeys.length} 个Offer`);
           setSelectedRowKeys([]);
           fetchOffers();

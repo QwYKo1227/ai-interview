@@ -68,8 +68,8 @@ def read_file_content(file_path: str) -> str:
                 content = f.read()
         else:
             print(f"Unsupported file type: {ext}")
-    except Exception as e:
-        print(f"Error reading file {file_path}: {e}")
+    except Exception as error:
+        logger.error("Resume file read failed (%s)", type(error).__name__)
     return content
 
 from fastapi import BackgroundTasks
@@ -648,9 +648,10 @@ def _send_hr_review_notification(db: Session, resume: Resume, reviews: List[Depa
             
             mail_service._send_email(hr.email, subject, html_content)
             
-    except Exception as e:
-        import logging
-        logging.error(f"Failed to send HR review notification: {e}")
+    except Exception as error:
+        logger.error(
+            "HR review notification failed (%s)", type(error).__name__
+        )
 
 
 def aggregate_department_reviews(db: Session, resume_id: UUID) -> Dict[str, Any]:

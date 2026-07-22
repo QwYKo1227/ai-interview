@@ -308,12 +308,12 @@ class PromptManager:
         try:
             # Format the user prompt with provided kwargs
             user_prompt = user_prompt_template.format(**kwargs)
-        except KeyError as e:
-            print(f"Missing variable for prompt '{key}': {e}")
-            user_prompt = f"Error: Missing variable {e}. Template: {user_prompt_template}"
-        except Exception as e:
-            print(f"Error formatting prompt '{key}': {e}")
-            user_prompt = user_prompt_template
+        except KeyError:
+            print("Prompt formatting failed: missing variable")
+            user_prompt = "提示词变量缺失"
+        except Exception:
+            print("Prompt formatting failed")
+            user_prompt = "提示词格式化失败"
 
         return {
             "system": system_prompt,

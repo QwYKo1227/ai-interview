@@ -17,6 +17,9 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/interviews",
@@ -112,8 +115,9 @@ def cancel_interview_route(
         return db_interview
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as error:
+        logger.warning("Interview cancellation failed (%s)", type(error).__name__)
+        raise HTTPException(status_code=400, detail="取消面试失败")
 
 @router.get("/{interview_id}/submission-status")
 def get_submission_status_route(
@@ -548,8 +552,9 @@ def upload_full_interview_audio(
         transcript_data = transcribe_audio(file_path)
         transcript_text = transcript_data.get("text", "")
         formatted_transcript = format_transcript_for_display(transcript_data)
-    except Exception as e:
-        transcript_text = f"转写失败: {str(e)}"
+    except Exception as error:
+        logger.warning("Interview transcription failed (%s)", type(error).__name__)
+        transcript_text = "转写失败，请稍后重试"
         formatted_transcript = transcript_text
         transcript_data = {"text": transcript_text, "segments": []}
 
@@ -727,8 +732,9 @@ def submit_direct_evaluation_with_audio(
     try:
         transcript_data = transcribe_audio(file_path)
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
-    except Exception as e:
-        transcript = f"转写失败: {str(e)}"
+    except Exception as error:
+        logger.warning("Interview transcription failed (%s)", type(error).__name__)
+        transcript = "转写失败，请稍后重试"
         transcript_data = {"text": transcript, "segments": []}
 
     interview.audio_records = {"full_interview": file_path}

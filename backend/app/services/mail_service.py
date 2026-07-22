@@ -79,9 +79,9 @@ class MailService:
         try:
             template = jinja_env.get_template(template_name)
             return template.render(**context)
-        except Exception as e:
-            logger.error(f"Error rendering template {template_name}: {e}")
-            raise
+        except Exception as error:
+            logger.error("Email template rendering failed (%s)", type(error).__name__)
+            raise RuntimeError("email template rendering failed") from None
 
     def _create_smtp_connection(self):
         context = ssl.create_default_context()

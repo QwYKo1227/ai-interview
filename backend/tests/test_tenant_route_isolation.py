@@ -1504,3 +1504,63 @@ def test_business_route_database_dependencies_are_explicitly_scoped():
                 else {"get_tenant_db"}
             )
             assert dependencies == expected, f"{filename}:{node.name}"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "form_data"),
+    [
+        ("full-audio", None),
+        (
+            "direct-evaluation-with-audio",
+            {"evaluation": "safe evaluation", "suggestion": "waitlist", "score": "5"},
+        ),
+    ],
+)
+def test_audio_transcription_exception_is_redacted_from_response_and_database(
+    business_client,
+    auth_headers,
+    db,
+    test_interview,
+    monkeypatch,
+    capsys,
+    caplog,
+    endpoint,
+    form_data,
+):
+    from app.services import audio_service
+    from app.routes import interviews as interview_routes
+
+    secret = "Authorization: Bearer SECRET"
+
+    def fail_transcription(_path):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(audio_service, "transcribe_audio", fail_transcription)
+    monkeypatch.setattr(
+        interview_routes, "generate_evaluation_from_transcript", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        interview_routes, "generate_combined_evaluation", lambda *_args: None
+    )
+
+    with caplog.at_level("WARNING"):
+        response = business_client.post(
+            f"/api/interviews/{test_interview.id}/{endpoint}",
+            headers=auth_headers,
+            files={"file": ("interview.webm", b"audio", "audio/webm")},
+            data=form_data or {},
+        )
+
+    assert response.status_code == 200
+    db.expire_all()
+    stored = db.get(Interview, test_interview.id)
+    captured = capsys.readouterr()
+    emitted = (
+        response.text
+        + str(stored.transcripts)
+        + captured.out
+        + captured.err
+        + caplog.text
+    )
+    assert secret not in emitted
+    assert "转写失败，请稍后重试" in response.text

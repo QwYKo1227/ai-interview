@@ -400,8 +400,8 @@ def _read_file_content(file_path: str) -> str:
                 for page in reader.pages:
                     text += page.extract_text() or ""
             return text
-        except Exception as e:
-            print(f"PDF read error: {e}")
+        except Exception as error:
+            logger.error("Coding test PDF read failed (%s)", type(error).__name__)
             return ""
     
     if ext == 'docx':
@@ -410,8 +410,8 @@ def _read_file_content(file_path: str) -> str:
             doc = Document(file_path)
             text = "\n".join([para.text for para in doc.paragraphs])
             return text
-        except Exception as e:
-            print(f"DOCX read error: {e}")
+        except Exception as error:
+            logger.error("Coding test DOCX read failed (%s)", type(error).__name__)
             return ""
     
     return ""

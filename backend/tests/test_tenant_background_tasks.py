@@ -1,17 +1,22 @@
 import ast
 import inspect
+import threading
 from contextlib import contextmanager
+from collections import deque
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from unittest.mock import MagicMock
 
+from app.models.models import CodingSubmission, CodingTest, CodingTestStatus, CodingTestType
 from app.services import (
     coding_test_ai_service,
     coding_test_service,
     interview_service,
     resume_service,
 )
+from app.services.task_queue import QueueTask, TaskQueue, TaskStatus
 
 
 BACKGROUND_FUNCTIONS = [
@@ -28,12 +33,41 @@ BACKGROUND_FUNCTIONS = [
     coding_test_service.generate_questions_background,
 ]
 
+ROUTE_BACKGROUND_FUNCTIONS = []
+
+
+def _route_background_functions():
+    from app.routes import interviews
+
+    return [
+        interviews.generate_evaluation_from_transcript,
+        interviews.generate_combined_evaluation,
+    ]
+
 
 @pytest.mark.parametrize("task", BACKGROUND_FUNCTIONS, ids=lambda func: func.__name__)
 def test_every_background_function_starts_with_tenant_uuid(task):
     parameters = list(inspect.signature(task).parameters.values())
     assert parameters[0].name == "tenant_id"
     assert parameters[0].annotation in (UUID, "UUID")
+
+
+@pytest.mark.parametrize("task", BACKGROUND_FUNCTIONS[:3], ids=lambda func: func.__name__)
+def test_resume_queue_callbacks_start_with_tenant_and_resource(task):
+    parameters = list(inspect.signature(task).parameters.values())
+    assert [parameter.name for parameter in parameters[:2]] == [
+        "tenant_id",
+        "resume_id",
+    ]
+
+
+@pytest.mark.parametrize("task", _route_background_functions(), ids=lambda func: func.__name__)
+def test_route_background_functions_start_with_tenant_and_resource(task):
+    parameters = list(inspect.signature(task).parameters.values())
+    assert [parameter.name for parameter in parameters[:2]] == [
+        "tenant_id",
+        "interview_id",
+    ]
 
 
 def test_background_service_modules_do_not_open_raw_sessions():
@@ -96,7 +130,8 @@ def test_resume_worker_cannot_read_another_tenants_resource(db, tenant_a, tenant
 
     resume_service.process_resume_task(
         tenant_b.id,
-        {"resume_id": test_resume.id, "position_id": test_resume.position_id},
+        test_resume.id,
+        {"position_id": test_resume.position_id},
     )
 
     assert seen == []
@@ -116,6 +151,7 @@ def test_resume_enqueue_places_tenant_and_resource_first(monkeypatch):
 
     assert submitted["payload"]["tenant_id"] == tenant_id
     assert submitted["payload"]["resume_id"] == resume_id
+    assert submitted["resource_id"] == resume_id
 
 
 def test_background_exception_rolls_back_and_closes_tenant_session(monkeypatch):
@@ -145,3 +181,125 @@ def test_background_exception_rolls_back_and_closes_tenant_session(monkeypatch):
         )
 
     assert lifecycle == {"rollback": True, "close": True}
+
+
+@pytest.mark.parametrize("kind", ["code", "essay", "choice"])
+def test_public_submission_copies_non_null_tenant_from_resolved_test(
+    db, tenant_a, test_user, monkeypatch, kind
+):
+    coding_test = CodingTest(
+        tenant_id=tenant_a.id,
+        title="Tenant test",
+        test_type=CodingTestType.ALGORITHM,
+        public_token=f"token-{kind}",
+        status=CodingTestStatus.PUBLISHED,
+        created_by=test_user.id,
+        questions=[],
+        test_cases=[],
+    )
+    db.add(coding_test)
+    db.commit()
+    background_tasks = MagicMock()
+    monkeypatch.setattr(
+        coding_test_service,
+        "run_code_against_tests",
+        lambda **_kwargs: {"passed": True, "score": 100},
+    )
+
+    if kind == "code":
+        submission = coding_test_service.submit_public_code(
+            db, background_tasks, coding_test.public_token, "A", "a@test.com", "pass", "python"
+        )
+    elif kind == "essay":
+        submission = coding_test_service.submit_essay_answers(
+            db, background_tasks, coding_test.public_token, "A", "a@test.com", []
+        )
+    else:
+        submission = coding_test_service.submit_choice_answers(
+            db, coding_test.public_token, "A", "a@test.com", []
+        )
+
+    assert submission.tenant_id == tenant_a.id
+    assert db.get(CodingSubmission, submission.id).tenant_id == tenant_a.id
+    if kind in {"code", "essay"}:
+        args = background_tasks.add_task.call_args.args
+        assert args[:3] == (args[0], submission.tenant_id, submission.id)
+
+
+def test_resume_parse_exception_rolls_back_and_raises_safe_error(monkeypatch):
+    db = MagicMock()
+    resume = MagicMock(file_path="resume.pdf")
+    db.query.return_value.filter.return_value.first.return_value = resume
+    db.commit.side_effect = RuntimeError("Authorization: secret-token")
+
+    with pytest.raises(RuntimeError, match="resume parsing failed") as exc_info:
+        resume_service._process_resume_task(
+            db, uuid4(), uuid4(), {"position_id": uuid4()}
+        )
+
+    db.rollback.assert_called_once()
+    assert "secret-token" not in str(exc_info.value)
+
+
+def test_task_queue_retries_then_marks_failed_with_explicit_resource_arguments():
+    tenant_id, resume_id = uuid4(), uuid4()
+    callback_calls = []
+    failure_calls = []
+
+    def callback(actual_tenant_id, actual_resume_id, payload):
+        callback_calls.append((actual_tenant_id, actual_resume_id, payload))
+        raise RuntimeError("Authorization: secret-token")
+
+    def on_failure(actual_tenant_id, actual_resume_id, error):
+        failure_calls.append((actual_tenant_id, actual_resume_id, error))
+
+    task = QueueTask(
+        tenant_id=tenant_id,
+        resource_id=resume_id,
+        id=str(resume_id),
+        task_type="resume_parse",
+        payload={"position_id": uuid4()},
+        callback=callback,
+        on_failure=on_failure,
+        max_retries=2,
+    )
+    queue = object.__new__(TaskQueue)
+    queue.semaphore = threading.Semaphore(1)
+    queue.retry_delay = 0
+    queue.queue = deque()
+    queue.queue_lock = threading.Lock()
+    queue.running_tasks = {}
+    queue.running_lock = threading.Lock()
+    queue.completed_tasks = {}
+    queue.completed_lock = threading.Lock()
+    queue._stats = {"total_completed": 0, "total_failed": 0}
+
+    queue._execute_task(task)
+    assert task.status == TaskStatus.PENDING
+    queue._execute_task(task)
+
+    assert task.status == TaskStatus.FAILED
+    assert callback_calls == [
+        (tenant_id, resume_id, task.payload),
+        (tenant_id, resume_id, task.payload),
+    ]
+    assert failure_calls == [(tenant_id, resume_id, "RuntimeError")]
+    assert "secret-token" not in task.error
+
+
+@pytest.mark.parametrize(
+    "worker,args",
+    [
+        (interview_service._generate_questions_background, (uuid4(), [], 5)),
+        (interview_service._generate_evaluation_background, (uuid4(), {})),
+    ],
+)
+def test_interview_worker_failure_rolls_back_before_raising(worker, args):
+    db = MagicMock()
+    db.query.side_effect = RuntimeError("transaction aborted Authorization: secret")
+
+    with pytest.raises(RuntimeError, match="background task failed") as exc_info:
+        worker(db, *args)
+
+    db.rollback.assert_called_once()
+    assert "secret" not in str(exc_info.value)

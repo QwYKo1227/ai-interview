@@ -375,8 +375,10 @@ def _stream_chat_events(client: OpenAI, request: Dict[str, Any], error_label: st
                 ) + "\n\n"
         yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
     except Exception as exc:
-        print(f"{error_label}: {exc}")
-        yield "data: " + json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n\n"
+        print(error_label)
+        yield "data: " + json.dumps(
+            {"error": "AI 服务暂时不可用"}, ensure_ascii=False
+        ) + "\n\n"
 
 
 def generate_jd_stream(
@@ -422,9 +424,11 @@ def generate_jd_stream(
         }
         return _stream_chat_events(client, request, "JD stream generation failed")
     except Exception as exc:
-        print(f"JD stream generation failed: {exc}")
+        print("JD stream generation failed")
         return iter((
-            "data: " + json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n\n",
+            "data: " + json.dumps(
+                {"error": "AI 服务暂时不可用"}, ensure_ascii=False
+            ) + "\n\n",
         ))
 
 def chat_jd_stream(
@@ -476,9 +480,11 @@ def chat_jd_stream(
         }
         return _stream_chat_events(client, request, "JD chat stream failed")
     except Exception as exc:
-        print(f"JD chat stream failed: {exc}")
+        print("JD chat stream failed")
         return iter((
-            "data: " + json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n\n",
+            "data: " + json.dumps(
+                {"error": "AI 服务暂时不可用"}, ensure_ascii=False
+            ) + "\n\n",
         ))
 
 

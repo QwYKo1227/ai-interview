@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
+import smtplib
+
+import pytest
 
 from app.services.mail_service import MailService
 
@@ -71,3 +74,44 @@ def test_send_test_email_stays_successful_when_quit_fails_after_delivery(mock_ge
     assert service.send_test_email("recipient@example.com") is True
 
     server.sendmail.assert_called_once()
+
+
+@patch("app.services.mail_service.get_system_config")
+@pytest.mark.parametrize(
+    "error",
+    [
+        smtplib.SMTPAuthenticationError(535, b"SMTP-PASSWORD-TOKEN"),
+        smtplib.SMTPException("SMTP-PASSWORD-TOKEN"),
+        RuntimeError("SMTP-PASSWORD-TOKEN"),
+    ],
+    ids=["authentication", "protocol", "general"],
+)
+def test_smtp_delivery_errors_do_not_log_secret(mock_get_config, caplog, error):
+    secret = "SMTP-PASSWORD-TOKEN"
+    mock_get_config.return_value = _mail_config("ssl")
+    service = MailService(MagicMock())
+    service._create_smtp_connection = MagicMock(
+        side_effect=error
+    )
+
+    with caplog.at_level("ERROR"):
+        assert service.send_test_email("recipient@example.com") is False
+
+    assert secret not in caplog.text
+
+
+@patch("app.services.mail_service.get_system_config")
+def test_smtp_close_error_does_not_log_secret_for_shared_send_path(mock_get_config, caplog):
+    secret = "SMTP-PASSWORD-TOKEN"
+    mock_get_config.return_value = _mail_config("ssl")
+    service = MailService(MagicMock())
+    server = MagicMock()
+    server.quit.side_effect = OSError(secret)
+    service._create_smtp_connection = MagicMock(return_value=server)
+
+    with caplog.at_level("WARNING"):
+        assert service._send_email(
+            "recipient@example.com", "subject", "<p>body</p>"
+        ) is True
+
+    assert secret not in caplog.text

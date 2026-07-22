@@ -109,7 +109,10 @@ class MailService:
         try:
             server.quit()
         except (OSError, smtplib.SMTPException) as error:
-            logger.warning(f"SMTP connection close failed after delivery: {error}")
+            logger.warning(
+                "SMTP connection close failed after delivery (%s)",
+                type(error).__name__,
+            )
 
     def _send_email(self, to_email: str, subject: str, html_content: str) -> bool:
         """
@@ -159,14 +162,14 @@ class MailService:
             logger.info(f"Email sent successfully to {to_email}")
             return True
 
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"SMTP authentication failed: {e}")
+        except smtplib.SMTPAuthenticationError:
+            logger.error("SMTP authentication failed")
             return False
-        except smtplib.SMTPException as e:
-            logger.error(f"SMTP error occurred: {e}")
+        except smtplib.SMTPException as error:
+            logger.error("SMTP protocol error (%s)", type(error).__name__)
             return False
-        except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {e}")
+        except Exception as error:
+            logger.error("Email delivery failed (%s)", type(error).__name__)
             return False
 
     def send_test_email(self, recipient: str) -> bool:

@@ -268,11 +268,13 @@ def _generate_questions_background(db: Session, interview_id: UUID, question_ban
         interview.questions = questions
         db.commit()
         
-    except Exception as e:
+    except Exception:
+        db.rollback()
         logger.error(
             "Interview question generation failed",
             extra={"resource_id": str(interview_id)},
         )
+        raise RuntimeError("interview background task failed") from None
 
 def create_interview(db: Session, interview: InterviewCreate, background_tasks: BackgroundTasks):
     # 检查简历和岗位是否存在
@@ -647,19 +649,13 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
         
         db.commit()
         
-    except Exception as e:
+    except Exception:
+        db.rollback()
         logger.error(
             "Interview evaluation failed",
             extra={"resource_id": str(interview_id)},
         )
-        try:
-            db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
-            if db_interview:
-                db_interview.status = InterviewStatus.COMPLETED
-                db_interview.result = InterviewResult.PENDING
-                db.commit()
-        except:
-            pass
+        raise RuntimeError("interview background task failed") from None
 
 
 def generate_combined_evaluation(tenant_id: UUID, interview_id: UUID, transcript: str, interviewer_evaluation: str, interviewer_suggestion: str, interviewer_score: int):

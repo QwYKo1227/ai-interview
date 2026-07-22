@@ -74,13 +74,17 @@ def read_file_content(file_path: str) -> str:
 
 from fastapi import BackgroundTasks
 
-def process_resume_task(tenant_id: UUID, payload: Dict[str, Any]):
+def process_resume_task(tenant_id: UUID, resume_id: UUID, payload: Dict[str, Any]):
     with tenant_session(tenant_id) as db:
-        return _process_resume_task(db, payload)
+        return _process_resume_task(db, tenant_id, resume_id, payload)
 
 
-def _process_resume_task(db: Session, payload: Dict[str, Any]):
-    resume_id = payload["resume_id"]
+def _process_resume_task(
+    db: Session,
+    tenant_id: UUID,
+    resume_id: UUID,
+    payload: Dict[str, Any],
+):
     position_id = payload["position_id"]
     use_user_info = payload.get("use_user_info", False)
 
@@ -229,20 +233,16 @@ def _process_resume_task(db: Session, payload: Dict[str, Any]):
         db.commit()
 
     except Exception:
-        resume = db.query(Resume).filter(Resume.id == resume_id).first()
-        if resume:
-            resume.parse_status = "failed"
-            resume.parse_error = "简历解析过程中发生错误"
-            db.commit()
+        db.rollback()
+        raise RuntimeError("resume parsing failed") from None
 
 
-def on_resume_parse_failure(tenant_id: UUID, payload: Dict[str, Any], error: str):
+def on_resume_parse_failure(tenant_id: UUID, resume_id: UUID, error: str):
     with tenant_session(tenant_id) as db:
-        return _on_resume_parse_failure(db, payload, error)
+        return _on_resume_parse_failure(db, resume_id, error)
 
 
-def _on_resume_parse_failure(db: Session, payload: Dict[str, Any], error: str):
-    resume_id = payload["resume_id"]
+def _on_resume_parse_failure(db: Session, resume_id: UUID, error: str):
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
         if resume:
@@ -259,6 +259,7 @@ def process_resume_background(tenant_id: UUID, resume_id: UUID, position_id: UUI
     queue = get_task_queue()
     queue.submit(
         tenant_id=tenant_id,
+        resource_id=resume_id,
         task_id=str(resume_id),
         task_type="resume_parse",
         payload={

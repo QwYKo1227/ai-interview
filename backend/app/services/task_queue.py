@@ -19,6 +19,7 @@ class TaskStatus(str, Enum):
 @dataclass
 class QueueTask:
     tenant_id: UUID
+    resource_id: UUID | str
     id: str
     task_type: str
     payload: Dict[str, Any]
@@ -90,6 +91,7 @@ class TaskQueue:
     def submit(
         self,
         tenant_id: UUID,
+        resource_id: UUID | str,
         task_id: str,
         task_type: str,
         payload: Dict[str, Any],
@@ -98,6 +100,7 @@ class TaskQueue:
     ) -> QueueTask:
         task = QueueTask(
             tenant_id=tenant_id,
+            resource_id=resource_id,
             id=task_id,
             task_type=task_type,
             payload=payload,
@@ -188,8 +191,8 @@ class TaskQueue:
                 else:
                     time.sleep(0.5)
 
-            except Exception as e:
-                print(f"[TaskQueue] Worker error: {e}")
+            except Exception:
+                print("[TaskQueue] Worker error")
                 time.sleep(1)
 
     def _execute_task(self, task: QueueTask):
@@ -208,7 +211,9 @@ class TaskQueue:
 
             print(f"[TaskQueue] Executing task {task.id}")
 
-            result = task.callback(task.tenant_id, task.payload)
+            result = task.callback(
+                task.tenant_id, task.resource_id, task.payload
+            )
 
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.now()
@@ -233,7 +238,9 @@ class TaskQueue:
 
                 if task.on_failure:
                     try:
-                        task.on_failure(task.tenant_id, task.payload, task.error)
+                        task.on_failure(
+                            task.tenant_id, task.resource_id, task.error
+                        )
                     except Exception:
                         print("[TaskQueue] Failure callback error")
 

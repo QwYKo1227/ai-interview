@@ -147,3 +147,25 @@ def test_llm_exception_does_not_print_secret(monkeypatch, capsys):
 
     assert ai_service.analyze_resume("resume", "position", db=MagicMock()) == {}
     assert secret not in capsys.readouterr().out
+
+
+def test_all_stream_failures_hide_exception_secrets(monkeypatch, capsys):
+    secret = "Authorization: Bearer TOP-SECRET-STREAM-KEY"
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError(secret)
+    direct_events = list(ai_service._stream_chat_events(client, {}, "stream failed"))
+
+    monkeypatch.setattr(
+        ai_service.prompt_manager,
+        "get_prompt",
+        lambda *_args, **_kwargs: {"system": "system", "user": "user"},
+    )
+    monkeypatch.setattr(
+        ai_service, "_get_llm_config", MagicMock(side_effect=RuntimeError(secret))
+    )
+    jd_events = list(ai_service.generate_jd_stream("Engineer", db=MagicMock()))
+    chat_events = list(ai_service.chat_jd_stream([], db=MagicMock()))
+
+    output = capsys.readouterr().out + "".join(direct_events + jd_events + chat_events)
+    assert secret not in output
+    assert output.count("AI 服务暂时不可用") == 3

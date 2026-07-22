@@ -145,6 +145,7 @@ def submit_public_code(db: Session, background_tasks: BackgroundTasks, token: st
     run = run_code_against_tests(language=language, code=code, test_cases=db_test.test_cases or [], time_limit_ms=db_test.time_limit_ms or 3000)
 
     db_sub = CodingSubmission(
+        tenant_id=db_test.tenant_id,
         coding_test_id=db_test.id,
         candidate_name=candidate_name,
         candidate_email=candidate_email,
@@ -189,6 +190,7 @@ def submit_choice_answers(db: Session, token: str, candidate_name: Optional[str]
     passed = correct_count >= len(questions) * 0.6
 
     db_sub = CodingSubmission(
+        tenant_id=db_test.tenant_id,
         coding_test_id=db_test.id,
         candidate_name=candidate_name,
         candidate_email=candidate_email,
@@ -212,6 +214,7 @@ def submit_essay_answers(db: Session, background_tasks: BackgroundTasks, token: 
         raise HTTPException(status_code=404, detail="Coding test not found")
 
     db_sub = CodingSubmission(
+        tenant_id=db_test.tenant_id,
         coding_test_id=db_test.id,
         candidate_name=candidate_name,
         candidate_email=candidate_email,

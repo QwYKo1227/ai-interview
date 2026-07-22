@@ -169,6 +169,8 @@ node scripts/capture-demo-screenshots.mjs
 
 生产部署建议先修改根目录 `.env`，至少设置高强度 `SECRET_KEY` 和 `INITIAL_ADMIN_PASSWORD`。
 
+已有生产实例升级到 Careray 与 Photonthix 多租户版本时，请严格按照[多租户生产发布、验收与回滚手册](docs/deployment/multi-tenant-production-rollout.md)执行备份、分阶段迁移、隔离验收与回滚演练，不要直接使用一条 `up` 命令跨越数据迁移门禁。
+
 ```bash
 docker compose -f docker-compose.prod.yml up --build -d
 ```

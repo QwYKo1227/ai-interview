@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -9,43 +11,45 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.config.tenant_session import TenantCapableSession, TenantSession
+from app.core.security import decode_access_token, get_password_hash
 from app.models.base import Base
 from app.models.file_models import StoredFile
-from app.models.models import Position, Resume, User, UserRole
+from app.models.models import (
+    CodingTest,
+    Interview,
+    Offer,
+    Position,
+    Resume,
+    SystemConfig,
+    User,
+    UserRole,
+)
+from app.models.tenant_catalog import TENANT_TABLES as TENANT_TABLE_CATALOG
+from app.models.tenant_models import PlatformUser, Tenant, TenantDomain, TenantStatus
 from app.models.tenant_constraints import TenantForeignKeyConstraint
 from app.models.workflow_models import Workflow
-from app.schemas.tenant import TenantOnboardingRequest
+import app.routes.auth as auth_routes
+from app.routes.auth import _authenticate_tenant_user, _token_for_user
+from app.routes.platform import platform_login
+from app.services.dashboard_service import get_dashboard_stats
+from app.schemas.tenant import PlatformLoginRequest, TenantOnboardingRequest
 from app.services.public_token_service import issue_public_token, resolve_public_token
 from app.services.tenant_service import create_tenant_with_admin
+from app.utils.file_storage import resolve_object_path
+from scripts.create_platform_admin import run_cli as run_platform_admin_cli
+from scripts.backfill_legacy_uploads import run_cli as run_legacy_backfill_cli
+from scripts.verify_tenant_migration import run_cli as run_migration_verifier_cli
 
 
 BACKEND_DIR = Path(__file__).parents[2]
-TENANT_TABLES = {
-    "users",
-    "positions",
-    "question_banks",
-    "resumes",
-    "department_reviews",
-    "interviews",
-    "interview_panels",
-    "offers",
-    "offer_templates",
-    "coding_tests",
-    "coding_submissions",
-    "system_configs",
-    "workflows",
-    "workflow_nodes",
-    "workflow_edges",
-    "workflow_executions",
-    "workflow_node_executions",
-    "stored_files",
-}
+TENANT_TABLES = set(TENANT_TABLE_CATALOG)
 GLOBAL_TABLES = {
     "tenants",
     "tenant_domains",
@@ -235,6 +239,411 @@ def create_position_orm(pg_session_factory, tenant_id, title):
         db.commit()
         assert position.tenant_id == tenant_id
     return position_id
+
+
+def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
+    migration_database_url,
+    runtime_database_url,
+    migration_engine,
+    pg_session_factory,
+):
+    with migration_engine.begin() as connection:
+        careray_id = connection.execute(
+            text("SELECT id FROM tenants WHERE code = 'careray'")
+        ).scalar_one()
+        photonthix_id = connection.execute(
+            text("SELECT id FROM tenants WHERE code = 'photonthix'")
+        ).scalar_one_or_none()
+        if photonthix_id is None:
+            photonthix_id = uuid.uuid4()
+            connection.execute(
+                text(
+                    "INSERT INTO tenants "
+                    "(id, code, name, status, created_at, updated_at) "
+                    "VALUES (:id, 'photonthix', 'PhotonThix', 'active', now(), now())"
+                ),
+                {"id": photonthix_id},
+            )
+
+    for tenant_id in (careray_id, photonthix_id):
+        with pg_session_factory(tenant_id) as db:
+            if db.query(SystemConfig).first() is None:
+                db.add(SystemConfig())
+                db.commit()
+
+    verifier_output = io.StringIO()
+    verifier_status = run_migration_verifier_cli(
+        environ={"MIGRATION_DATABASE_URL": migration_database_url},
+        stdout=verifier_output,
+    )
+    verifier_payload = json.loads(verifier_output.getvalue())
+    assert verifier_status == 0
+    assert verifier_payload["ok"] is True
+    assert verifier_payload["counts"]["default_careray_tenants"] == 1
+    assert verifier_payload["counts"]["table_rows"]["system_configs"] == 2
+
+    runtime_output = io.StringIO()
+    assert run_migration_verifier_cli(
+        environ={"MIGRATION_DATABASE_URL": runtime_database_url},
+        stdout=runtime_output,
+    ) == 1
+    assert "runtime_test_password" not in runtime_output.getvalue()
+    assert "postgresql://" not in runtime_output.getvalue()
+
+    with migration_engine.connect() as connection:
+        forced_count = connection.execute(
+            text(
+                "SELECT count(*) FROM pg_class relation "
+                "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
+                "WHERE namespace.nspname = 'public' "
+                "AND relation.relname = ANY(:tables) "
+                "AND relation.relrowsecurity AND relation.relforcerowsecurity"
+            ),
+            {"tables": list(TENANT_TABLES)},
+        ).scalar_one()
+    assert forced_count == len(TENANT_TABLES)
+
+    admin_email = f"platform-rollout-{uuid.uuid4().hex}@example.com"
+    admin_password = "PlatformRolloutPassword123"
+    first_output = io.StringIO()
+    assert run_platform_admin_cli(
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "PLATFORM_ADMIN_EMAIL": f"  {admin_email.upper()}  ",
+            "PLATFORM_ADMIN_PASSWORD": admin_password,
+        },
+        stdout=first_output,
+    ) == 0
+    assert admin_password not in first_output.getvalue()
+    assert migration_database_url not in first_output.getvalue()
+
+    with TenantCapableSession(bind=migration_engine) as db:
+        stored_hash = db.query(PlatformUser.hashed_password).filter(
+            PlatformUser.email == admin_email
+        ).scalar()
+        token = platform_login(
+            PlatformLoginRequest(email=admin_email, password=admin_password),
+            db=db,
+        )
+        assert token.access_token
+
+    second_output = io.StringIO()
+    assert run_platform_admin_cli(
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "PLATFORM_ADMIN_EMAIL": admin_email,
+            "PLATFORM_ADMIN_PASSWORD": "DifferentSafePassword456",
+        },
+        stdout=second_output,
+    ) == 0
+    assert json.loads(second_output.getvalue())["result"] == "already_exists"
+    with TenantCapableSession(bind=migration_engine) as db:
+        assert db.query(PlatformUser.hashed_password).filter(
+            PlatformUser.email == admin_email
+        ).scalar() == stored_hash
+
+
+def test_real_two_tenant_business_login_isolation_and_disable_flow(
+    runtime_engine,
+    runtime_database_url,
+    migration_engine,
+    pg_session_factory,
+    monkeypatch,
+    tmp_path,
+):
+    with migration_engine.begin() as connection:
+        careray_id = connection.execute(
+            text("SELECT id FROM tenants WHERE code = 'careray'")
+        ).scalar_one()
+        photonthix_id = connection.execute(
+            text("SELECT id FROM tenants WHERE code = 'photonthix'")
+        ).scalar_one_or_none()
+        if photonthix_id is None:
+            photonthix_id = uuid.uuid4()
+            connection.execute(
+                text(
+                    "INSERT INTO tenants "
+                    "(id, code, name, status, created_at, updated_at) "
+                    "VALUES (:id, 'photonthix', 'PhotonThix', 'active', now(), now())"
+                ),
+                {"id": photonthix_id},
+            )
+        for tenant_id, domain in (
+            (careray_id, "interview.careray.com"),
+            (photonthix_id, "interview.photonthix.com"),
+        ):
+            if connection.execute(
+                text("SELECT 1 FROM tenant_domains WHERE domain = :domain"),
+                {"domain": domain},
+            ).first() is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO tenant_domains "
+                        "(id, tenant_id, domain, is_primary, created_at) "
+                        "VALUES (:id, :tenant_id, :domain, true, now())"
+                    ),
+                    {"id": uuid.uuid4(), "tenant_id": tenant_id, "domain": domain},
+                )
+
+    shared_email = f"shared-{uuid.uuid4().hex}@example.com"
+    passwords = {
+        careray_id: "CarerayTenantPassword123",
+        photonthix_id: "PhotonthixTenantPassword456",
+    }
+    identifiers = {}
+    raw_public_tokens = {}
+    for tenant_id, label in ((careray_id, "careray"), (photonthix_id, "photonthix")):
+        with pg_session_factory(tenant_id) as db:
+            user = User(
+                email=shared_email,
+                hashed_password=get_password_hash(passwords[tenant_id]),
+                role=UserRole.ADMIN,
+                is_active=True,
+            )
+            position = Position(title=f"{label} role", description=label)
+            db.add_all([user, position])
+            db.flush()
+            resume = Resume(
+                candidate_name=f"{label} candidate",
+                email=f"candidate-{label}@example.com",
+                position_id=position.id,
+            )
+            db.add(resume)
+            db.flush()
+            interview = Interview(
+                resume_id=resume.id,
+                position_id=position.id,
+                interviewer_id=user.id,
+                interview_time=datetime.now(timezone.utc),
+            )
+            offer = Offer(
+                resume_id=resume.id,
+                position_id=position.id,
+                candidate_name=resume.candidate_name,
+                candidate_email=resume.email,
+                position_title=position.title,
+                created_by=user.id,
+            )
+            coding = CodingTest(
+                title=f"{label} coding",
+                test_type="essay",
+                public_token=f"{label}-{uuid.uuid4().hex}",
+                created_by=user.id,
+                resume_id=resume.id,
+                position_id=position.id,
+            )
+            workflow = Workflow(name=f"{label} workflow", created_by=user.id)
+            stored = StoredFile(
+                object_key=f"{tenant_id}/resumes/{uuid.uuid4()}.pdf",
+                original_filename="same.pdf",
+                content_type="application/pdf",
+                size=4,
+                category="resumes",
+                resource_type="resume",
+                resource_id=resume.id,
+            )
+            db.add_all([interview, offer, coding, workflow, stored])
+            if db.query(SystemConfig).first() is None:
+                db.add(SystemConfig())
+            db.commit()
+            raw_public_tokens[tenant_id] = issue_public_token(
+                db,
+                tenant_id,
+                "stored_file",
+                stored.id,
+                datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            identifiers[tenant_id] = {
+                "user": user.id,
+                "position": position.id,
+                "resume": resume.id,
+                "interview": interview.id,
+                "offer": offer.id,
+                "coding": coding.id,
+                "workflow": workflow.id,
+                "stored_file": stored.id,
+            }
+
+    login_engine = create_engine(runtime_database_url, poolclass=NullPool)
+
+    @contextmanager
+    def login_tenant_session(tenant_id):
+        db = TenantSession(bind=login_engine, tenant_id=tenant_id, expire_on_commit=False)
+        try:
+            yield db
+        finally:
+            db.close()
+
+    monkeypatch.setattr(auth_routes, "tenant_session", login_tenant_session)
+    with TenantCapableSession(bind=login_engine) as unscoped:
+        authenticated = {}
+        for tenant_id, code in ((careray_id, "careray"), (photonthix_id, "photonthix")):
+            tenant, user = _authenticate_tenant_user(
+                unscoped,
+                tenant_code=code,
+                email=shared_email,
+                password=passwords[tenant_id],
+            )
+            assert tenant.id == tenant_id
+            authenticated[tenant_id] = _token_for_user(tenant, user).access_token
+        with pytest.raises(HTTPException) as wrong_company:
+            _authenticate_tenant_user(
+                unscoped,
+                tenant_code="careray",
+                email=shared_email,
+                password=passwords[photonthix_id],
+            )
+        assert wrong_company.value.status_code == 401
+
+    model_keys = (
+        (Position, "position"),
+        (Resume, "resume"),
+        (Interview, "interview"),
+        (Offer, "offer"),
+        (CodingTest, "coding"),
+        (Workflow, "workflow"),
+        (StoredFile, "stored_file"),
+    )
+    for own_id, other_id in ((careray_id, photonthix_id), (photonthix_id, careray_id)):
+        with pg_session_factory(own_id) as db:
+            for model, key in model_keys:
+                assert db.get(model, identifiers[own_id][key]) is not None
+                assert db.get(model, identifiers[other_id][key]) is None
+            assert db.query(SystemConfig).count() == 1
+            stats = get_dashboard_stats(db)
+            assert stats["active_positions"] == db.query(Position).filter(
+                Position.status.in_(["open", "published"])
+            ).count()
+            assert db.execute(
+                text("SELECT id FROM resumes WHERE id = :id"),
+                {"id": identifiers[other_id]["resume"]},
+            ).first() is None
+            wrong_tenant_update = db.execute(
+                text("UPDATE positions SET title = 'hijacked' WHERE id = :id"),
+                {"id": identifiers[other_id]["position"]},
+            )
+            assert wrong_tenant_update.rowcount == 0
+            db.rollback()
+
+    with migration_engine.begin() as connection:
+        for tenant_id, raw_token in raw_public_tokens.items():
+            token_row = connection.execute(
+                text(
+                    "SELECT tenant_id, token_hash FROM public_access_tokens "
+                    "WHERE resource_id = :resource_id"
+                ),
+                {"resource_id": identifiers[tenant_id]["stored_file"]},
+            ).one()
+            assert token_row.tenant_id == tenant_id
+            assert token_row.token_hash != raw_token
+            assert len(token_row.token_hash) == 64
+
+    with pytest.raises(ValueError, match="escapes tenant root"):
+        resolve_object_path(
+            tmp_path,
+            careray_id,
+            f"{careray_id}/resumes/../{photonthix_id}.pdf",
+        )
+
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE tenants SET status = 'disabled' WHERE id = :id"),
+            {"id": careray_id},
+        )
+    try:
+        with TenantCapableSession(bind=login_engine) as unscoped:
+            with pytest.raises(HTTPException) as new_login:
+                _authenticate_tenant_user(
+                    unscoped,
+                    tenant_code="careray",
+                    email=shared_email,
+                    password=passwords[careray_id],
+                )
+            assert new_login.value.status_code == 403
+            claims = decode_access_token(authenticated[careray_id])
+            request = type(
+                "RequestStub",
+                (),
+                {"headers": {"host": "interview.careray.com"}},
+            )()
+            from app.core.tenant_dependencies import get_tenant_context
+
+            with pytest.raises(HTTPException) as old_jwt:
+                get_tenant_context(request, claims=claims, db=unscoped)
+            assert old_jwt.value.status_code == 403
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                text("UPDATE tenants SET status = 'active' WHERE id = :id"),
+                {"id": careray_id},
+            )
+        login_engine.dispose()
+
+
+def test_legacy_upload_cli_backfills_real_postgres_and_is_repeatable(
+    migration_database_url,
+    migration_engine,
+    pg_session_factory,
+    tmp_path,
+):
+    legacy_root = tmp_path / "legacy"
+    upload_root = tmp_path / "tenant-uploads"
+    legacy_root.mkdir()
+    legacy_file = legacy_root / "resume.pdf"
+    legacy_file.write_bytes(b"legacy resume")
+
+    with migration_engine.begin() as connection:
+        tenant_id = connection.execute(
+            text("SELECT id FROM tenants WHERE code = 'careray'")
+        ).scalar_one()
+    with pg_session_factory(tenant_id) as db:
+        position = Position(title="legacy file role", description="legacy")
+        db.add(position)
+        db.flush()
+        resume = Resume(position_id=position.id, file_path=str(legacy_file))
+        db.add(resume)
+        db.commit()
+        resume_id = resume.id
+
+    output = io.StringIO()
+    status = run_legacy_backfill_cli(
+        "migrate",
+        dry_run=False,
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "LEGACY_UPLOAD_ROOT": str(legacy_root),
+            "UPLOAD_ROOT": str(upload_root),
+        },
+        stdout=output,
+    )
+    payload = json.loads(output.getvalue())
+    assert status == 0
+    assert payload["ok"] is True
+    assert payload["counts"] == {"candidates": 1, "errors": 0, "pending": 0}
+    assert legacy_file.exists()
+    assert str(legacy_root) not in output.getvalue()
+    assert migration_database_url not in output.getvalue()
+
+    with pg_session_factory(tenant_id) as db:
+        migrated = db.get(Resume, resume_id)
+        assert migrated.file_id is not None
+        stored = db.get(StoredFile, migrated.file_id)
+        assert stored.tenant_id == tenant_id
+        assert stored.resource_id == resume_id
+        assert (upload_root / Path(stored.object_key)).read_bytes() == b"legacy resume"
+
+    repeated_output = io.StringIO()
+    assert run_legacy_backfill_cli(
+        "migrate",
+        dry_run=False,
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "LEGACY_UPLOAD_ROOT": str(legacy_root),
+            "UPLOAD_ROOT": str(upload_root),
+        },
+        stdout=repeated_output,
+    ) == 0
+    assert json.loads(repeated_output.getvalue())["counts"]["candidates"] == 0
 
 
 def test_rls_blocks_known_other_tenant_uuid_raw_sql(pg_session_factory, tenant_pair):
@@ -882,7 +1291,7 @@ def test_alembic_uses_migration_url_not_runtime_database_url(
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "n3o4p5q6r7s8" in result.stdout
+    assert "q6r7s8t9u0v1" in result.stdout
 
 
 def test_alembic_autogenerate_has_no_head_metadata_drift(migration_database_url):
@@ -1058,6 +1467,29 @@ def test_platform_onboarding_sets_new_tenant_guc_before_business_inserts(
         ).scalar_one() == 1
 
 
+def test_postgres_enum_labels_match_runtime_metadata(migration_engine):
+    expected = {}
+    for table in Base.metadata.sorted_tables:
+        for column in table.columns:
+            enum_values = getattr(column.type, "enums", None)
+            if enum_values and getattr(column.type, "native_enum", False):
+                expected.setdefault(column.type.name, set()).update(enum_values)
+
+    with migration_engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT type.typname, enum.enumlabel FROM pg_type type "
+                "JOIN pg_enum enum ON enum.enumtypid = type.oid "
+                "JOIN pg_namespace namespace ON namespace.oid = type.typnamespace "
+                "WHERE namespace.nspname = 'public'"
+            )
+        )
+        actual = {}
+        for type_name, label in rows:
+            actual.setdefault(type_name, set()).add(label)
+    assert actual == expected
+
+
 def test_real_postgres_upgrade_downgrade_gates_and_data_preservation(
     migration_database_url, pg_session_factory, tenant_pair
 ):
@@ -1070,13 +1502,31 @@ def test_real_postgres_upgrade_downgrade_gates_and_data_preservation(
     )
     cross_resume_id = uuid.uuid4()
 
-    result = _run_alembic(
-        migration_database_url, "downgrade", "m2n3o4p5q6r7"
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
     migration_engine = create_engine(migration_database_url, poolclass=NullPool)
     try:
+        with migration_engine.begin() as connection:
+            careray_id = connection.execute(
+                text("SELECT id FROM tenants WHERE code = 'careray'")
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_tenant_id', "
+                    "CAST(:tenant_id AS text), true)"
+                ),
+                {"tenant_id": careray_id},
+            )
+            careray_counts_before = {
+                table: connection.execute(
+                    text(f'SELECT count(*) FROM "{table}"')
+                ).scalar_one()
+                for table in TENANT_TABLES
+            }
+
+        result = _run_alembic(
+            migration_database_url, "downgrade", "m2n3o4p5q6r7"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
         with migration_engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
@@ -1160,7 +1610,7 @@ def test_real_postgres_upgrade_downgrade_gates_and_data_preservation(
         with migration_engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "n3o4p5q6r7s8"
+            ).scalar_one() == "q6r7s8t9u0v1"
             assert connection.execute(
                 text(
                     "SELECT count(*) FROM pg_class c "
@@ -1177,6 +1627,19 @@ def test_real_postgres_upgrade_downgrade_gates_and_data_preservation(
                     "AND array_length(conkey, 1) = 2"
                 )
             ).scalar_one() == 29
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_tenant_id', "
+                    "CAST(:tenant_id AS text), true)"
+                ),
+                {"tenant_id": careray_id},
+            )
+            assert {
+                table: connection.execute(
+                    text(f'SELECT count(*) FROM "{table}"')
+                ).scalar_one()
+                for table in TENANT_TABLES
+            } == careray_counts_before
             connection.execute(
                 text(
                     "SELECT set_config('app.current_tenant_id', "

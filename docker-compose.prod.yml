@@ -41,6 +41,8 @@ services:
     image: ai-interview-backend:latest
     environment:
       MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set the app_migration MIGRATION_DATABASE_URL in .env}
+    volumes:
+      - backend_uploads:/app/uploads
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres-init:
@@ -106,7 +108,7 @@ services:
     image: caddy:2-alpine
     container_name: ai_interview_caddy
     environment:
-      APP_DOMAIN: ${APP_DOMAIN:-interview.careray.com}
+      APP_DOMAINS: "${APP_DOMAINS:-interview.careray.com, interview.photonthix.com}"
     ports:
       - "80:80"
       - "443:443"

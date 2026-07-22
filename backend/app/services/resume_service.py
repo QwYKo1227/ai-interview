@@ -8,9 +8,10 @@ from app.schemas.resume import (
     ResumeStatus as ResumeStatusSchema, DepartmentReviewCreate,
     DepartmentReviewUpdate, HRDecisionCreate, DuplicateCheckRequest
 )
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import UploadFile, HTTPException
-from app.utils.file_storage import save_upload_file
+from app.utils.file_storage import delete_object_file, save_upload_file, stored_file_path, UPLOAD_ROOT
+from app.models.file_models import StoredFile
 from app.services.ai_service import analyze_resume, generate_resume_markdown
 from app.services.task_queue import get_task_queue
 import docx
@@ -101,7 +102,12 @@ def _process_resume_task(
         resume.parse_error = None
         db.commit()
 
-        content = read_file_content(resume.file_path)
+        file_path = resume.file_path
+        if resume.file_id:
+            stored = db.query(StoredFile).filter(StoredFile.id == resume.file_id).first()
+            if stored:
+                file_path = str(stored_file_path(stored))
+        content = read_file_content(file_path)
         if not content:
             resume.parse_status = "failed"
             resume.parse_error = "读取简历内容失败"
@@ -284,14 +290,16 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
 
-    # 1. Save file
-    file_path = save_upload_file(file, "resumes")
+    tenant_id = get_tenant_id(db)
+    stored = save_upload_file(file, tenant_id, "resumes", resource_type="resume")
 
     # 2. Create initial record
     # 如果有应聘者填写的信息，直接使用；否则显示"解析中..."
     db_resume = Resume(
         tenant_id=position.tenant_id,
-        file_path=file_path,
+        id=uuid4(),
+        file_path=f"/api/files/{stored.id}",
+        file_id=stored.id,
         position_id=position_id,
         status=ResumeStatus.PENDING_SCREENING,
         candidate_name=candidate_name or "解析中...",
@@ -300,8 +308,14 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
         parse_status="processing",
     )
 
-    db.add(db_resume)
-    db.commit()
+    stored.resource_id = db_resume.id
+    db.add_all([stored, db_resume])
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
+        raise
     db.refresh(db_resume)
 
     # 3. Add background task - 传递是否使用用户填写的信息标记

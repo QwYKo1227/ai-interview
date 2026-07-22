@@ -6,6 +6,8 @@ from app.schemas.interview import InterviewCreate, InterviewUpdate, InterviewSco
 from fastapi import BackgroundTasks
 import logging
 from app.config.tenant_session import tenant_session
+from app.models.file_models import StoredFile
+from app.utils.file_storage import stored_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +250,12 @@ def _generate_questions_background(db: Session, interview_id: UUID, question_ban
             qbs = db.query(QuestionBank).filter(QuestionBank.id.in_(question_bank_ids)).all()
             for qb in qbs:
                 if qb.source_file:
-                    content = read_file_content(qb.source_file)
+                    source_path = qb.source_file
+                    if qb.source_file_id:
+                        stored = db.query(StoredFile).filter(StoredFile.id == qb.source_file_id).first()
+                        if stored:
+                            source_path = str(stored_file_path(stored))
+                    content = read_file_content(source_path)
                     if content:
                         qb_content += f"\n--- 参考题库: {qb.name} ---\n{content[:5000]}\n"
 

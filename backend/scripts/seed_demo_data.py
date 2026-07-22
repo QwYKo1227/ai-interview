@@ -285,7 +285,9 @@ def seed_resumes(db, positions: list[Position]) -> list[Resume]:
             contact=f"13{abs(hash(slug)) % 1000000000:09d}",
             email=f"{slug}@{DEMO_EMAIL_DOMAIN}",
             position_id=position.id,
-            file_path=f"/uploads/demo/{slug}.pdf",
+            # Demo records intentionally have no binary file. Real uploads are
+            # linked through StoredFile and served by /api/files/{id}.
+            file_path=None,
             raw_text=f"{name} 的演示简历文本，包含项目经历、技能栈和求职意向。",
             resume_markdown=f"## {name}\n\n- 应聘岗位：{position.title}\n- 匹配亮点：{review}",
             parsed_data={

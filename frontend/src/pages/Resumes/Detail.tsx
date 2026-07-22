@@ -9,6 +9,7 @@ import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined,
 import RejectReasonSelector, { REJECT_REASONS } from '../../components/RejectReasonSelector';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
+import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
@@ -38,6 +39,7 @@ const ResumeDetail: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [resume, setResume] = useState<any>(null);
+  const protectedFile = useAuthenticatedFileUrl(resume?.file_path);
   const [loading, setLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [form] = Form.useForm();
@@ -162,8 +164,8 @@ const ResumeDetail: React.FC = () => {
   }
 
   const parsedData = resume.parsed_data || {};
-  const fileUrl = resume.file_path ? (resume.file_path.startsWith('/') ? resume.file_path : `/${resume.file_path}`) : '';
-  const isPdf = fileUrl.toLowerCase().endsWith('.pdf');
+  const fileUrl = protectedFile.url;
+  const isPdf = protectedFile.contentType === 'application/pdf';
   const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(fileUrl) : '';
   const workflowStatusInfo = getStatusInfo(resume.status);
   const parseStatusInfo = getParseStatusInfo(resume.parse_status);

@@ -5,8 +5,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, public_review, workflows
+from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, public_review, workflows, files
 from app.routes.offers import router as offers_router, public_router as offers_public_router
 from app.config.database import engine, SessionLocal
 from app.models.models import Base, User, UserRole
@@ -62,12 +61,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Ensure uploads directory exists
-os.makedirs("uploads", exist_ok=True)
-
-# Mount static files
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
 origins = os.getenv("CORS_ORIGINS", "*").split(",")
 
 app.add_middleware(
@@ -93,6 +86,8 @@ app.include_router(offers_public_router, prefix="/api")
 app.include_router(offer_templates.router, prefix="/api")
 app.include_router(public_review.router, prefix="/api")
 app.include_router(workflows.router, prefix="/api")
+app.include_router(files.router, prefix="/api")
+app.include_router(files.public_router, prefix="/api")
 
 
 def init_builtin_workflows_on_startup():

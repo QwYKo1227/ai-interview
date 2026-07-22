@@ -29,6 +29,7 @@ from app.models.models import (
 from app.models.tenant_models import (
     PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
 )
+from app.models.file_models import StoredFile
 from app.config.database import get_db
 from app.config.tenant_session import TenantCapableSession
 from app.core.security import get_password_hash, create_access_token
@@ -68,6 +69,7 @@ def db() -> Generator[Session, None, None]:
         PlatformUser.__table__,
         PlatformAuditLog.__table__,
         PublicAccessToken.__table__,
+        StoredFile.__table__,
         User.__table__,
         Position.__table__,
         Resume.__table__,

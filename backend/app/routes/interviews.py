@@ -325,9 +325,9 @@ def submit_score_route(
     return db_interview
 
 from fastapi import UploadFile, File
-import shutil
-import os
 from app.services.audio_service import transcribe_audio
+from app.config.tenant_session import get_tenant_id
+from app.utils.file_storage import UPLOAD_ROOT, delete_object_file, save_upload_file, stored_file_path
 
 # ...
 
@@ -342,16 +342,13 @@ def upload_audio_route(
     """
     Upload audio recording for a specific question, transcribe it, and save to panel record.
     """
-    # 1. Save file
-    upload_dir = f"uploads/audio/{interview_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    file_name = f"{current_user.id}_{question_index}.{file_extension}"
-    file_path = os.path.join(upload_dir, file_name)
-    
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    interview = db.query(Interview).filter(Interview.id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    tenant_id = get_tenant_id(db)
+    stored = save_upload_file(file, tenant_id, "interview_audio", resource_type="interview", resource_id=interview_id)
+    file_path = str(stored_file_path(stored))
+    db.add(stored)
         
     # 2. Transcribe
     transcript_data = transcribe_audio(file_path)
@@ -383,16 +380,21 @@ def upload_audio_route(
     audio_records = dict(panel.audio_records) if panel.audio_records else {}
     transcripts = dict(panel.transcripts) if panel.transcripts else {}
     
-    audio_records[question_index] = file_path
+    audio_records[question_index] = f"/api/files/{stored.id}"
     transcripts[question_index] = transcript
     
     panel.audio_records = audio_records
     panel.transcripts = transcripts
     
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
+        raise
     db.refresh(panel)
     
-    return {"transcript": transcript, "file_path": file_path}
+    return {"transcript": transcript, "file_id": str(stored.id), "download_url": f"/api/files/{stored.id}"}
 
 @router.delete("/{interview_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_interview_route(
@@ -538,15 +540,10 @@ def upload_full_interview_audio(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    upload_dir = f"uploads/full_audio/{interview_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    file_name = f"full_interview.{file_extension}"
-    file_path = os.path.join(upload_dir, file_name)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    tenant_id = get_tenant_id(db)
+    stored = save_upload_file(file, tenant_id, "interview_audio", resource_type="interview", resource_id=interview_id)
+    file_path = str(stored_file_path(stored))
+    db.add(stored)
 
     try:
         transcript_data = transcribe_audio(file_path)
@@ -558,12 +555,17 @@ def upload_full_interview_audio(
         formatted_transcript = transcript_text
         transcript_data = {"text": transcript_text, "segments": []}
 
-    interview.audio_records = {"full_interview": file_path}
+    interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
     interview.transcripts = {
         "full_interview": transcript_text,
         "full_interview_data": transcript_data
     }
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
+        raise
 
     if transcript_text and background_tasks:
         background_tasks.add_task(
@@ -719,15 +721,10 @@ def submit_direct_evaluation_with_audio(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    upload_dir = f"uploads/full_audio/{interview_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    file_name = f"full_interview.{file_extension}"
-    file_path = os.path.join(upload_dir, file_name)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    tenant_id = get_tenant_id(db)
+    stored = save_upload_file(file, tenant_id, "interview_audio", resource_type="interview", resource_id=interview_id)
+    file_path = str(stored_file_path(stored))
+    db.add(stored)
 
     try:
         transcript_data = transcribe_audio(file_path)
@@ -737,7 +734,7 @@ def submit_direct_evaluation_with_audio(
         transcript = "转写失败，请稍后重试"
         transcript_data = {"text": transcript, "segments": []}
 
-    interview.audio_records = {"full_interview": file_path}
+    interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
     interview.transcripts = {
         "full_interview": transcript,
         "full_interview_data": transcript_data

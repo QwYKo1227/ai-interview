@@ -86,6 +86,7 @@ class QuestionBank(TenantScopedMixin, Base):
     tags = Column(ARRAY(String))
     questions = Column(JSON)
     source_file = Column(String)
+    source_file_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id"), nullable=True, index=True)
     position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -132,6 +133,7 @@ class Resume(TenantScopedMixin, Base):
     email = Column(String, index=True)  # 添加索引用于查重
     position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"))
     file_path = Column(String)
+    file_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id"), nullable=True, index=True)
     raw_text = Column(Text)
     resume_markdown = Column(Text)
     parsed_data = Column(JSON)

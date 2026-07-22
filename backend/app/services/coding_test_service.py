@@ -17,6 +17,8 @@ from app.services.tenant_reference_service import require_tenant_entity
 from app.config.tenant_session import tenant_session
 from app.config.tenant_session import get_tenant_id
 from app.services.public_token_service import hash_token, issue_public_token, resolve_public_token
+from app.models.file_models import StoredFile
+from app.utils.file_storage import stored_file_path
 from sqlalchemy.orm.attributes import set_committed_value
 
 logger = logging.getLogger(__name__)
@@ -571,7 +573,12 @@ def generate_questions_from_bank(db: Session, question_bank_id: UUID, test_type:
             return result
     
     if bank.source_file:
-        content = _read_file_content(bank.source_file)
+        source_path = bank.source_file
+        if bank.source_file_id:
+            stored = db.query(StoredFile).filter(StoredFile.id == bank.source_file_id).first()
+            if stored:
+                source_path = str(stored_file_path(stored))
+        content = _read_file_content(source_path)
         if content:
             questions = _generate_questions_with_ai(
                 content, test_type, count, db=db

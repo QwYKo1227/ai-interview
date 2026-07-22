@@ -17,7 +17,7 @@ from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, Te
 
 
 PUBLIC_NOT_FOUND = "Public resource not found"
-SUPPORTED_RESOURCE_TYPES = frozenset({"offer", "coding_test", "department_review"})
+SUPPORTED_RESOURCE_TYPES = frozenset({"offer", "coding_test", "department_review", "stored_file"})
 RAW_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{40,128}$")
 
 
@@ -35,11 +35,13 @@ def hash_token(raw_token: str) -> str:
 
 def _resource_model(resource_type: str):
     from app.models.models import CodingTest, DepartmentReview, Offer
+    from app.models.file_models import StoredFile
 
     return {
         "offer": Offer,
         "coding_test": CodingTest,
         "department_review": DepartmentReview,
+        "stored_file": StoredFile,
     }[resource_type]
 
 

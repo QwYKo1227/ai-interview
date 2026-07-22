@@ -1,9 +1,10 @@
 from sqlalchemy.orm import Session
 from app.models.models import QuestionBank, QuestionCategory, QuestionDifficulty, CodingTest, Position
 from app.schemas.question_bank import QuestionBankCreate, QuestionBankUpdate
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import UploadFile, HTTPException
-from app.utils.file_storage import save_upload_file
+from app.config.tenant_session import get_tenant_id
+from app.utils.file_storage import UPLOAD_ROOT, delete_object_file, save_upload_file
 import json
 
 from typing import List
@@ -19,23 +20,32 @@ def create_question_bank(
     position_id: UUID
 ):
     require_tenant_entity(db, Position, position_id, "Position not found")
-    file_path = save_upload_file(file, "question_banks")
+    tenant_id = get_tenant_id(db)
+    stored = save_upload_file(file, tenant_id, "question_banks", resource_type="question_bank")
 
     # TODO: 解析文件内容，提取题目
     # 这里先模拟解析结果
     questions = []
 
     db_question_bank = QuestionBank(
+        id=uuid4(),
         name=name,
         category=category,
         difficulty=difficulty,
         tags=tags,
-        source_file=file_path,
+        source_file=f"/api/files/{stored.id}",
+        source_file_id=stored.id,
         questions=questions,
         position_id=position_id
     )
-    db.add(db_question_bank)
-    db.commit()
+    stored.resource_id = db_question_bank.id
+    db.add_all([stored, db_question_bank])
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
+        raise
     db.refresh(db_question_bank)
     return db_question_bank
 

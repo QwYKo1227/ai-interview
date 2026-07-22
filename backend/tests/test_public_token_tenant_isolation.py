@@ -11,6 +11,7 @@ from app.models.models import (
     Position, PositionStatus, ResumeStatus,
 )
 from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, TenantStatus
+from app.models.file_models import StoredFile
 from app.routes import coding_tests, positions, public_review, resumes
 from app.routes.offers import public_router as offer_public_router
 from app.services import offer_service, resume_service
@@ -449,7 +450,10 @@ def test_public_resume_upload_requires_tenant_and_published_position(
 ):
     test_position.status = PositionStatus.PUBLISHED
     db.commit()
-    monkeypatch.setattr("app.services.resume_service.save_upload_file", lambda *_args: "/uploads/resumes/test.pdf")
+    monkeypatch.setattr("app.services.resume_service.save_upload_file", lambda *_args, **_kwargs: StoredFile(
+        id=uuid4(), tenant_id=_args[1], object_key=f"{_args[1]}/resumes/test.pdf",
+        original_filename="test.pdf", content_type="application/pdf", size=8, category="resumes",
+    ))
     monkeypatch.setattr("app.services.resume_service.process_resume_background", lambda *_args: None)
     position_id = test_position.id
     db.expunge_all()
@@ -533,7 +537,10 @@ def test_public_resume_upload_rejects_host_conflict_cross_tenant_and_unpublished
     db.add(other)
     db.add(TenantDomain(tenant_id=tenant_b.id, domain="other.example.com", is_primary=True))
     db.commit()
-    monkeypatch.setattr("app.services.resume_service.save_upload_file", lambda *_args: "/uploads/resumes/test.pdf")
+    monkeypatch.setattr("app.services.resume_service.save_upload_file", lambda *_args, **_kwargs: StoredFile(
+        id=uuid4(), tenant_id=_args[1], object_key=f"{_args[1]}/resumes/test.pdf",
+        original_filename="test.pdf", content_type="application/pdf", size=8, category="resumes",
+    ))
     other_id, own_id = other.id, test_position.id
     db.expunge_all()
     client = _client(db, resumes.router)

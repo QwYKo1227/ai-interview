@@ -32,7 +32,8 @@ class QuestionBankUpdate(BaseModel):
 
 class QuestionBankResponse(QuestionBankBase):
     id: UUID
-    source_file: str
+    source_file: Optional[str] = None
+    source_file_id: Optional[UUID] = None
     questions: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
 

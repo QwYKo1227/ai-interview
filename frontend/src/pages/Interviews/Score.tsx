@@ -5,6 +5,7 @@ import { EditOutlined, DeleteOutlined, PlusOutlined, SaveOutlined, CloseOutlined
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
+import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -14,6 +15,7 @@ const InterviewScore: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [interview, setInterview] = useState<any>(null);
+  const protectedResumeFile = useAuthenticatedFileUrl(interview?.resume?.file_path);
   const [loading, setLoading] = useState(false);
   const [questions, setQuestions] = useState<any[]>([]);
   const [editingIndex, setEditingIndex] = useState<number>(-1);
@@ -653,10 +655,8 @@ const InterviewScore: React.FC = () => {
     }
   };
 
-  const fileUrl = interview?.resume?.file_path
-    ? (interview.resume.file_path.startsWith('/') ? interview.resume.file_path : `/${interview.resume.file_path}`)
-    : '';
-  const isPdf = fileUrl.toLowerCase().endsWith('.pdf');
+  const fileUrl = protectedResumeFile.url;
+  const isPdf = protectedResumeFile.contentType === 'application/pdf';
   const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(fileUrl) : '';
 
   if (loading && !interview) {

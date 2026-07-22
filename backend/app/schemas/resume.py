@@ -69,7 +69,8 @@ class ResumeUpdate(BaseModel):
 
 class ResumeResponse(ResumeBase):
     id: UUID
-    file_path: str
+    file_path: Optional[str] = None
+    file_id: Optional[UUID] = None
     parsed_data: Optional[Dict[str, Any]] = None
     match_score: Optional[int] = None
     parse_status: Optional[str] = None

@@ -5,6 +5,7 @@ import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import mammoth from 'mammoth';
+import { authenticatedApiPath } from '../../hooks/useAuthenticatedFileUrl';
 
 const { Title, Text } = Typography;
 
@@ -23,6 +24,8 @@ const QuestionBanksList: React.FC = () => {
   // File Preview State
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewType, setPreviewType] = useState('');
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [docxHtml, setDocxHtml] = useState<string>('');
 
@@ -62,23 +65,19 @@ const QuestionBanksList: React.FC = () => {
     setPreviewLoading(true);
     setPreviewError(null);
     setDocxHtml('');
-    const ext = filePath.split('.').pop()?.toLowerCase();
-    const url = `/${filePath}`;
-    
     try {
-      if (ext === 'md' || ext === 'txt') {
-        const res = await fetch(url);
-        if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`);
-        }
-        const text = await res.text();
+      const blob = await request.get(authenticatedApiPath(filePath), { responseType: 'blob' }) as Blob;
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewUrl(previous => {
+        if (previous) URL.revokeObjectURL(previous);
+        return objectUrl;
+      });
+      setPreviewType(blob.type);
+      if (blob.type.startsWith('text/')) {
+        const text = await blob.text();
         setFileContent(text);
-      } else if (ext === 'docx') {
-        const res = await fetch(url);
-        if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`);
-        }
-        const arrayBuffer = await res.arrayBuffer();
+      } else if (blob.type.includes('wordprocessingml')) {
+        const arrayBuffer = await blob.arrayBuffer();
         const result = await mammoth.convertToHtml({ arrayBuffer });
         setDocxHtml(result.value);
         if (result.messages.length > 0) {
@@ -281,7 +280,11 @@ const QuestionBanksList: React.FC = () => {
   const renderFilePreview = (fileUrl: string) => {
     if (!fileUrl) return <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8' }}>暂无文件</div>;
     
-    const ext = fileUrl.split('.').pop()?.toLowerCase();
+    const ext = previewType === 'application/pdf' ? 'pdf'
+      : previewType.includes('wordprocessingml') ? 'docx'
+      : previewType === 'application/msword' ? 'doc'
+      : previewType.includes('markdown') ? 'md'
+      : previewType.startsWith('text/') ? 'txt' : '';
     
     if (previewLoading) {
       return (
@@ -579,7 +582,7 @@ const QuestionBanksList: React.FC = () => {
                   </div>
                 </div>
                 {viewingRecord.source_file && (
-                   <Button icon={<DownloadOutlined />} href={`/${viewingRecord.source_file}`} download>
+                   <Button icon={<DownloadOutlined />} href={previewUrl} download>
                      下载原文件
                    </Button>
                 )}
@@ -591,7 +594,7 @@ const QuestionBanksList: React.FC = () => {
             <Title level={5} style={{ marginBottom: 16 }}>文件预览</Title>
             
             <div style={{ border: '1px solid #E2E8F0', borderRadius: '8px', overflow: 'hidden' }}>
-              {renderFilePreview(viewingRecord.source_file ? `/${viewingRecord.source_file}` : '')}
+              {renderFilePreview(previewUrl)}
             </div>
           </div>
         )}

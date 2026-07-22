@@ -230,6 +230,9 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
     if offer.status not in [OfferStatus.DRAFT, OfferStatus.PENDING]:
         raise ValueError("当前状态不允许发送")
     
+    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
+    resume_original_status = resume.status if resume else None
+
     expiry = offer.valid_until
     if expiry is None:
         expiry = datetime.now(timezone.utc) + timedelta(days=7)
@@ -239,12 +242,9 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
     offer.token = None
     offer.status = OfferStatus.SENT
     offer.sent_at = datetime.utcnow()
-    db.commit()
-    
-    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
     if resume:
         resume.status = ResumeStatus.OFFER_PENDING
-        db.commit()
+    db.commit()
     
     result = {
         "success": True,
@@ -270,6 +270,8 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
             revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
             offer.status = OfferStatus.PENDING
             offer.sent_at = None
+            if resume and resume_original_status is not None:
+                resume.status = resume_original_status
             db.commit()
             result["success"] = False
             result["error"] = "Failed to send offer email"

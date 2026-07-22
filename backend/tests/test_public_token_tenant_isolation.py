@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.config.database import get_unscoped_db
 from app.models.models import (
     CodingSubmission, CodingTest, CodingTestStatus, DepartmentReview, Offer, OfferStatus,
-    Position, PositionStatus,
+    Position, PositionStatus, ResumeStatus,
 )
 from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, TenantStatus
 from app.routes import coding_tests, positions, public_review, resumes
@@ -295,9 +295,11 @@ def test_public_route_source_has_no_direct_unscoped_business_query():
 
 @pytest.mark.parametrize("mail_behavior", [False, RuntimeError("smtp failed")])
 def test_offer_mail_failure_revokes_token_and_restores_retryable_state(
-    db, tenant_a, monkeypatch, mail_behavior
+    db, tenant_a, test_resume, monkeypatch, mail_behavior
 ):
     offer = _offer(db, tenant_a)
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    offer.resume_id = test_resume.id
     offer.status = OfferStatus.PENDING
     db.commit()
     known_raw = "A" * 43
@@ -323,10 +325,39 @@ def test_offer_mail_failure_revokes_token_and_restores_retryable_state(
         "token": None,
     }
     assert offer.status == OfferStatus.PENDING
+    db.refresh(test_resume)
+    assert test_resume.status == ResumeStatus.INTERVIEW_PASSED
     db.expunge_all()
     with pytest.raises(HTTPException) as invalid:
         resolve_public_token(db, known_raw, "offer")
     assert invalid.value.status_code == 404
+
+
+@pytest.mark.parametrize("send_email", [False, True])
+def test_successful_offer_send_moves_resume_to_offer_pending(
+    db, tenant_a, test_resume, monkeypatch, send_email
+):
+    offer = _offer(db, tenant_a)
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    offer.resume_id = test_resume.id
+    offer.status = OfferStatus.PENDING
+    db.commit()
+
+    class Mailer:
+        def __init__(self, _db):
+            pass
+
+        def send_offer_email(self, **_kwargs):
+            return True
+
+    monkeypatch.setattr(offer_service, "MailService", Mailer)
+    result = offer_service.send_offer(db, offer.id, send_email=send_email)
+
+    db.refresh(test_resume)
+    assert result["success"] is True
+    assert result["email_sent"] is send_email
+    assert result["token"]
+    assert test_resume.status == ResumeStatus.OFFER_PENDING
 
 
 def test_offer_can_be_sent_successfully_after_mail_failure(db, tenant_a, monkeypatch):

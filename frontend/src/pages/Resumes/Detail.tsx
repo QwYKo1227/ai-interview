@@ -254,21 +254,31 @@ const ResumeDetail: React.FC = () => {
     }
   };
 
-  const showReviewLinks = (rawTokens: string[]) => {
+  type ReviewLink = {
+    reviewerId: string;
+    reviewerName: string;
+    token: string;
+    link: string;
+  };
+
+  const showReviewLinks = (successfulLinks: ReviewLink[], failedReviewers: string[]) => {
     Modal.info({
       title: '部门评审链接',
       width: 720,
       content: (
         <Space direction="vertical" style={{ width: '100%', marginTop: 16 }}>
-          {rawTokens.map((rawToken, index) => {
-            const url = `${window.location.origin}/public/review/${rawToken}`;
-            return (
-              <Space.Compact key={rawToken} style={{ width: '100%' }}>
-                <Input value={url} readOnly aria-label={`评审链接 ${index + 1}`} />
-                <Button type="primary" onClick={() => copyReviewLink(rawToken)}>复制</Button>
+          {successfulLinks.map(({ reviewerId, reviewerName, token, link }) => (
+            <div key={reviewerId} style={{ width: '100%' }}>
+              <Text strong>{reviewerName}</Text>
+              <Space.Compact style={{ width: '100%' }}>
+                <Input value={link} readOnly aria-label={`${reviewerName} 的评审链接`} />
+                <Button type="primary" onClick={() => copyReviewLink(token)}>复制</Button>
               </Space.Compact>
-            );
-          })}
+            </div>
+          ))}
+          {failedReviewers.length > 0 && (
+            <Text type="danger">创建失败：{failedReviewers.join('、')}</Text>
+          )}
         </Space>
       ),
     });
@@ -278,24 +288,43 @@ const ResumeDetail: React.FC = () => {
     try {
       const values = await deptReviewForm.validateFields();
       const reviewerIds = values.reviewer_ids; // 多选
-      const rawTokens: string[] = [];
+      const results = await Promise.allSettled(
+        reviewerIds.map(async (reviewerId: string): Promise<ReviewLink> => {
+          const reviewer = reviewers.find((item: any) => item.id === reviewerId);
+          const reviewerName = reviewer?.full_name || reviewer?.email || reviewerId;
+          const formData = new FormData();
+          formData.append('reviewer_id', reviewerId);
+          const created = await request.post(`/resumes/${id}/department-reviews`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          });
+          if (!created?.public_token) {
+            throw new Error(reviewerName);
+          }
+          return {
+            reviewerId,
+            reviewerName,
+            token: created.public_token,
+            link: `${window.location.origin}/public/review/${created.public_token}`,
+          };
+        })
+      );
+      const successfulLinks = results
+        .filter((result): result is PromiseFulfilledResult<ReviewLink> => result.status === 'fulfilled')
+        .map(result => result.value);
+      const failedReviewers = results
+        .map((result, index) => result.status === 'rejected'
+          ? (reviewers.find((item: any) => item.id === reviewerIds[index])?.full_name
+            || reviewers.find((item: any) => item.id === reviewerIds[index])?.email
+            || reviewerIds[index])
+          : null)
+        .filter((name): name is string => Boolean(name));
 
-      // 批量指派评审人
-      for (const reviewerId of reviewerIds) {
-        const formData = new FormData();
-        formData.append('reviewer_id', reviewerId);
-        const created = await request.post(`/resumes/${id}/department-reviews`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        });
-        if (created?.public_token) {
-          rawTokens.push(created.public_token);
-        }
+      showReviewLinks(successfulLinks, failedReviewers);
+      if (failedReviewers.length > 0) {
+        message.warning(`成功 ${successfulLinks.length} 位，失败 ${failedReviewers.length} 位`);
+      } else {
+        message.success(`已指派 ${successfulLinks.length} 位评审人`);
       }
-
-      if (rawTokens.length > 0) {
-        showReviewLinks(rawTokens);
-      }
-      message.success(`已指派 ${reviewerIds.length} 位评审人`);
       setIsAssignReviewerModalVisible(false);
       deptReviewForm.resetFields();
       fetchResume(id!);

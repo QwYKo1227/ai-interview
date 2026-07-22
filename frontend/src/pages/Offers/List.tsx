@@ -236,15 +236,51 @@ const OffersList: React.FC = () => {
     }
   };
 
+  const copyOfferLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      message.success('Offer 链接已复制');
+    } catch (_error) {
+      message.info(url);
+    }
+  };
+
+  const showOfferLink = (rawToken: string) => {
+    const url = `${window.location.origin}/offer-confirm/${rawToken}`;
+    Modal.info({
+      title: 'Offer 链接已生成',
+      width: 720,
+      content: (
+        <Space.Compact style={{ width: '100%', marginTop: 16 }}>
+          <Input value={url} readOnly aria-label="Offer 一次性链接" />
+          <Button type="primary" onClick={() => copyOfferLink(url)}>复制</Button>
+        </Space.Compact>
+      ),
+    });
+  };
+
   const handleSend = async (values: any) => {
     if (!currentOffer) return;
     try {
       const result = await request.post(`/offers/${currentOffer.id}/send`, values);
-      if (!result?.email_sent) {
+      if (!result?.success) {
+        message.error(result?.error || 'Offer 发送失败');
+        return;
+      }
+      if (values.send_email && !result?.email_sent) {
         message.error(result?.error || 'Offer 邮件发送失败');
         return;
       }
-      message.success('Offer发送成功');
+      if (!values.send_email) {
+        if (!result?.token) {
+          message.error('Offer 链接生成失败');
+          return;
+        }
+        showOfferLink(result.token);
+        message.success('链接已生成');
+      } else {
+        message.success('Offer发送成功');
+      }
       setSendModalVisible(false);
       sendForm.resetFields();
       fetchOffers();

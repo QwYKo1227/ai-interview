@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
@@ -18,6 +18,7 @@ from app.services.ai_service import generate_jd_stream, chat_jd_stream
 from app.models.models import User, UserRole
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
+from app.services.public_token_service import resolve_public_tenant
 from typing import List
 from uuid import UUID
 
@@ -47,10 +48,15 @@ def get_positions_route(
 
 @router.get("/public", response_model=List[PositionResponse])
 def get_public_positions_route(
+    request: Request,
+    tenant_code: str = None,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_unscoped_db),
 ):
+    resolve_public_tenant(
+        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+    )
     return get_positions(db, skip=skip, limit=limit, status="published")
 
 @router.post("/generate-jd", response_model=JDGenerateResponse)
@@ -174,3 +180,63 @@ def delete_position_route(
     if not db_position:
         raise HTTPException(status_code=404, detail="Position not found")
     return db_position
+
+
+public_router = APIRouter(prefix="/public", tags=["public-positions"])
+
+
+def _public_positions(db: Session, request: Request, tenant_code: str | None, skip: int, limit: int):
+    resolve_public_tenant(
+        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+    )
+    return get_positions(db, skip=skip, limit=limit, status="published")
+
+
+@public_router.get("/positions", response_model=List[PositionResponse])
+def get_domain_public_positions(
+    request: Request,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_unscoped_db),
+):
+    return _public_positions(db, request, None, skip, limit)
+
+
+@public_router.get("/positions/{position_id}", response_model=PositionResponse)
+def get_domain_public_position(
+    position_id: UUID,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    resolve_public_tenant(db, request_host=request.headers.get("host", ""))
+    position = get_position(db, position_id)
+    if position is None or getattr(position.status, "value", position.status) != "published":
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return position
+
+
+@public_router.get("/{tenant_code}/positions", response_model=List[PositionResponse])
+def get_tenant_public_positions(
+    tenant_code: str,
+    request: Request,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_unscoped_db),
+):
+    return _public_positions(db, request, tenant_code, skip, limit)
+
+
+@public_router.get("/{tenant_code}/positions/{position_id}", response_model=PositionResponse)
+def get_tenant_public_position(
+    tenant_code: str,
+    position_id: UUID,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    resolve_public_tenant(
+        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+    )
+    position = get_position(db, position_id)
+    if position is None or getattr(position.status, "value", position.status) != "published":
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return position

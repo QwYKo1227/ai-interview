@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
@@ -42,6 +42,7 @@ from app.services.coding_test_service import (
     get_public_submission,
     generate_questions_from_bank,
 )
+from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 
 
 router = APIRouter(prefix="/coding-tests", tags=["coding-tests"])
@@ -206,8 +207,16 @@ def get_coding_submission_route(
 public_router = APIRouter(prefix="/public/coding-tests", tags=["public-coding-tests"])
 
 
+def _validate_public_request(db: Session, token: str, request: Request) -> None:
+    resolved = resolve_public_token(db, token, "coding_test")
+    enforce_public_request_tenant(
+        db, request_host=request.headers.get("host", ""), tenant_id=resolved.tenant_id
+    )
+
+
 @public_router.get("/{token}", response_model=PublicCodingTestResponse)
-def get_public_coding_test_route(token: str, db: Session = Depends(get_unscoped_db)):
+def get_public_coding_test_route(token: str, request: Request, db: Session = Depends(get_unscoped_db)):
+    _validate_public_request(db, token, request)
     db_test = get_public_coding_test(db, token)
     if not db_test or db_test.status != CodingTestStatus.PUBLISHED:
         raise HTTPException(status_code=404, detail="Coding test not found")
@@ -237,8 +246,10 @@ def get_public_coding_test_route(token: str, db: Session = Depends(get_unscoped_
 def run_public_code_route(
     token: str,
     payload: CodingRunRequest,
+    request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    _validate_public_request(db, token, request)
     run = run_public_code(db, token, payload.code, payload.language or "javascript")
     return CodingRunResponse(
         passed=run.get("passed", False),
@@ -254,8 +265,10 @@ def submit_public_code_route(
     token: str,
     payload: CodingSubmitRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    _validate_public_request(db, token, request)
     db_sub = submit_public_code(
         db,
         background_tasks,
@@ -282,8 +295,10 @@ def submit_public_code_route(
 def submit_choice_route(
     token: str,
     payload: ChoiceSubmitRequest,
+    request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    _validate_public_request(db, token, request)
     answers = [a.dict() for a in payload.answers]
     db_sub = submit_choice_answers(
         db,
@@ -309,8 +324,10 @@ def submit_essay_route(
     token: str,
     payload: EssaySubmitRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    _validate_public_request(db, token, request)
     answers = [a.dict() for a in payload.answers]
     db_sub = submit_essay_answers(
         db,
@@ -336,8 +353,10 @@ def submit_essay_route(
 def get_public_submission_route(
     token: str,
     submission_id: UUID,
+    request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    _validate_public_request(db, token, request)
     db_sub = get_public_submission(db, token, submission_id)
     if not db_sub:
         raise HTTPException(status_code=404, detail="Submission not found")

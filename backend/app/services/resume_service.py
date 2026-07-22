@@ -17,12 +17,13 @@ import docx
 import PyPDF2
 import os
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, and_, func
 import json
 import logging
 
 from app.config.tenant_session import tenant_session
+from app.services.public_token_service import issue_public_token
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +471,61 @@ def check_duplicate_resume(db: Session, email: Optional[str], contact: Optional[
 
 # ==================== 部门评审 ====================
 
+def get_public_review_payload(db: Session, review: DepartmentReview) -> Dict[str, Any]:
+    resume = db.query(Resume).options(joinedload(Resume.position)).filter(
+        Resume.id == review.resume_id
+    ).first()
+    if resume is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return {
+        "resume": {
+            "id": str(resume.id), "candidate_name": resume.candidate_name,
+            "email": resume.email, "contact": resume.contact,
+            "match_score": resume.match_score, "ai_review": resume.ai_review,
+            "resume_markdown": resume.resume_markdown, "parsed_data": resume.parsed_data,
+            "status": resume.status.value if resume.status else None,
+            "position": {
+                "id": str(resume.position.id), "title": resume.position.title,
+                "description": resume.position.description,
+                "requirements": resume.position.requirements,
+            } if resume.position else None,
+        },
+        "existing_review": {
+            "id": str(review.id), "technical_score": review.technical_score,
+            "experience_score": review.experience_score,
+            "overall_score": review.overall_score,
+            "recommendation": review.recommendation, "comment": review.comment,
+            "is_completed": review.is_completed,
+        },
+    }
+
+
+def submit_public_department_review(
+    db: Session, review: DepartmentReview, *, technical_score: int | None,
+    experience_score: int | None, overall_score: int | None,
+    recommendation: str | None, comment: str | None,
+) -> Dict[str, str]:
+    if review.is_completed:
+        raise HTTPException(status_code=400, detail="Review already completed")
+    resume = db.query(Resume).filter(Resume.id == review.resume_id).first()
+    if resume is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    review.technical_score = technical_score
+    review.experience_score = experience_score
+    review.overall_score = overall_score
+    review.recommendation = recommendation
+    review.comment = comment
+    review.is_completed = True
+    db.commit()
+    all_reviews = db.query(DepartmentReview).filter(
+        DepartmentReview.resume_id == resume.id
+    ).all()
+    if all_reviews and all(item.is_completed for item in all_reviews):
+        resume.status = ResumeStatus.PENDING_HR_DECISION
+        db.commit()
+    return {"message": "Review submitted", "review_id": str(review.id)}
+
+
 def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) -> DepartmentReview:
     """
     创建部门评审记录（指派评审人）
@@ -502,6 +558,13 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
     db.add(review)
     db.commit()
     db.refresh(review)
+    review.public_token = issue_public_token(
+        db,
+        review.tenant_id,
+        "department_review",
+        review.id,
+        datetime.now(timezone.utc) + timedelta(days=14),
+    )
 
     # 更新简历状态为待部门评审
     if resume.status == ResumeStatus.PENDING_REVIEW:

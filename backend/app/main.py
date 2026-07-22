@@ -80,6 +80,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(positions.router, prefix="/api")
+app.include_router(positions.public_router, prefix="/api")
 app.include_router(question_banks.router, prefix="/api")
 app.include_router(resumes.router, prefix="/api")
 app.include_router(interviews.router, prefix="/api")

@@ -31,7 +31,7 @@ interface ResumeData {
 }
 
 const PublicReview: React.FC = () => {
-  const { resumeId, reviewerId } = useParams<{ resumeId: string; reviewerId: string }>();
+  const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -46,12 +46,12 @@ const PublicReview: React.FC = () => {
 
   useEffect(() => {
     fetchResume();
-  }, [resumeId]);
+  }, [token]);
 
   const fetchResume = async () => {
     setLoading(true);
     try {
-      const res = await request.get(`/public/review/${resumeId}?reviewer_id=${reviewerId}`);
+      const res = await request.get(`/public/review/${token}`);
       setResume(res.resume);
       setExistingReview(res.existing_review);
 
@@ -77,14 +77,14 @@ const PublicReview: React.FC = () => {
 
     setSubmitting(true);
     try {
-      await request.post(`/public/review/${resumeId}/submit`, {
-        reviewer_id: reviewerId,
-        technical_score: technicalScore,
-        experience_score: experienceScore,
-        overall_score: overallScore,
-        recommendation: recommendation,
-        comment: comment,
+      const params = new URLSearchParams({
+        technical_score: String(technicalScore),
+        experience_score: String(experienceScore),
+        overall_score: String(overallScore),
+        recommendation,
+        comment,
       });
+      await request.post(`/public/review/${token}/submit?${params.toString()}`);
       message.success('审核已提交');
       fetchResume();
     } catch (e: any) {

@@ -60,7 +60,7 @@ const router = createBrowserRouter([
     element: <OfferConfirm />,
   },
   {
-    path: '/public/review/:resumeId/:reviewerId',
+    path: '/public/review/:token',
     element: <PublicReview />,
   },
   {

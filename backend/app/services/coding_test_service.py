@@ -1,5 +1,5 @@
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import secrets
 import random
 import os
@@ -15,6 +15,9 @@ from app.services.code_runner_service import run_code_against_tests
 from app.services.coding_test_ai_service import generate_coding_evaluation_background
 from app.services.tenant_reference_service import require_tenant_entity
 from app.config.tenant_session import tenant_session
+from app.config.tenant_session import get_tenant_id
+from app.services.public_token_service import hash_token, issue_public_token, resolve_public_token
+from sqlalchemy.orm.attributes import set_committed_value
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +35,14 @@ def _validate_references(db: Session, data: Dict[str, Any]) -> None:
 
 
 def _generate_public_token() -> str:
-    return secrets.token_urlsafe(16)
+    # Legacy column remains non-null until the schema cleanup migration. It
+    # stores a digest marker, never a usable bearer credential.
+    return hash_token(secrets.token_urlsafe(32))
 
 
 def create_coding_test(db: Session, coding_test: CodingTestCreate, creator_id: UUID) -> CodingTest:
     _validate_references(db, coding_test.model_dump())
     token = _generate_public_token()
-    for _ in range(5):
-        exists = db.query(CodingTest).filter(CodingTest.public_token == token).first()
-        if not exists:
-            break
-        token = _generate_public_token()
-    else:
-        raise HTTPException(status_code=500, detail="Failed to generate public token")
 
     test_type = coding_test.test_type or "algorithm"
     gen_status = "completed" if test_type == "algorithm" else "pending"
@@ -72,6 +70,15 @@ def create_coding_test(db: Session, coding_test: CodingTestCreate, creator_id: U
     db.add(db_test)
     db.commit()
     db.refresh(db_test)
+    raw_token = issue_public_token(
+        db,
+        get_tenant_id(db),
+        "coding_test",
+        db_test.id,
+        datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    # Return the credential once without marking the legacy DB column dirty.
+    set_committed_value(db_test, "public_token", raw_token)
     return db_test
 
 
@@ -126,7 +133,7 @@ def close_coding_test(db: Session, coding_test_id: UUID) -> Optional[CodingTest]
 
 
 def get_public_coding_test(db: Session, token: str) -> Optional[CodingTest]:
-    return db.query(CodingTest).filter(CodingTest.public_token == token).first()
+    return resolve_public_token(db, token, "coding_test").resource
 
 
 def run_public_code(db: Session, token: str, code: str, language: str) -> dict:

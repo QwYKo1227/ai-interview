@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from collections import deque
 from pathlib import Path
 from uuid import UUID, uuid4
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from unittest.mock import MagicMock
@@ -17,6 +18,7 @@ from app.services import (
     resume_service,
 )
 from app.services.task_queue import QueueTask, TaskQueue, TaskStatus
+from app.services.public_token_service import hash_token, issue_public_token
 
 
 BACKGROUND_FUNCTIONS = [
@@ -191,7 +193,7 @@ def test_public_submission_copies_non_null_tenant_from_resolved_test(
         tenant_id=tenant_a.id,
         title="Tenant test",
         test_type=CodingTestType.ALGORITHM,
-        public_token=f"token-{kind}",
+        public_token=hash_token(f"disabled-{kind}"),
         status=CodingTestStatus.PUBLISHED,
         created_by=test_user.id,
         questions=[],
@@ -199,6 +201,12 @@ def test_public_submission_copies_non_null_tenant_from_resolved_test(
     )
     db.add(coding_test)
     db.commit()
+    tenant_id = tenant_a.id
+    raw_token = issue_public_token(
+        db, tenant_id, "coding_test", coding_test.id,
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    db.expunge_all()
     background_tasks = MagicMock()
     monkeypatch.setattr(
         coding_test_service,
@@ -208,19 +216,19 @@ def test_public_submission_copies_non_null_tenant_from_resolved_test(
 
     if kind == "code":
         submission = coding_test_service.submit_public_code(
-            db, background_tasks, coding_test.public_token, "A", "a@test.com", "pass", "python"
+            db, background_tasks, raw_token, "A", "a@test.com", "pass", "python"
         )
     elif kind == "essay":
         submission = coding_test_service.submit_essay_answers(
-            db, background_tasks, coding_test.public_token, "A", "a@test.com", []
+            db, background_tasks, raw_token, "A", "a@test.com", []
         )
     else:
         submission = coding_test_service.submit_choice_answers(
-            db, coding_test.public_token, "A", "a@test.com", []
+            db, raw_token, "A", "a@test.com", []
         )
 
-    assert submission.tenant_id == tenant_a.id
-    assert db.get(CodingSubmission, submission.id).tenant_id == tenant_a.id
+    assert submission.tenant_id == tenant_id
+    assert db.get(CodingSubmission, submission.id).tenant_id == tenant_id
     if kind in {"code", "essay"}:
         args = background_tasks.add_task.call_args.args
         assert args[:3] == (args[0], submission.tenant_id, submission.id)

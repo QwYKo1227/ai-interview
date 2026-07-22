@@ -124,6 +124,8 @@ class DepartmentReviewResponse(DepartmentReviewBase):
     updated_at: Optional[datetime] = None
     reviewer_name: Optional[str] = None  # 评审人姓名
 
+    public_token: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 

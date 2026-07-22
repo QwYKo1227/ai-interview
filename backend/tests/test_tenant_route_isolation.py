@@ -94,7 +94,13 @@ PROTECTED_ROUTE_FILES = [
 ]
 
 PUBLIC_ROUTE_FUNCTIONS = {
-    "positions.py": {"get_public_positions_route"},
+    "positions.py": {
+        "get_public_positions_route",
+        "get_domain_public_positions",
+        "get_domain_public_position",
+        "get_tenant_public_positions",
+        "get_tenant_public_position",
+    },
     "resumes.py": {"create_resume_route"},
     "coding_tests.py": {
         "get_public_coding_test_route",

@@ -4,14 +4,14 @@ from app.models.models import (
     Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User
 )
 from app.schemas.offer import OfferCreate, OfferUpdate, OfferStats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 import logging
-import secrets
 from fastapi import HTTPException
 
 from app.services.mail_service import MailService
+from app.services.public_token_service import issue_public_token, resolve_public_token, revoke_public_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +229,13 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
     if offer.status not in [OfferStatus.DRAFT, OfferStatus.PENDING]:
         raise ValueError("当前状态不允许发送")
     
-    token = secrets.token_urlsafe(32)
-    offer.token = token
+    expiry = offer.valid_until
+    if expiry is None:
+        expiry = datetime.now(timezone.utc) + timedelta(days=7)
+    elif expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    token = issue_public_token(db, offer.tenant_id, "offer", offer.id, expiry)
+    offer.token = None
     offer.status = OfferStatus.SENT
     offer.sent_at = datetime.utcnow()
     db.commit()
@@ -258,8 +263,8 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
             )
             result["email_sent"] = email_result
         except Exception as e:
-            logger.error(f"Failed to send offer email: {e}")
-            result["error"] = str(e)
+            logger.error("Failed to send offer email (%s)", type(e).__name__)
+            result["error"] = "Failed to send offer email"
     
     return result
 
@@ -344,8 +349,11 @@ def reopen_offer(db: Session, offer_id: UUID) -> Offer:
         raise ValueError("当前状态不允许重新打开")
     
     old_status = offer.status.value
-    offer.status = OfferStatus.SENT
-    offer.token = secrets.token_urlsafe(32)
+    # Reopening invalidates the old public link; an HR user must explicitly
+    # send the offer again to issue and deliver a fresh credential.
+    offer.status = OfferStatus.PENDING
+    offer.token = None
+    revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
     offer.notes = (offer.notes or "") + f"\n重新打开（原状态：{old_status}）"
     
     db.commit()
@@ -411,9 +419,7 @@ def mark_expired_offers(db: Session) -> int:
     return len(expired_offers)
 
 def get_offer_by_token(db: Session, token: str) -> Optional[Dict[str, Any]]:
-    offer = db.query(Offer).filter(Offer.token == token).first()
-    if not offer:
-        return None
+    offer = resolve_public_token(db, token, "offer").resource
     
     return {
         "id": str(offer.id),
@@ -456,7 +462,7 @@ def get_offer_by_token(db: Session, token: str) -> Optional[Dict[str, Any]]:
 
 def confirm_offer_by_token(db: Session, token: str, action: str, reason: Optional[str] = None, 
                            accepted_salary: Optional[float] = None, accepted_onboard_date: Optional[datetime] = None) -> Dict[str, Any]:
-    offer = db.query(Offer).filter(Offer.token == token).first()
+    offer = resolve_public_token(db, token, "offer").resource
     if not offer:
         return {"success": False, "error": "无效的确认链接"}
     

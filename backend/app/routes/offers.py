@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from typing import Optional
 from uuid import UUID
@@ -13,6 +13,7 @@ from app.schemas.offer import (
 from app.services import offer_service
 from app.core.tenant_dependencies import get_current_user_dep
 from app.models.models import User
+from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 
 router = APIRouter(
     prefix="/offers",
@@ -193,8 +194,13 @@ public_router = APIRouter(
 @public_router.get("/confirm/{token}")
 def get_offer_by_token(
     token: str,
+    request: Request,
     db: Session = Depends(get_unscoped_db)
 ):
+    resolved = resolve_public_token(db, token, "offer")
+    enforce_public_request_tenant(
+        db, request_host=request.headers.get("host", ""), tenant_id=resolved.tenant_id
+    )
     offer = offer_service.get_offer_by_token(db, token)
     if not offer:
         raise HTTPException(status_code=404, detail="无效的确认链接")
@@ -204,8 +210,13 @@ def get_offer_by_token(
 def confirm_offer_by_token(
     token: str,
     request: OfferConfirmRequest,
+    http_request: Request,
     db: Session = Depends(get_unscoped_db)
 ):
+    resolved = resolve_public_token(db, token, "offer")
+    enforce_public_request_tenant(
+        db, request_host=http_request.headers.get("host", ""), tenant_id=resolved.tenant_id
+    )
     result = offer_service.confirm_offer_by_token(
         db, token, request.action, request.reason,
         request.accepted_salary, request.accepted_onboard_date

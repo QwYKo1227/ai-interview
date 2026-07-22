@@ -1,6 +1,7 @@
 import ast
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -1116,8 +1117,6 @@ def test_synchronous_ai_uses_only_callers_tenant_config_and_prompt(
             )
 
     monkeypatch.setattr(ai_service, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(ai_service, "_client_cache", None)
-    monkeypatch.setattr(ai_service, "_client_cache_key", None)
 
     ai_service.generate_jd("A role", db=tenant_a_db)
     ai_service.generate_jd("B role", db=tenant_b_db)
@@ -1152,6 +1151,128 @@ def test_ai_config_without_db_uses_safe_defaults_without_database_read(
     assert database_reads == []
     assert config["llm_base_url"]
     assert config["llm_model"]
+
+
+def test_concurrent_tenant_configs_never_return_another_tenants_client(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config_a = {
+        "llm_base_url": "https://tenant-a-ai.example/v1",
+        "llm_api_key": "tenant-a-key",
+    }
+    config_b = {
+        "llm_base_url": "https://tenant-b-ai.example/v1",
+        "llm_api_key": "tenant-b-key",
+    }
+    first_b_started = Event()
+    release_first_b = Event()
+    construction_lock = Lock()
+    b_constructions = 0
+
+    class ControlledOpenAI:
+        def __init__(self, api_key, base_url):
+            nonlocal b_constructions
+            if base_url == config_b["llm_base_url"]:
+                with construction_lock:
+                    b_constructions += 1
+                    construction_number = b_constructions
+                if construction_number == 1:
+                    first_b_started.set()
+                    assert release_first_b.wait(timeout=5)
+            self.api_key = api_key
+            self.base_url = base_url
+
+    monkeypatch.setattr(ai_service, "OpenAI", ControlledOpenAI)
+
+    client_a = ai_service._get_client(config=config_a)
+    first_b_result = {}
+    first_b_thread = Thread(
+        target=lambda: first_b_result.setdefault(
+            "client", ai_service._get_client(config=config_b)
+        )
+    )
+    first_b_thread.start()
+    assert first_b_started.wait(timeout=5)
+
+    second_b_client = ai_service._get_client(config=config_b)
+    release_first_b.set()
+    first_b_thread.join(timeout=5)
+
+    assert not first_b_thread.is_alive()
+    assert client_a.base_url == config_a["llm_base_url"]
+    assert client_a.api_key == config_a["llm_api_key"]
+    assert second_b_client.base_url == config_b["llm_base_url"]
+    assert second_b_client.api_key == config_b["llm_api_key"]
+    assert first_b_result["client"].base_url == config_b["llm_base_url"]
+    assert first_b_result["client"].api_key == config_b["llm_api_key"]
+
+
+@pytest.mark.parametrize("stream_factory", ["generate_jd_stream", "chat_jd_stream"])
+def test_jd_stream_factory_snapshots_tenant_ai_before_dependency_closes(
+    stream_factory: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = []
+    db = SimpleNamespace(closed=False)
+    config = {
+        "llm_provider": "openai_compatible",
+        "llm_base_url": "https://tenant-ai.example/v1",
+        "llm_model": "tenant-model",
+        "llm_temperature": 0.2,
+        "llm_max_tokens": None,
+        "llm_api_key": "tenant-key",
+    }
+
+    def assert_open(stage):
+        assert db.closed is False, f"{stage} accessed the closed tenant session"
+        calls.append(stage)
+
+    def fake_get_prompt(*_args, db=None, **_kwargs):
+        assert_open("prompt")
+        return {"system": "tenant system", "user": "tenant user"}
+
+    def fake_get_config(received_db=None):
+        assert received_db is db
+        assert_open("config")
+        return config
+
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            calls.append("network")
+            return [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))]
+                )
+            ]
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+
+    def fake_get_client(*, config=None, **_kwargs):
+        assert config is not None
+        assert_open("client")
+        return fake_client
+
+    monkeypatch.setattr(ai_service.prompt_manager, "get_prompt", fake_get_prompt)
+    monkeypatch.setattr(ai_service, "_get_llm_config", fake_get_config)
+    monkeypatch.setattr(ai_service, "_get_client", fake_get_client)
+
+    if stream_factory == "generate_jd_stream":
+        stream = ai_service.generate_jd_stream("Engineer", db=db)
+        assert calls == ["prompt", "config", "client"]
+    else:
+        stream = ai_service.chat_jd_stream(
+            [{"role": "user", "content": "Improve it"}], db=db
+        )
+        assert calls == ["config", "client"]
+
+    db.closed = True
+    events = list(stream)
+
+    assert calls[-1] == "network"
+    assert events[-1].startswith("data: ")
+    assert '"done": true' in events[-1]
 
 
 def test_create_department_review_rejects_cross_tenant_reviewer(

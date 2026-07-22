@@ -19,10 +19,6 @@ _DEFAULT_BASE_URL_BY_PROVIDER = {
     "openai_compatible": None,
 }
 
-_client_cache = None
-_client_cache_key = None
-
-
 def _get_llm_config(db: Session | None = None) -> Dict[str, Any]:
     """Resolve tenant config only when the caller supplies a scoped session."""
     cfg = get_system_config(db) if db is not None else None
@@ -47,17 +43,12 @@ def _get_client(
     db: Session | None = None,
     config: Dict[str, Any] | None = None,
 ) -> OpenAI:
-    global _client_cache, _client_cache_key
-    cfg = config or _get_llm_config(db)
-    key = (cfg.get("llm_base_url"), cfg.get("llm_api_key"))
-    if _client_cache is not None and _client_cache_key == key:
-        return _client_cache
-    _client_cache_key = key
-    _client_cache = OpenAI(
+    """Build a request-local client so tenant credentials cannot race."""
+    cfg = config if config is not None else _get_llm_config(db)
+    return OpenAI(
         api_key=cfg.get("llm_api_key"),
         base_url=cfg.get("llm_base_url"),
     )
-    return _client_cache
 
 def _get_extra_body(
     db: Session | None = None,
@@ -372,6 +363,22 @@ def generate_jd(
         print(f"JD generation failed: {e}")
         return {"description": "生成岗位描述失败", "requirements": "生成任职要求失败"}
 
+def _stream_chat_events(client: OpenAI, request: Dict[str, Any], error_label: str):
+    """Iterate a prepared network request without consulting tenant state."""
+    try:
+        stream = client.chat.completions.create(**request)
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield "data: " + json.dumps(
+                    {"content": chunk.choices[0].delta.content},
+                    ensure_ascii=False,
+                ) + "\n\n"
+        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
+    except Exception as exc:
+        print(f"{error_label}: {exc}")
+        yield "data: " + json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n\n"
+
+
 def generate_jd_stream(
     title: str,
     department: str = "",
@@ -381,45 +388,44 @@ def generate_jd_stream(
     *,
     db: Session | None = None,
 ):
-    prompt_data = prompt_manager.get_prompt(
-        "generate_jd",
-        db=db,
-        title=title,
-        department=department or "未指定",
-        location=location or "未指定",
-        salary_range=salary_range or "面议",
-        keywords=keywords or "无特殊要求"
-    )
-    
-    if not prompt_data.get("user"):
-        yield "data: " + json.dumps({"error": "生成失败，请检查配置"}, ensure_ascii=False) + "\n\n"
-        return
-    
     try:
-        cfg = _get_llm_config(db)
+        prompt_data = prompt_manager.get_prompt(
+            "generate_jd",
+            db=db,
+            title=title,
+            department=department or "未指定",
+            location=location or "未指定",
+            salary_range=salary_range or "面议",
+            keywords=keywords or "无特殊要求",
+        )
+        if not prompt_data.get("user"):
+            return iter((
+                "data: "
+                + json.dumps({"error": "生成失败，请检查配置"}, ensure_ascii=False)
+                + "\n\n",
+            ))
+
+        cfg = dict(_get_llm_config(db))
+        client = _get_client(config=cfg)
         extra = {"temperature": cfg["llm_temperature"], "stream": True}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        
-        stream = _get_client(config=cfg).chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'system', 'content': prompt_data['system']},
-                {'role': 'user', 'content': prompt_data['user']}
+        request = {
+            "model": cfg["llm_model"],
+            "messages": [
+                {"role": "system", "content": prompt_data["system"]},
+                {"role": "user", "content": prompt_data["user"]},
             ],
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(config=cfg),
+            "response_format": {"type": "json_object"},
+            "extra_body": _get_extra_body(config=cfg),
             **extra,
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield "data: " + json.dumps({"content": chunk.choices[0].delta.content}, ensure_ascii=False) + "\n\n"
-        
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-    except Exception as e:
-        print(f"JD stream generation failed: {e}")
-        yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+        }
+        return _stream_chat_events(client, request, "JD stream generation failed")
+    except Exception as exc:
+        print(f"JD stream generation failed: {exc}")
+        return iter((
+            "data: " + json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n\n",
+        ))
 
 def chat_jd_stream(
     messages: list,
@@ -451,7 +457,8 @@ def chat_jd_stream(
 3. 修改时要保持整体结构完整，不要只返回部分内容"""
 
     try:
-        cfg = _get_llm_config(db)
+        cfg = dict(_get_llm_config(db))
+        client = _get_client(config=cfg)
         extra = {"temperature": cfg["llm_temperature"], "stream": True}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
@@ -460,22 +467,19 @@ def chat_jd_stream(
         for msg in messages:
             formatted_messages.append({"role": msg["role"], "content": msg["content"]})
         
-        stream = _get_client(config=cfg).chat.completions.create(
-            model=cfg["llm_model"],
-            messages=formatted_messages,
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(config=cfg),
+        request = {
+            "model": cfg["llm_model"],
+            "messages": formatted_messages,
+            "response_format": {"type": "json_object"},
+            "extra_body": _get_extra_body(config=cfg),
             **extra,
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield "data: " + json.dumps({"content": chunk.choices[0].delta.content}, ensure_ascii=False) + "\n\n"
-        
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-    except Exception as e:
-        print(f"JD chat stream failed: {e}")
-        yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+        }
+        return _stream_chat_events(client, request, "JD chat stream failed")
+    except Exception as exc:
+        print(f"JD chat stream failed: {exc}")
+        return iter((
+            "data: " + json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n\n",
+        ))
 
 
 def generate_text(prompt: str, *, db: Session | None = None) -> str:

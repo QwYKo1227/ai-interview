@@ -42,6 +42,15 @@ SELECT format(
 )
 \gexec
 
+-- NOINHERIT does not prevent SET ROLE. Remove every upstream membership for
+-- the two application roles so neither can assume an owner or bypass role.
+SELECT format('REVOKE %I FROM %I', parent.rolname, member.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles parent ON parent.oid = membership.roleid
+JOIN pg_roles member ON member.oid = membership.member
+WHERE member.rolname IN ('app_runtime', 'app_migration')
+\gexec
+
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'database_name')
 \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM app_migration', :'database_name')

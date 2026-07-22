@@ -15,8 +15,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.config.tenant_session import TenantCapableSession, TenantSession
+from app.models.base import Base
 from app.models.file_models import StoredFile
 from app.models.models import Position, Resume, User, UserRole
+from app.models.tenant_constraints import TenantForeignKeyConstraint
 from app.models.workflow_models import Workflow
 from app.schemas.tenant import TenantOnboardingRequest
 from app.services.public_token_service import issue_public_token, resolve_public_token
@@ -221,6 +223,20 @@ def create_position(pg_session_factory, tenant_id, title):
     return position_id
 
 
+def create_position_orm(pg_session_factory, tenant_id, title):
+    position_id = uuid.uuid4()
+    with pg_session_factory(tenant_id) as db:
+        position = Position(
+            id=position_id,
+            title=title,
+            description=title,
+        )
+        db.add(position)
+        db.commit()
+        assert position.tenant_id == tenant_id
+    return position_id
+
+
 def test_rls_blocks_known_other_tenant_uuid_raw_sql(pg_session_factory, tenant_pair):
     tenant_a, tenant_b = tenant_pair
     position_b = create_position(pg_session_factory, tenant_b, "B")
@@ -238,6 +254,65 @@ def test_rls_blocks_known_other_tenant_uuid_orm(pg_session_factory, tenant_pair)
 
     with pg_session_factory(tenant_a) as db:
         assert db.query(Position).filter(Position.id == position_b).first() is None
+
+
+def test_orm_crud_matrix_enforces_tenant_isolation(pg_session_factory, tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    own_id = create_position_orm(pg_session_factory, tenant_a, "own ORM row")
+    foreign_update_id = create_position_orm(
+        pg_session_factory, tenant_b, "foreign ORM update row"
+    )
+    foreign_delete_id = create_position_orm(
+        pg_session_factory, tenant_b, "foreign ORM delete row"
+    )
+
+    with pg_session_factory(tenant_a) as db:
+        own = db.query(Position).filter(Position.id == own_id).one()
+        own.title = "own ORM row updated"
+        db.commit()
+        assert db.query(Position).filter(Position.id == own_id).one().title == (
+            "own ORM row updated"
+        )
+
+        assert (
+            db.query(Position)
+            .filter(Position.id == foreign_update_id)
+            .update({Position.title: "cross-tenant ORM hijack"}, synchronize_session=False)
+        ) == 0
+        assert (
+            db.query(Position)
+            .filter(Position.id == foreign_delete_id)
+            .delete(synchronize_session=False)
+        ) == 0
+        db.commit()
+        assert db.query(Position).filter(Position.id == foreign_update_id).first() is None
+        assert db.query(Position).filter(Position.id == foreign_delete_id).first() is None
+
+        with pytest.raises(ValueError, match="tenant_id does not match session tenant"):
+            db.add(
+                Position(
+                    tenant_id=tenant_b,
+                    title="cross-tenant ORM insert",
+                    description="must fail",
+                )
+            )
+        db.rollback()
+
+        own = db.query(Position).filter(Position.id == own_id).one()
+        db.delete(own)
+        db.commit()
+        assert db.query(Position).filter(Position.id == own_id).first() is None
+
+    with pg_session_factory(tenant_b) as db:
+        assert db.query(Position).filter(Position.id == foreign_update_id).one().title == (
+            "foreign ORM update row"
+        )
+        foreign_delete = (
+            db.query(Position).filter(Position.id == foreign_delete_id).one()
+        )
+        db.delete(foreign_delete)
+        db.commit()
+        assert db.query(Position).filter(Position.id == foreign_delete_id).first() is None
 
 
 def test_rls_rejects_cross_tenant_insert(pg_session_factory, tenant_pair):
@@ -407,6 +482,62 @@ def test_composite_foreign_key_rejects_cross_tenant_reference(
                 },
             )
             db.commit()
+
+
+def test_database_and_metadata_match_all_tenant_foreign_key_semantics(
+    migration_engine,
+):
+    metadata_constraints = {
+        (table.name, constraint.name): (
+            tuple(foreign_key.parent.name for foreign_key in constraint.elements),
+            constraint.elements[0].column.table.name,
+            tuple(foreign_key.column.name for foreign_key in constraint.elements),
+            constraint.ondelete,
+            constraint.postgresql_set_null_columns,
+        )
+        for table in Base.metadata.tables.values()
+        for constraint in table.constraints
+        if isinstance(constraint, TenantForeignKeyConstraint)
+    }
+    with migration_engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT child.relname AS child_table, c.conname, "
+                "ARRAY(SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY k(attnum, pos) "
+                "      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum "
+                "      ORDER BY k.pos) AS child_columns, "
+                "parent.relname AS parent_table, "
+                "ARRAY(SELECT a.attname FROM unnest(c.confkey) WITH ORDINALITY k(attnum, pos) "
+                "      JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.attnum "
+                "      ORDER BY k.pos) AS parent_columns, "
+                "CASE c.confdeltype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' "
+                "     WHEN 'd' THEN 'SET DEFAULT' WHEN 'r' THEN 'RESTRICT' ELSE NULL END "
+                "     AS ondelete, "
+                "COALESCE(ARRAY(SELECT a.attname "
+                "      FROM unnest(c.confdelsetcols) WITH ORDINALITY k(attnum, pos) "
+                "      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum "
+                "      ORDER BY k.pos), ARRAY[]::name[]) AS set_null_columns "
+                "FROM pg_constraint c "
+                "JOIN pg_class child ON child.oid = c.conrelid "
+                "JOIN pg_class parent ON parent.oid = c.confrelid "
+                "JOIN pg_namespace n ON n.oid = child.relnamespace "
+                "WHERE c.contype = 'f' AND n.nspname = 'public' "
+                "AND c.conname LIKE 'fk_%_tenant'"
+            )
+        ).mappings()
+        database_constraints = {
+            (row["child_table"], row["conname"]): (
+                tuple(row["child_columns"]),
+                row["parent_table"],
+                tuple(row["parent_columns"]),
+                row["ondelete"],
+                tuple(row["set_null_columns"]),
+            )
+            for row in rows
+        }
+
+    assert len(metadata_constraints) == 29
+    assert database_constraints == metadata_constraints
 
 
 def test_deleting_rejector_clears_only_rejected_by_not_tenant_id(
@@ -627,6 +758,115 @@ def test_role_initialization_transfers_legacy_object_ownership_without_granting_
         admin_engine.dispose()
 
 
+def test_role_initialization_revokes_only_application_role_memberships(
+    migrated_database,
+    admin_database_url,
+    runtime_database_url,
+    migration_database_url,
+    pg_session_factory,
+    tenant_pair,
+):
+    suffix = uuid.uuid4().hex
+    probe_roles = {
+        "owner": f"probe_owner_{suffix}",
+        "super": f"probe_super_{suffix}",
+        "bypass": f"probe_bypass_{suffix}",
+        "other": f"probe_other_{suffix}",
+    }
+    unrelated_parent = f"unrelated_parent_{suffix}"
+    unrelated_member = f"unrelated_member_{suffix}"
+    owner_schema = f"probe_owner_schema_{suffix}"
+    admin_engine = create_engine(admin_database_url, poolclass=NullPool)
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE ROLE "{probe_roles["owner"]}" NOLOGIN'))
+            connection.execute(
+                text(f'CREATE ROLE "{probe_roles["super"]}" NOLOGIN SUPERUSER')
+            )
+            connection.execute(
+                text(f'CREATE ROLE "{probe_roles["bypass"]}" NOLOGIN BYPASSRLS')
+            )
+            connection.execute(text(f'CREATE ROLE "{probe_roles["other"]}" NOLOGIN'))
+            connection.execute(
+                text(
+                    f'CREATE SCHEMA "{owner_schema}" '
+                    f'AUTHORIZATION "{probe_roles["owner"]}"'
+                )
+            )
+            connection.execute(text(f'CREATE ROLE "{unrelated_parent}" NOLOGIN'))
+            connection.execute(text(f'CREATE ROLE "{unrelated_member}" NOLOGIN'))
+            for probe_role in probe_roles.values():
+                connection.execute(text(f'GRANT "{probe_role}" TO app_runtime'))
+                connection.execute(text(f'GRANT "{probe_role}" TO app_migration'))
+            connection.execute(
+                text(f'GRANT "{unrelated_parent}" TO "{unrelated_member}"')
+            )
+
+        role_result = _run_role_script()
+        assert role_result.returncode == 0, role_result.stdout + role_result.stderr
+
+        with admin_engine.connect() as connection:
+            application_memberships = connection.execute(
+                text(
+                    "SELECT parent.rolname, member.rolname "
+                    "FROM pg_auth_members membership "
+                    "JOIN pg_roles parent ON parent.oid = membership.roleid "
+                    "JOIN pg_roles member ON member.oid = membership.member "
+                    "WHERE member.rolname IN ('app_runtime', 'app_migration')"
+                )
+            ).all()
+            unrelated_membership = connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_auth_members membership "
+                    "JOIN pg_roles parent ON parent.oid = membership.roleid "
+                    "JOIN pg_roles member ON member.oid = membership.member "
+                    "WHERE parent.rolname = :parent AND member.rolname = :member"
+                ),
+                {"parent": unrelated_parent, "member": unrelated_member},
+            ).scalar_one()
+        assert application_memberships == []
+        assert unrelated_membership == 1
+
+        for database_url in (runtime_database_url, migration_database_url):
+            engine = create_engine(database_url, poolclass=NullPool)
+            try:
+                for probe_role in probe_roles.values():
+                    with pytest.raises(DBAPIError):
+                        with engine.begin() as connection:
+                            connection.execute(text(f'SET ROLE "{probe_role}"'))
+            finally:
+                engine.dispose()
+
+        tenant_a, tenant_b = tenant_pair
+        foreign_position_id = create_position_orm(
+            pg_session_factory, tenant_b, "membership bypass probe"
+        )
+        with pg_session_factory(tenant_a) as db:
+            assert db.query(Position).filter(
+                Position.id == foreign_position_id
+            ).first() is None
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{owner_schema}" CASCADE'))
+            connection.execute(
+                text(f'REVOKE "{unrelated_parent}" FROM "{unrelated_member}"')
+            )
+            for probe_role in probe_roles.values():
+                connection.execute(
+                    text(f'REVOKE "{probe_role}" FROM app_runtime')
+                )
+                connection.execute(
+                    text(f'REVOKE "{probe_role}" FROM app_migration')
+                )
+            for role_name in [
+                unrelated_member,
+                unrelated_parent,
+                *probe_roles.values(),
+            ]:
+                connection.execute(text(f'DROP ROLE IF EXISTS "{role_name}"'))
+        admin_engine.dispose()
+
+
 def test_alembic_uses_migration_url_not_runtime_database_url(
     migration_database_url,
 ):
@@ -643,6 +883,53 @@ def test_alembic_uses_migration_url_not_runtime_database_url(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "n3o4p5q6r7s8" in result.stdout
+
+
+def test_alembic_autogenerate_has_no_head_metadata_drift(migration_database_url):
+    result = _run_alembic(migration_database_url, "check")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No new upgrade operations detected" in result.stdout
+
+
+def test_alembic_comparator_detects_partial_set_null_catalog_drift(
+    migration_engine, migration_database_url
+):
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE resumes DROP CONSTRAINT fk_resumes_rejected_by_tenant"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE resumes ADD CONSTRAINT fk_resumes_rejected_by_tenant "
+                "FOREIGN KEY (tenant_id, rejected_by) "
+                "REFERENCES users (tenant_id, id) ON DELETE SET NULL"
+            )
+        )
+
+    try:
+        drift = _run_alembic(migration_database_url, "check")
+        assert drift.returncode != 0
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE resumes DROP CONSTRAINT fk_resumes_rejected_by_tenant"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE resumes ADD CONSTRAINT fk_resumes_rejected_by_tenant "
+                    "FOREIGN KEY (tenant_id, rejected_by) "
+                    "REFERENCES users (tenant_id, id) "
+                    "ON DELETE SET NULL (rejected_by)"
+                )
+            )
+
+    clean = _run_alembic(migration_database_url, "check")
+    assert clean.returncode == 0, clean.stdout + clean.stderr
 
 
 def test_runtime_application_starts_without_ddl_and_seeds_inside_tenant_context(

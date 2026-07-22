@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKeyConstraint, Float, UniqueConstraint, text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, Index, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
@@ -6,6 +6,7 @@ from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship
 from app.models.tenant_models import TenantScopedMixin
+from app.models.tenant_constraints import TenantForeignKeyConstraint
 
 
 def _tenant_identity(table_name):
@@ -14,12 +15,19 @@ def _tenant_identity(table_name):
     )
 
 
-def _tenant_reference(table_name, column_name, target_table, ondelete=None):
-    return ForeignKeyConstraint(
+def _tenant_reference(
+    table_name,
+    column_name,
+    target_table,
+    ondelete=None,
+    postgresql_set_null_columns=(),
+):
+    return TenantForeignKeyConstraint(
         ["tenant_id", column_name],
         [f"{target_table}.tenant_id", f"{target_table}.id"],
         name=f"fk_{table_name}_{column_name}_tenant",
         ondelete=ondelete,
+        postgresql_set_null_columns=postgresql_set_null_columns,
     )
 
 class UserRole(str, enum.Enum):
@@ -154,10 +162,13 @@ class Resume(TenantScopedMixin, Base):
         _tenant_identity("resumes"),
         _tenant_reference("resumes", "position_id", "positions"),
         _tenant_reference("resumes", "file_id", "stored_files"),
-        # PostgreSQL uses ON DELETE SET NULL (rejected_by) for this composite
-        # key. SQLAlchemy 2.0 cannot render the PostgreSQL column-list action,
-        # so Alembic owns that clause explicitly while metadata models the key.
-        _tenant_reference("resumes", "rejected_by", "users"),
+        _tenant_reference(
+            "resumes",
+            "rejected_by",
+            "users",
+            ondelete="SET NULL",
+            postgresql_set_null_columns=("rejected_by",),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -171,7 +182,12 @@ class Resume(TenantScopedMixin, Base):
     resume_markdown = Column(Text)
     parsed_data = Column(JSON)
     match_score = Column(Integer)
-    parse_status = Column(String, default="processing")
+    parse_status = Column(
+        String,
+        default="processing",
+        server_default="processing",
+        nullable=False,
+    )
     parse_error = Column(Text)
     parsed_at = Column(DateTime)
     screening_result = Column(Enum(ScreeningResult), default=ScreeningResult.PENDING)
@@ -215,15 +231,23 @@ class DepartmentReview(TenantScopedMixin, Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    resume_id = Column(UUID(as_uuid=True), nullable=False)
-    reviewer_id = Column(UUID(as_uuid=True), nullable=False)
+    resume_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    reviewer_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     technical_score = Column(Integer)  # 技术评分 1-10
     experience_score = Column(Integer)  # 经验评分 1-10
     overall_score = Column(Integer)  # 综合评分 1-10
-    recommendation = Column(String(20), nullable=True)  # 改用 String 类型避免枚举问题
+    recommendation = Column(
+        Enum(
+            ReviewRecommendation,
+            values_callable=lambda enum_type: [e.value for e in enum_type],
+        ),
+        nullable=True,
+    )
     comment = Column(Text)  # 详细评价
-    is_completed = Column(Boolean, default=False)  # 是否已完成评审
-    created_at = Column(DateTime, default=datetime.utcnow)
+    is_completed = Column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )  # 是否已完成评审
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     resume = relationship(
@@ -431,6 +455,7 @@ class CodingTest(TenantScopedMixin, Base):
     __tablename__ = "coding_tests"
     __table_args__ = (
         _tenant_identity("coding_tests"),
+        Index("ix_coding_tests_public_token", "public_token"),
         _tenant_reference("coding_tests", "question_bank_id", "question_banks"),
         _tenant_reference("coding_tests", "created_by", "users"),
         _tenant_reference("coding_tests", "resume_id", "resumes"),
@@ -447,7 +472,7 @@ class CodingTest(TenantScopedMixin, Base):
     test_cases = Column(JSON)
     time_limit_ms = Column(Integer, default=3000)
     memory_limit_mb = Column(Integer, default=256)
-    public_token = Column(String, unique=True, index=True, nullable=False)
+    public_token = Column(String, unique=True, nullable=False)
     status = Column(Enum(CodingTestStatus), default=CodingTestStatus.DRAFT)
     question_bank_id = Column(UUID(as_uuid=True), nullable=True)
     questions = Column(JSON)

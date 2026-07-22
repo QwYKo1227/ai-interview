@@ -81,6 +81,10 @@ COMPOSITE_FOREIGN_KEYS = (
     ("workflow_node_executions", "execution_id", "workflow_executions", None, "workflow_node_executions_execution_id_fkey"),
 )
 
+POSTGRESQL_SET_NULL_COLUMNS = {
+    ("resumes", "rejected_by"): ("rejected_by",),
+}
+
 
 def _create_missing_business_schema(bind) -> None:
     """Finish tables historically supplied by metadata.create_all.
@@ -258,15 +262,19 @@ def _tenant_fk_name(table: str, column: str) -> str:
 def _create_tenant_foreign_key(
     child: str, column: str, parent: str, ondelete: str | None
 ) -> None:
-    if (child, column) == ("resumes", "rejected_by"):
+    set_null_columns = POSTGRESQL_SET_NULL_COLUMNS.get((child, column), ())
+    if set_null_columns:
         # PostgreSQL 15 supports a column list for SET NULL. Without it the
         # composite action also clears tenant_id and violates NOT NULL.
+        quoted_set_null_columns = ", ".join(
+            f'"{set_null_column}"' for set_null_column in set_null_columns
+        )
         op.execute(
             f'ALTER TABLE "{child}" '
             f'ADD CONSTRAINT "{_tenant_fk_name(child, column)}" '
             f'FOREIGN KEY (tenant_id, "{column}") '
             f'REFERENCES "{parent}" (tenant_id, id) '
-            f'ON DELETE SET NULL ("{column}")'
+            f"ON DELETE SET NULL ({quoted_set_null_columns})"
         )
         return
     op.create_foreign_key(

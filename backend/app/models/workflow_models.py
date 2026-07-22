@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKeyConstraint, Float, UniqueConstraint
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
@@ -6,6 +6,7 @@ from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship
 from app.models.tenant_models import TenantScopedMixin
+from app.models.tenant_constraints import TenantForeignKeyConstraint
 
 
 def _tenant_identity(table_name):
@@ -15,7 +16,7 @@ def _tenant_identity(table_name):
 
 
 def _tenant_reference(table_name, column_name, target_table):
-    return ForeignKeyConstraint(
+    return TenantForeignKeyConstraint(
         ["tenant_id", column_name],
         [f"{target_table}.tenant_id", f"{target_table}.id"],
         name=f"fk_{table_name}_{column_name}_tenant",
@@ -152,7 +153,11 @@ class WorkflowExecution(TenantScopedMixin, Base):
     workflow_id = Column(UUID(as_uuid=True), nullable=False)
     
     status = Column(
-        Enum(ExecutionStatus, values_callable=lambda enum_type: [e.value for e in enum_type]),
+        Enum(
+            ExecutionStatus,
+            name="workflowexecutionstatus",
+            values_callable=lambda enum_type: [e.value for e in enum_type],
+        ),
         default=ExecutionStatus.PENDING,
     )
     trigger_type = Column(String, default="manual")

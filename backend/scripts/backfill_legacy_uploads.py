@@ -28,6 +28,12 @@ from app.config.tenant_session import TenantCapableSession, TenantSession
 from app.models.file_models import StoredFile
 from app.models.models import Interview, InterviewPanel, QuestionBank, Resume
 from app.models.tenant_models import Tenant
+from app.utils.legacy_uploads import (
+    LegacyUploadPathError,
+    is_legacy_file_reference,
+    iter_legacy_file_references,
+    resolve_legacy_upload_source,
+)
 from app.utils.file_storage import (
     SAFE_EXTENSION,
     resolve_object_path,
@@ -118,48 +124,13 @@ def _record_state(db: Session, candidate: LegacyFileCandidate):
 
 def _validated_source(candidate: LegacyFileCandidate, legacy_root: Path) -> Path:
     try:
-        root = legacy_root.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise LegacyFileError("legacy uploads root is missing") from None
-    raw = Path(candidate.legacy_path)
-    lexical = raw if raw.is_absolute() else root / raw
-    try:
-        resolved_without_requirement = lexical.resolve(strict=False)
-    except (OSError, RuntimeError):
-        raise LegacyFileError("legacy file path is invalid") from None
-    if resolved_without_requirement == root or root not in resolved_without_requirement.parents:
-        raise LegacyFileError("legacy file path escapes uploads root")
-
-    relative_lexical = None
-    try:
-        relative_lexical = lexical.absolute().relative_to(root)
-    except ValueError:
-        pass
-    if relative_lexical is not None:
-        current = root
-        for part in relative_lexical.parts:
-            current = current / part
-            if current.is_symlink():
-                raise LegacyFileError("legacy file path contains a symbolic link")
-
-    try:
-        source = lexical.resolve(strict=True)
-    except (FileNotFoundError, OSError, RuntimeError):
-        raise LegacyFileError("legacy file is missing") from None
-    if source == root or root not in source.parents:
-        raise LegacyFileError("legacy file path escapes uploads root")
-    if not source.is_file():
-        raise LegacyFileError("legacy file is not a regular file")
-
-    relative = source.relative_to(root)
-    if relative.parts:
-        try:
-            path_tenant = UUID(relative.parts[0])
-        except ValueError:
-            path_tenant = None
-        if path_tenant is not None and path_tenant != candidate.tenant_id:
-            raise LegacyFileError("legacy file path belongs to another tenant")
-    return source
+        return resolve_legacy_upload_source(
+            legacy_root,
+            candidate.legacy_path,
+            tenant_id=candidate.tenant_id,
+        )
+    except LegacyUploadPathError as exc:
+        raise LegacyFileError(str(exc)) from None
 
 
 def backfill_candidate(
@@ -239,23 +210,12 @@ def backfill_candidate(
     return _result(candidate, "migrated", file_id)
 
 
-def _walk_legacy_strings(value, path=()):
-    if isinstance(value, dict):
-        for key, item in value.items():
-            yield from _walk_legacy_strings(item, path + (key,))
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            yield from _walk_legacy_strings(item, path + (index,))
-    elif isinstance(value, str) and not value.startswith("/api/files/"):
-        yield path, value
-
-
 def discover_legacy_candidates(db: Session) -> list[LegacyFileCandidate]:
     """Inventory legacy references visible in one tenant-scoped session."""
 
     candidates = []
     for record in db.query(Resume).filter(Resume.file_id.is_(None)).all():
-        if record.file_path and not record.file_path.startswith("/api/files/"):
+        if is_legacy_file_reference(record.file_path):
             candidates.append(
                 LegacyFileCandidate(
                     "resumes", record.id, record.tenant_id, record.file_path,
@@ -263,7 +223,7 @@ def discover_legacy_candidates(db: Session) -> list[LegacyFileCandidate]:
                 )
             )
     for record in db.query(QuestionBank).filter(QuestionBank.source_file_id.is_(None)).all():
-        if record.source_file and not record.source_file.startswith("/api/files/"):
+        if is_legacy_file_reference(record.source_file):
             candidates.append(
                 LegacyFileCandidate(
                     "question_banks", record.id, record.tenant_id,
@@ -276,7 +236,9 @@ def discover_legacy_candidates(db: Session) -> list[LegacyFileCandidate]:
         (InterviewPanel, "interview_panels", "interview_panel"),
     ):
         for record in db.query(model).all():
-            for json_path, legacy_path in _walk_legacy_strings(record.audio_records):
+            for json_path, legacy_path in iter_legacy_file_references(
+                record.audio_records
+            ):
                 candidates.append(
                     LegacyFileCandidate(
                         table, record.id, record.tenant_id, legacy_path,

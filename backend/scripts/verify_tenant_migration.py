@@ -19,6 +19,11 @@ from app.models.tenant_catalog import (
     COMPOSITE_TENANT_REFERENCES,
     TENANT_TABLES,
 )
+from app.utils.legacy_uploads import (
+    decode_audio_records,
+    is_legacy_file_reference,
+    iter_legacy_file_references,
+)
 
 
 SCHEMA = "ai-interview.tenant-migration-verification"
@@ -204,21 +209,33 @@ def verify_tenant_integrity(db) -> MigrationVerificationResult:
         if table in existing_tables and {path_column, id_column}.issubset(
             existing_columns[table]
         ):
-            count = _scalar(
-                db,
-                f'SELECT count(*) FROM "{table}" WHERE "{path_column}" IS NOT NULL '
-                f'AND "{path_column}" <> \'\' AND "{id_column}" IS NULL '
-                f'AND "{path_column}" NOT LIKE \'/api/files/%\'',
+            values = db.execute(
+                text(
+                    f'SELECT "{path_column}" FROM "{table}" '
+                    f'WHERE "{id_column}" IS NULL'
+                )
+            ).scalars()
+            count = sum(
+                is_legacy_file_reference(value)
+                for value in values
             )
             legacy_files_pending[table] = count
             if count:
                 violations.append(_violation("legacy_file_pending", table, count))
     for table in ("interviews", "interview_panels"):
         if table in existing_tables and "audio_records" in existing_columns[table]:
-            legacy_files_pending["interview_audio"] += _scalar(
-                db,
-                f'SELECT count(*) FROM "{table}" WHERE audio_records IS NOT NULL '
-                "AND CAST(audio_records AS TEXT) LIKE '%uploads%'",
+            values = db.execute(
+                text(
+                    f'SELECT audio_records FROM "{table}" '
+                    "WHERE audio_records IS NOT NULL"
+                )
+            ).scalars()
+            legacy_files_pending["interview_audio"] += sum(
+                1
+                for value in values
+                for _path, _reference in iter_legacy_file_references(
+                    decode_audio_records(value)
+                )
             )
     if legacy_files_pending["interview_audio"]:
         violations.append(

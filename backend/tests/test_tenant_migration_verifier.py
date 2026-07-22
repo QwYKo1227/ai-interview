@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 from uuid import UUID, uuid4
@@ -27,6 +29,18 @@ from scripts.create_platform_admin import (
 from scripts.verify_tenant_migration import run_cli, verify_tenant_integrity
 
 
+def _portable_tool(name: str) -> str | None:
+    candidates = [shutil.which(name)]
+    if os.name == "nt":
+        candidates.append(str(Path("C:/Program Files/Git/usr/bin") / f"{name}.exe"))
+        if name == "bash":
+            candidates.insert(0, "C:/Program Files/Git/bin/bash.exe")
+    return next(
+        (candidate for candidate in candidates if candidate and Path(candidate).is_file()),
+        None,
+    )
+
+
 def test_rollout_scripts_are_directly_executable_from_backend_root():
     backend_root = Path(__file__).parents[1]
     environ = os.environ.copy()
@@ -42,6 +56,7 @@ def test_rollout_scripts_are_directly_executable_from_backend_root():
         ("verify_tenant_migration.py", [], 1),
         ("create_platform_admin.py", [], 1),
         ("backfill_legacy_uploads.py", ["--help"], 0),
+        ("snapshot_tenant_counts.py", ["--help"], 0),
     )
     for script, arguments, expected_status in commands:
         completed = subprocess.run(
@@ -80,6 +95,8 @@ def _controlled_database(tmp_path: Path):
                 extra_columns.update(("file_path", "file_id"))
             elif table == "question_banks":
                 extra_columns.update(("source_file", "source_file_id"))
+            elif table in {"interviews", "interview_panels"}:
+                extra_columns.add("audio_records")
             columns = ["id TEXT PRIMARY KEY", "tenant_id TEXT"]
             columns.extend(f'"{column}" TEXT' for column in sorted(extra_columns))
             connection.execute(text(f'CREATE TABLE "{table}" ({", ".join(columns)})'))
@@ -175,6 +192,199 @@ def test_production_caddy_defaults_to_both_internal_tenant_domains():
     assert "reverse_proxy frontend:80" in caddyfile
     assert "proxy_set_header Host $host;" in nginx
     assert "ffmpeg" in backend_dockerfile
+
+
+def test_runbook_bash_blocks_are_syntax_valid_and_fail_stop(tmp_path):
+    root = Path(__file__).parents[2]
+    runbook = (
+        root / "docs" / "deployment" / "multi-tenant-production-rollout.md"
+    ).read_text(encoding="utf-8")
+    bash = _portable_tool("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable")
+    blocks = re.findall(r"```bash\n(.*?)\n```", runbook, flags=re.DOTALL)
+    assert blocks
+    for index, block in enumerate(blocks):
+        script = tmp_path / f"runbook-{index}.sh"
+        script.write_text("set -euo pipefail\n" + block + "\n", encoding="utf-8")
+        completed = subprocess.run(
+            [bash, "-n", str(script)],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            f"bash block {index} is invalid:\n{completed.stderr}\n{block}"
+        )
+
+    assert "set -euo pipefail" in runbook
+    assert not re.search(r"(?m)^\s*(?:source|\.)\s+[^\n]*\.env", runbook)
+    assert not re.search(r"(?m)^\s*eval\s+", runbook)
+    assert 'docker compose --env-file "$ENV_FILE"' in runbook
+    for block in blocks:
+        assert not re.search(
+            r"docker\s+compose(?!\s+--env-file\s+\"\$ENV_FILE\")",
+            block,
+        )
+
+
+def test_compose_env_file_preserves_spaced_domains_without_executing_commands(
+    tmp_path,
+):
+    if shutil.which("docker") is None:
+        pytest.skip("docker is unavailable")
+    marker = tmp_path / "dotenv-command-must-not-run"
+    compose = tmp_path / "compose.yml"
+    compose.write_text(
+        "services:\n"
+        "  probe:\n"
+        "    image: busybox:1.36\n"
+        "    environment:\n"
+        "      APP_DOMAINS: ${APP_DOMAINS}\n"
+        "      MALICIOUS: ${MALICIOUS}\n",
+        encoding="utf-8",
+    )
+    env_file = tmp_path / "production.env"
+    env_file.write_text(
+        "APP_DOMAINS=interview.careray.com, interview.photonthix.com\n"
+        f"MALICIOUS=$(touch {marker.as_posix()})\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(compose),
+            "config",
+            "--format",
+            "json",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    environment = payload["services"]["probe"]["environment"]
+    assert environment["APP_DOMAINS"] == (
+        "interview.careray.com, interview.photonthix.com"
+    )
+    assert "touch" in environment["MALICIOUS"]
+    assert not marker.exists()
+
+
+def test_sha256_basename_manifest_verifies_after_copy_to_another_directory(
+    tmp_path,
+):
+    bash = _portable_tool("bash")
+    checksum = _portable_tool("sha256sum")
+    if bash is None or checksum is None:
+        pytest.skip("bash and sha256sum are required")
+    source = tmp_path / "source"
+    remote = tmp_path / "remote"
+    source.mkdir()
+    remote.mkdir()
+    archive = source / "database-before.dump"
+    archive.write_bytes(b"database backup")
+    manifest = source / "database-before.dump.sha256"
+
+    created = subprocess.run(
+        [
+            bash,
+            "-c",
+            'cd "$1" && sha256sum "$(basename "$2")" > "$(basename "$3")"',
+            "checksum-test",
+            str(source),
+            str(archive),
+            str(manifest),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    shutil.copy2(archive, remote / archive.name)
+    shutil.copy2(manifest, remote / manifest.name)
+    verified = subprocess.run(
+        [bash, "-c", 'cd "$1" && sha256sum -c "$2"', "checksum-test", str(remote), manifest.name],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+
+def test_authoritative_tenant_count_snapshot_and_comparison_contract(tmp_path):
+    from scripts.snapshot_tenant_counts import (
+        compare_tenant_count_snapshots,
+        snapshot_tenant_counts,
+        write_snapshot_files,
+    )
+
+    engine = _controlled_database(tmp_path)
+    with engine.begin() as connection:
+        _seed_two_tenants(connection)
+        before = snapshot_tenant_counts(connection)
+        connection.execute(
+            text("INSERT INTO stored_files (id, tenant_id) VALUES (:id, :tenant_id)"),
+            {"id": str(uuid4()), "tenant_id": connection.execute(
+                text("SELECT id FROM tenants ORDER BY code LIMIT 1")
+            ).scalar_one()},
+        )
+        after = snapshot_tenant_counts(connection)
+
+    assert list(before["tables"]) == list(TENANT_TABLES)
+    assert before["schema"] == "ai-interview.tenant-table-counts"
+    assert compare_tenant_count_snapshots(
+        before, after, allowed_stored_files_increase=1
+    )["ok"] is True
+    unaccounted = compare_tenant_count_snapshots(before, after)
+    assert unaccounted["ok"] is False
+    assert unaccounted["differences"]["stored_files"]["status"] == (
+        "unexpected_increase"
+    )
+
+    decreased = json.loads(json.dumps(after))
+    decreased["tables"]["positions"]["rows"] -= 1
+    comparison = compare_tenant_count_snapshots(
+        before, decreased, allowed_stored_files_increase=1
+    )
+    assert comparison["ok"] is False
+    assert comparison["differences"]["positions"]["status"] == "decreased"
+
+    unexpected = json.loads(json.dumps(before))
+    unexpected["tables"]["users"]["rows"] += 1
+    comparison = compare_tenant_count_snapshots(
+        before, unexpected, allowed_stored_files_increase=0
+    )
+    assert comparison["ok"] is False
+    assert comparison["differences"]["users"]["status"] == "unexpected_increase"
+
+    missing_before = json.loads(json.dumps(before))
+    missing_after = json.loads(json.dumps(before))
+    missing_before["tables"]["workflows"] = {"present": False, "rows": 0}
+    missing_after["tables"]["workflows"] = {"present": False, "rows": 0}
+    comparison = compare_tenant_count_snapshots(missing_before, missing_after)
+    assert comparison["ok"] is False
+    assert comparison["differences"]["workflows"]["status"] == (
+        "table_missing_after"
+    )
+
+    json_path = tmp_path / "counts.json"
+    csv_path = tmp_path / "counts.csv"
+    write_snapshot_files(before, json_path=json_path, csv_path=csv_path)
+    assert json.loads(json_path.read_text(encoding="utf-8")) == before
+    assert csv_path.read_text(encoding="utf-8").splitlines()[0] == (
+        "table,present,rows"
+    )
 
 
 def test_verifier_fails_when_tenant_id_is_null(tmp_path):
@@ -281,6 +491,56 @@ def test_verifier_reports_pending_legacy_files(tmp_path):
 
     assert result.counts["legacy_files_pending"]["question_banks"] == 1
     assert result.ok is False
+
+
+def test_verifier_counts_every_nested_non_managed_audio_reference(tmp_path):
+    engine = _controlled_database(tmp_path)
+    with engine.begin() as connection:
+        tenant_a, _tenant_b = _seed_two_tenants(connection)
+        connection.execute(
+            text(
+                "INSERT INTO interviews (id, tenant_id, audio_records) "
+                "VALUES (:id, :tenant_id, :audio_records)"
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": tenant_a,
+                "audio_records": json.dumps(
+                    {
+                        "questions": [
+                            "/api/files/11111111-1111-1111-1111-111111111111",
+                            "uploads/audio/question.wav",
+                            "./uploads/audio/second.wav",
+                        ],
+                        "full": {"path": "/uploads/full_audio/full.wav"},
+                    }
+                ),
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO interview_panels (id, tenant_id, audio_records) "
+                "VALUES (:id, :tenant_id, :audio_records)"
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": tenant_a,
+                "audio_records": json.dumps(
+                    {"nested": [{"answer": "audio/panel.wav"}]}
+                ),
+            },
+        )
+        result = verify_tenant_integrity(connection)
+
+    assert result.counts["legacy_files_pending"]["interview_audio"] == 4
+    audio_violations = [
+        item for item in result.violations
+        if item["code"] == "legacy_file_pending"
+        and item["resource"] == "interview_audio"
+    ]
+    assert audio_violations == [
+        {"code": "legacy_file_pending", "resource": "interview_audio", "count": 4}
+    ]
 
 
 def test_verifier_passes_for_two_isolated_tenants_and_stable_json(tmp_path):
@@ -408,6 +668,68 @@ def test_legacy_backfill_dry_run_does_not_write_database_or_files(db, tmp_path):
     assert db.query(StoredFile).count() == 0
     assert not upload_root.exists()
     assert source.exists()
+
+
+@pytest.mark.parametrize(
+    "database_value",
+    [
+        "uploads/resumes/resume.pdf",
+        "/uploads/resumes/resume.pdf",
+        "./uploads/resumes/resume.pdf",
+        "resumes/resume.pdf",
+    ],
+)
+def test_legacy_backfill_normalizes_upload_root_prefix_once(
+    db, tmp_path, database_value
+):
+    legacy_root = tmp_path / "uploads"
+    source = legacy_root / "resumes" / "resume.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"resume")
+    tenant_id, row_id = uuid4(), uuid4()
+    _seed_resume_for_backfill(db, tenant_id, row_id, database_value)
+
+    result = backfill_candidate(
+        db,
+        _candidate(tenant_id, row_id, database_value),
+        legacy_root=legacy_root,
+        upload_root=tmp_path / "new",
+        dry_run=True,
+    )
+
+    assert result.status == "would_migrate"
+    assert source.exists()
+
+
+@pytest.mark.parametrize(
+    "database_value",
+    [
+        "https://attacker.invalid/resume.pdf",
+        "file:///app/uploads/resumes/resume.pdf",
+        r"C:\uploads\resumes\resume.pdf",
+        r"\\server\share\resume.pdf",
+        r"uploads\resumes\resume.pdf",
+        "uploads/resumes/../secret.pdf",
+    ],
+)
+def test_legacy_backfill_rejects_url_drive_unc_backslash_and_parent_segments(
+    db, tmp_path, database_value
+):
+    legacy_root = tmp_path / "uploads"
+    legacy_root.mkdir()
+    tenant_id, row_id = uuid4(), uuid4()
+    _seed_resume_for_backfill(db, tenant_id, row_id, database_value)
+
+    with pytest.raises(LegacyFileError):
+        backfill_candidate(
+            db,
+            _candidate(tenant_id, row_id, database_value),
+            legacy_root=legacy_root,
+            upload_root=tmp_path / "new",
+            dry_run=True,
+        )
+
+    assert db.query(StoredFile).count() == 0
 
 
 @pytest.mark.parametrize("unsafe", ["missing", "traversal", "symlink"])

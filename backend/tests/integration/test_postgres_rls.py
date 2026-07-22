@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 import time
@@ -12,27 +13,36 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.config.tenant_session import TenantCapableSession, TenantSession
-from app.core.security import decode_access_token, get_password_hash
+from app.core.security import create_access_token, decode_access_token, get_password_hash
 from app.models.base import Base
 from app.models.file_models import StoredFile
 from app.models.models import (
     CodingTest,
     Interview,
+    InterviewPanel,
     Offer,
     Position,
+    QuestionBank,
     Resume,
     SystemConfig,
     User,
     UserRole,
 )
 from app.models.tenant_catalog import TENANT_TABLES as TENANT_TABLE_CATALOG
-from app.models.tenant_models import PlatformUser, Tenant, TenantDomain, TenantStatus
+from app.models.tenant_models import (
+    PlatformUser,
+    PublicAccessToken,
+    Tenant,
+    TenantDomain,
+    TenantStatus,
+)
 from app.models.tenant_constraints import TenantForeignKeyConstraint
 from app.models.workflow_models import Workflow
 import app.routes.auth as auth_routes
@@ -40,11 +50,17 @@ from app.routes.auth import _authenticate_tenant_user, _token_for_user
 from app.routes.platform import platform_login
 from app.services.dashboard_service import get_dashboard_stats
 from app.schemas.tenant import PlatformLoginRequest, TenantOnboardingRequest
-from app.services.public_token_service import issue_public_token, resolve_public_token
+from app.services.public_token_service import (
+    hash_token,
+    issue_public_token,
+    resolve_public_token,
+)
+from app.services.resume_service import process_resume_task
 from app.services.tenant_service import create_tenant_with_admin
 from app.utils.file_storage import resolve_object_path
 from scripts.create_platform_admin import run_cli as run_platform_admin_cli
 from scripts.backfill_legacy_uploads import run_cli as run_legacy_backfill_cli
+from scripts.snapshot_tenant_counts import run_cli as run_tenant_count_snapshot_cli
 from scripts.verify_tenant_migration import run_cli as run_migration_verifier_cli
 
 
@@ -246,6 +262,7 @@ def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
     runtime_database_url,
     migration_engine,
     pg_session_factory,
+    tmp_path,
 ):
     with migration_engine.begin() as connection:
         careray_id = connection.execute(
@@ -281,6 +298,35 @@ def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
     assert verifier_payload["ok"] is True
     assert verifier_payload["counts"]["default_careray_tenants"] == 1
     assert verifier_payload["counts"]["table_rows"]["system_configs"] == 2
+
+    snapshot_json = tmp_path / "tenant-counts.json"
+    snapshot_csv = tmp_path / "tenant-counts.csv"
+    snapshot_output = io.StringIO()
+    assert run_tenant_count_snapshot_cli(
+        [
+            "snapshot",
+            "--json",
+            str(snapshot_json),
+            "--csv",
+            str(snapshot_csv),
+        ],
+        environ={"MIGRATION_DATABASE_URL": migration_database_url},
+        stdout=snapshot_output,
+    ) == 0, snapshot_output.getvalue()
+    snapshot = json.loads(snapshot_json.read_text(encoding="utf-8"))
+    assert list(snapshot["tables"]) == list(TENANT_TABLE_CATALOG)
+    assert all(item["present"] for item in snapshot["tables"].values())
+    comparison_output = io.StringIO()
+    assert run_tenant_count_snapshot_cli(
+        [
+            "compare",
+            "--before",
+            str(snapshot_json),
+            "--after",
+            str(snapshot_json),
+        ],
+        stdout=comparison_output,
+    ) == 0, comparison_output.getvalue()
 
     runtime_output = io.StringIO()
     assert run_migration_verifier_cli(
@@ -580,30 +626,365 @@ def test_real_two_tenant_business_login_isolation_and_disable_flow(
         login_engine.dispose()
 
 
+def test_real_worker_wrong_tenant_cannot_find_or_update_foreign_resume(
+    runtime_engine,
+    pg_session_factory,
+    tenant_pair,
+    monkeypatch,
+):
+    tenant_a, tenant_b = tenant_pair
+    position_b = create_position_orm(
+        pg_session_factory, tenant_b, "foreign worker position"
+    )
+    with pg_session_factory(tenant_b) as db:
+        resume = Resume(
+            position_id=position_b,
+            candidate_name="must stay unchanged",
+            parse_status="processing",
+        )
+        db.add(resume)
+        db.commit()
+        resume_id = resume.id
+
+    import app.config.database as database_config
+
+    original_engine = database_config.engine
+    with monkeypatch.context() as isolated:
+        isolated.setattr(database_config, "engine", runtime_engine)
+        result = process_resume_task(
+            tenant_a,
+            resume_id,
+            {
+                "position_id": position_b,
+                "use_user_info": False,
+            },
+        )
+    assert database_config.engine is original_engine
+    assert result is None
+
+    with pg_session_factory(tenant_b) as db:
+        unchanged = db.get(Resume, resume_id)
+        assert unchanged.candidate_name == "must stay unchanged"
+        assert unchanged.parse_status == "processing"
+        assert unchanged.parse_error is None
+
+
+def test_real_http_file_routes_enforce_tenant_host_token_and_path_isolation(
+    runtime_database_url,
+    migration_engine,
+    pg_session_factory,
+    tenant_pair,
+    monkeypatch,
+    tmp_path,
+):
+    tenant_a, tenant_b = tenant_pair
+    domains = {
+        tenant_a: f"files-a-{uuid.uuid4().hex}.example.com",
+        tenant_b: f"files-b-{uuid.uuid4().hex}.example.com",
+    }
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO tenant_domains "
+                "(id, tenant_id, domain, is_primary, created_at) "
+                "VALUES (:id, :tenant_id, :domain, true, now())"
+            ),
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "tenant_id": tenant_id,
+                    "domain": domain,
+                }
+                for tenant_id, domain in domains.items()
+            ],
+        )
+
+    upload_root = tmp_path / "uploads"
+    outside_secret = tmp_path / "must-not-be-read.txt"
+    outside_secret.write_bytes(b"outside secret")
+    users = {}
+    stored_files = {}
+    contents = {tenant_a: b"tenant-a-content", tenant_b: b"tenant-b-content"}
+    for tenant_id in (tenant_a, tenant_b):
+        with pg_session_factory(tenant_id) as db:
+            user = User(
+                email=f"file-{tenant_id.hex}@example.com",
+                hashed_password=get_password_hash("FileRoutePassword123"),
+                role=UserRole.ADMIN,
+                is_active=True,
+            )
+            stored = StoredFile(
+                object_key=f"{tenant_id}/resumes/{uuid.uuid4()}.txt",
+                original_filename="resume.txt",
+                content_type="text/plain",
+                size=len(contents[tenant_id]),
+                category="resumes",
+                resource_type="resume",
+            )
+            malicious = StoredFile(
+                object_key=(
+                    f"{tenant_id}/resumes/../../../../{outside_secret.name}"
+                ),
+                original_filename="outside.txt",
+                content_type="text/plain",
+                size=outside_secret.stat().st_size,
+                category="resumes",
+                resource_type="resume",
+            )
+            db.add_all([user, stored, malicious])
+            db.commit()
+            users[tenant_id] = user.id
+            stored_files[tenant_id] = (stored.id, malicious.id)
+            physical = upload_root / Path(stored.object_key)
+            physical.parent.mkdir(parents=True, exist_ok=True)
+            physical.write_bytes(contents[tenant_id])
+
+    tokens = {
+        tenant_id: create_access_token(
+            user_id=users[tenant_id],
+            tenant_id=tenant_id,
+            role=UserRole.ADMIN.value,
+            expires_delta=timedelta(minutes=15),
+        )
+        for tenant_id in (tenant_a, tenant_b)
+    }
+
+    import app.config.database as database_config
+    import app.routes.files as file_routes
+    from app.main import app
+
+    original_engine = database_config.engine
+    original_upload_root = file_routes.UPLOAD_ROOT
+    http_engine = create_engine(runtime_database_url, poolclass=NullPool)
+    with monkeypatch.context() as isolated:
+        isolated.setattr(database_config, "engine", http_engine)
+        isolated.setattr(file_routes, "UPLOAD_ROOT", upload_root)
+        with TestClient(app) as client:
+            own_headers = {
+                "Authorization": f"Bearer {tokens[tenant_a]}",
+                "Host": domains[tenant_a],
+            }
+            own_file_id, malicious_file_id = stored_files[tenant_a]
+            response = client.get(f"/api/files/{own_file_id}", headers=own_headers)
+            assert response.status_code == 200
+            assert response.content == contents[tenant_a]
+
+            foreign_headers = {
+                "Authorization": f"Bearer {tokens[tenant_b]}",
+                "Host": domains[tenant_b],
+            }
+            assert client.get(
+                f"/api/files/{own_file_id}", headers=foreign_headers
+            ).status_code == 404
+            assert client.get(
+                f"/api/files/{own_file_id}",
+                headers={**own_headers, "Host": domains[tenant_b]},
+            ).status_code == 403
+
+            traversal = client.get(
+                f"/api/files/{malicious_file_id}", headers=own_headers
+            )
+            assert traversal.status_code == 404
+            assert outside_secret.read_bytes() == b"outside secret"
+            assert b"outside secret" not in traversal.content
+
+            issued = client.post(
+                f"/api/files/{own_file_id}/public-token",
+                headers=own_headers,
+                json={"ttl_seconds": 300},
+            )
+            assert issued.status_code == 200
+            raw_token = issued.json()["token"]
+            public_url = issued.json()["url"]
+
+            public_response = client.get(
+                public_url,
+                headers={"Host": domains[tenant_a]},
+            )
+            assert public_response.status_code == 200
+            assert public_response.content == contents[tenant_a]
+            assert client.get(
+                public_url,
+                headers={"Host": domains[tenant_b]},
+            ).status_code == 403
+            assert client.get(
+                f"/api/files/{own_file_id}",
+                headers={
+                    "Authorization": f"Bearer {raw_token}",
+                    "Host": domains[tenant_a],
+                },
+            ).status_code == 401
+
+            synthetic = {
+                "wrong_purpose": (secrets.token_urlsafe(32), "offer", own_file_id),
+                "expired": (secrets.token_urlsafe(32), "stored_file", own_file_id),
+                "revoked": (secrets.token_urlsafe(32), "stored_file", own_file_id),
+                "missing_resource": (
+                    secrets.token_urlsafe(32),
+                    "stored_file",
+                    uuid.uuid4(),
+                ),
+            }
+            now = datetime.now(timezone.utc)
+            with migration_engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO public_access_tokens "
+                        "(id, token_hash, tenant_id, resource_type, resource_id, "
+                        "expires_at, revoked_at, created_at) VALUES "
+                        "(:id, :token_hash, :tenant_id, :resource_type, "
+                        ":resource_id, :expires_at, :revoked_at, now())"
+                    ),
+                    [
+                        {
+                            "id": uuid.uuid4(),
+                            "token_hash": hash_token(raw),
+                            "tenant_id": tenant_a,
+                            "resource_type": purpose,
+                            "resource_id": resource_id,
+                            "expires_at": (
+                                now - timedelta(minutes=1)
+                                if label == "expired"
+                                else now + timedelta(minutes=5)
+                            ),
+                            "revoked_at": now if label == "revoked" else None,
+                        }
+                        for label, (raw, purpose, resource_id) in synthetic.items()
+                    ],
+                )
+
+            assert client.get(
+                f"/api/public/files/{synthetic['wrong_purpose'][0]}",
+                headers={"Host": domains[tenant_a]},
+            ).status_code == 404
+            assert client.get(
+                f"/api/public/files/{synthetic['expired'][0]}",
+                headers={"Host": domains[tenant_a]},
+            ).status_code == 410
+            assert client.get(
+                f"/api/public/files/{synthetic['revoked'][0]}",
+                headers={"Host": domains[tenant_a]},
+            ).status_code == 404
+            assert client.get(
+                f"/api/public/files/{synthetic['missing_resource'][0]}",
+                headers={"Host": domains[tenant_a]},
+            ).status_code == 404
+    http_engine.dispose()
+
+    assert database_config.engine is original_engine
+    assert file_routes.UPLOAD_ROOT == original_upload_root
+    with migration_engine.connect() as connection:
+        persisted = connection.execute(
+            text(
+                "SELECT token_hash FROM public_access_tokens "
+                "WHERE tenant_id = :tenant_id AND resource_type = 'stored_file' "
+                "AND resource_id = :resource_id ORDER BY created_at LIMIT 1"
+            ),
+            {"tenant_id": tenant_a, "resource_id": stored_files[tenant_a][0]},
+        ).scalar_one()
+    assert persisted == hash_token(raw_token)
+    assert persisted != raw_token
+    assert len(persisted) == 64
+
+
 def test_legacy_upload_cli_backfills_real_postgres_and_is_repeatable(
     migration_database_url,
     migration_engine,
     pg_session_factory,
     tmp_path,
 ):
-    legacy_root = tmp_path / "legacy"
-    upload_root = tmp_path / "tenant-uploads"
-    legacy_root.mkdir()
-    legacy_file = legacy_root / "resume.pdf"
-    legacy_file.write_bytes(b"legacy resume")
+    upload_root = tmp_path / "uploads"
+    legacy_files = {
+        "resume": upload_root / "resumes" / "resume.pdf",
+        "question_bank": upload_root / "question_banks" / "questions.pdf",
+        "interview": upload_root / "full_audio" / "full.wav",
+        "panel": upload_root / "audio" / "panel.wav",
+    }
+    for label, path in legacy_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"legacy {label}".encode())
 
     with migration_engine.begin() as connection:
         tenant_id = connection.execute(
             text("SELECT id FROM tenants WHERE code = 'careray'")
         ).scalar_one()
     with pg_session_factory(tenant_id) as db:
+        user = User(
+            email=f"legacy-{uuid.uuid4().hex}@example.com",
+            hashed_password=get_password_hash("LegacyUploadPassword123"),
+            role=UserRole.ADMIN,
+            is_active=True,
+        )
         position = Position(title="legacy file role", description="legacy")
-        db.add(position)
+        db.add_all([user, position])
         db.flush()
-        resume = Resume(position_id=position.id, file_path=str(legacy_file))
-        db.add(resume)
+        resume = Resume(
+            position_id=position.id,
+            file_path="uploads/resumes/resume.pdf",
+        )
+        question_bank = QuestionBank(
+            name="legacy questions",
+            position_id=position.id,
+            source_file="/uploads/question_banks/questions.pdf",
+        )
+        db.add_all([resume, question_bank])
+        db.flush()
+        interview = Interview(
+            resume_id=resume.id,
+            position_id=position.id,
+            interviewer_id=user.id,
+            interview_time=datetime.now(timezone.utc),
+            audio_records={
+                "nested": {"full": "./uploads/full_audio/full.wav"},
+            },
+        )
+        db.add(interview)
+        db.flush()
+        panel = InterviewPanel(
+            interview_id=interview.id,
+            interviewer_id=user.id,
+            audio_records={"answers": ["audio/panel.wav"]},
+        )
+        db.add(panel)
         db.commit()
-        resume_id = resume.id
+        resource_ids = {
+            "resume": resume.id,
+            "question_bank": question_bank.id,
+            "interview": interview.id,
+            "panel": panel.id,
+        }
+
+    dry_run_output = io.StringIO()
+    dry_run_status = run_legacy_backfill_cli(
+        "migrate",
+        dry_run=True,
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "LEGACY_UPLOAD_ROOT": str(upload_root),
+            "UPLOAD_ROOT": str(upload_root),
+        },
+        stdout=dry_run_output,
+    )
+    dry_run_payload = json.loads(dry_run_output.getvalue())
+    assert dry_run_status == 0, dry_run_payload
+    assert dry_run_payload["counts"] == {
+        "candidates": 4,
+        "errors": 0,
+        "pending": 4,
+    }
+    assert not (upload_root / str(tenant_id)).exists()
+
+    verify_before = io.StringIO()
+    assert run_legacy_backfill_cli(
+        "verify",
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "LEGACY_UPLOAD_ROOT": str(upload_root),
+            "UPLOAD_ROOT": str(upload_root),
+        },
+        stdout=verify_before,
+    ) == 1
+    assert json.loads(verify_before.getvalue())["counts"]["pending"] == 4
 
     output = io.StringIO()
     status = run_legacy_backfill_cli(
@@ -611,7 +992,7 @@ def test_legacy_upload_cli_backfills_real_postgres_and_is_repeatable(
         dry_run=False,
         environ={
             "MIGRATION_DATABASE_URL": migration_database_url,
-            "LEGACY_UPLOAD_ROOT": str(legacy_root),
+            "LEGACY_UPLOAD_ROOT": str(upload_root),
             "UPLOAD_ROOT": str(upload_root),
         },
         stdout=output,
@@ -619,18 +1000,51 @@ def test_legacy_upload_cli_backfills_real_postgres_and_is_repeatable(
     payload = json.loads(output.getvalue())
     assert status == 0
     assert payload["ok"] is True
-    assert payload["counts"] == {"candidates": 1, "errors": 0, "pending": 0}
-    assert legacy_file.exists()
-    assert str(legacy_root) not in output.getvalue()
+    assert payload["counts"] == {"candidates": 4, "errors": 0, "pending": 0}
+    assert all(path.exists() for path in legacy_files.values())
+    assert str(upload_root) not in output.getvalue()
     assert migration_database_url not in output.getvalue()
+    assert all(path.name not in output.getvalue() for path in legacy_files.values())
 
     with pg_session_factory(tenant_id) as db:
-        migrated = db.get(Resume, resume_id)
-        assert migrated.file_id is not None
-        stored = db.get(StoredFile, migrated.file_id)
-        assert stored.tenant_id == tenant_id
-        assert stored.resource_id == resume_id
-        assert (upload_root / Path(stored.object_key)).read_bytes() == b"legacy resume"
+        migrated_resume = db.get(Resume, resource_ids["resume"])
+        migrated_bank = db.get(QuestionBank, resource_ids["question_bank"])
+        migrated_interview = db.get(Interview, resource_ids["interview"])
+        migrated_panel = db.get(InterviewPanel, resource_ids["panel"])
+        assert migrated_resume.file_id is not None
+        assert migrated_bank.source_file_id is not None
+        assert migrated_interview.audio_records["nested"]["full"].startswith(
+            "/api/files/"
+        )
+        assert migrated_panel.audio_records["answers"][0].startswith("/api/files/")
+
+        stored_rows = db.query(StoredFile).filter(
+            StoredFile.resource_id.in_(resource_ids.values())
+        ).all()
+        assert len(stored_rows) == 4
+        assert {row.tenant_id for row in stored_rows} == {tenant_id}
+        actual_contents = {
+            (upload_root / Path(row.object_key)).read_bytes()
+            for row in stored_rows
+        }
+        assert actual_contents == {
+            b"legacy resume",
+            b"legacy question_bank",
+            b"legacy interview",
+            b"legacy panel",
+        }
+
+    verify_after = io.StringIO()
+    assert run_legacy_backfill_cli(
+        "verify",
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "LEGACY_UPLOAD_ROOT": str(upload_root),
+            "UPLOAD_ROOT": str(upload_root),
+        },
+        stdout=verify_after,
+    ) == 0
+    assert json.loads(verify_after.getvalue())["counts"]["candidates"] == 0
 
     repeated_output = io.StringIO()
     assert run_legacy_backfill_cli(
@@ -638,12 +1052,61 @@ def test_legacy_upload_cli_backfills_real_postgres_and_is_repeatable(
         dry_run=False,
         environ={
             "MIGRATION_DATABASE_URL": migration_database_url,
-            "LEGACY_UPLOAD_ROOT": str(legacy_root),
+            "LEGACY_UPLOAD_ROOT": str(upload_root),
             "UPLOAD_ROOT": str(upload_root),
         },
         stdout=repeated_output,
     ) == 0
     assert json.loads(repeated_output.getvalue())["counts"]["candidates"] == 0
+
+    malicious_secret = "legacy-url-secret"
+    with pg_session_factory(tenant_id) as db:
+        missing = Resume(
+            position_id=resource_ids["resume"],
+            file_path="uploads/resumes/missing.pdf",
+        )
+        malicious = Resume(
+            position_id=resource_ids["resume"],
+            file_path=f"https://{malicious_secret}@attacker.invalid/resume.pdf",
+        )
+        # The FK requires a real position, not the earlier resume id.
+        position_id = db.get(Resume, resource_ids["resume"]).position_id
+        missing.position_id = position_id
+        malicious.position_id = position_id
+        db.add_all([missing, malicious])
+        db.commit()
+        rejected_ids = (missing.id, malicious.id)
+
+    rejected_output = io.StringIO()
+    assert run_legacy_backfill_cli(
+        "migrate",
+        environ={
+            "MIGRATION_DATABASE_URL": migration_database_url,
+            "LEGACY_UPLOAD_ROOT": str(upload_root),
+            "UPLOAD_ROOT": str(upload_root),
+        },
+        stdout=rejected_output,
+    ) == 1
+    rejected_payload = json.loads(rejected_output.getvalue())
+    assert rejected_payload["counts"] == {
+        "candidates": 2,
+        "errors": 2,
+        "pending": 0,
+    }
+    assert [item["status"] for item in rejected_payload["items"]] == [
+        "error",
+        "error",
+    ]
+    assert malicious_secret not in rejected_output.getvalue()
+    assert "attacker.invalid" not in rejected_output.getvalue()
+    assert "missing.pdf" not in rejected_output.getvalue()
+    assert migration_database_url not in rejected_output.getvalue()
+
+    with pg_session_factory(tenant_id) as db:
+        db.query(Resume).filter(Resume.id.in_(rejected_ids)).delete(
+            synchronize_session=False
+        )
+        db.commit()
 
 
 def test_rls_blocks_known_other_tenant_uuid_raw_sql(pg_session_factory, tenant_pair):

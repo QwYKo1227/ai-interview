@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response, File, UploadFile, Form
 from sqlalchemy.orm import Session
 from app.core.tenant_dependencies import get_tenant_db
+from app.config.tenant_session import tenant_session
 from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore
 from app.services.interview_service import (
     create_interview, get_interviews, get_interview, update_interview, delete_interview,
@@ -562,6 +563,7 @@ def upload_full_interview_audio(
     if transcript_text and background_tasks:
         background_tasks.add_task(
             generate_evaluation_from_transcript,
+            interview.tenant_id,
             interview_id,
             transcript_text
         )
@@ -650,6 +652,7 @@ def submit_direct_evaluation(
             if full_transcript:
                 background_tasks.add_task(
                     generate_combined_evaluation,
+                    interview.tenant_id,
                     interview_id,
                     full_transcript,
                     combined_evaluation,
@@ -676,6 +679,7 @@ def submit_direct_evaluation(
             interview.result = InterviewResult.PENDING
             background_tasks.add_task(
                 generate_combined_evaluation,
+                interview.tenant_id,
                 interview_id,
                 full_transcript,
                 evaluation_data.evaluation,
@@ -788,6 +792,7 @@ def submit_direct_evaluation_with_audio(
             if transcript:
                 background_tasks.add_task(
                     generate_combined_evaluation,
+                    interview.tenant_id,
                     interview_id,
                     transcript,
                     combined_evaluation,
@@ -814,6 +819,7 @@ def submit_direct_evaluation_with_audio(
             interview.result = InterviewResult.PENDING
             background_tasks.add_task(
                 generate_combined_evaluation,
+                interview.tenant_id,
                 interview_id,
                 transcript,
                 evaluation,
@@ -830,12 +836,13 @@ def submit_direct_evaluation_with_audio(
     return interview
 
 
-def generate_evaluation_from_transcript(interview_id: UUID, transcript: str):
+def generate_evaluation_from_transcript(tenant_id: UUID, interview_id: UUID, transcript: str):
     """根据转写内容生成评价（后台任务）"""
-    generate_combined_evaluation(interview_id, transcript, None, None, None)
+    generate_combined_evaluation(tenant_id, interview_id, transcript, None, None, None)
 
 
 def generate_combined_evaluation(
+    tenant_id: UUID,
     interview_id: UUID,
     transcript: str,
     interviewer_evaluation: str = None,
@@ -843,12 +850,10 @@ def generate_combined_evaluation(
     interviewer_score: int = None
 ):
     """根据录音转写和面试官评价综合生成评价（后台任务）"""
-    from app.config.database import SessionLocal
     from app.services.ai_service import generate_text
     from app.models.models import Interview as InterviewModel, Resume, Position
 
-    db = SessionLocal()
-    try:
+    with tenant_session(tenant_id) as db:
         interview = db.query(InterviewModel).filter(InterviewModel.id == interview_id).first()
         if not interview:
             return
@@ -901,7 +906,7 @@ def generate_combined_evaluation(
 请用中文回答，格式清晰。"""
 
         # 调用AI生成评价
-        evaluation = generate_text(prompt)
+        evaluation = generate_text(prompt, db=db)
 
         if evaluation:
             interview.evaluation = evaluation
@@ -918,8 +923,3 @@ def generate_combined_evaluation(
                 interview.suggestion = interviewer_suggestion
 
             db.commit()
-
-    except Exception as e:
-        print(f"生成评价失败: {e}")
-    finally:
-        db.close()

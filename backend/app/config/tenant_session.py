@@ -29,6 +29,14 @@ def _tenant_scope(session: Session) -> UUID | None:
     return tenant_id
 
 
+def get_tenant_id(session: Session) -> UUID:
+    """Return the immutable tenant binding for a scoped application session."""
+    tenant_id = _tenant_scope(session)
+    if tenant_id is None:
+        raise RuntimeError("operation requires a tenant-scoped session")
+    return tenant_id
+
+
 def _bind_tenant_scope(session: Session, tenant_id: UUID) -> None:
     configured_tenant = _TENANT_BINDINGS.get(session)
     if configured_tenant not in (None, tenant_id):

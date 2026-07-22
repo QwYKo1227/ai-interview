@@ -18,6 +18,7 @@ class TaskStatus(str, Enum):
 
 @dataclass
 class QueueTask:
+    tenant_id: UUID
     id: str
     task_type: str
     payload: Dict[str, Any]
@@ -88,6 +89,7 @@ class TaskQueue:
 
     def submit(
         self,
+        tenant_id: UUID,
         task_id: str,
         task_type: str,
         payload: Dict[str, Any],
@@ -95,6 +97,7 @@ class TaskQueue:
         on_failure: Optional[Callable] = None,
     ) -> QueueTask:
         task = QueueTask(
+            tenant_id=tenant_id,
             id=task_id,
             task_type=task_type,
             payload=payload,
@@ -205,7 +208,7 @@ class TaskQueue:
 
             print(f"[TaskQueue] Executing task {task.id}")
 
-            result = task.callback(task.payload)
+            result = task.callback(task.tenant_id, task.payload)
 
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.now()
@@ -214,7 +217,7 @@ class TaskQueue:
 
         except Exception as e:
             task.retry_count += 1
-            task.error = str(e)
+            task.error = type(e).__name__
 
             if task.retry_count < task.max_retries:
                 print(f"[TaskQueue] Task {task.id} failed, retrying ({task.retry_count}/{task.max_retries})")
@@ -226,13 +229,13 @@ class TaskQueue:
                 task.status = TaskStatus.FAILED
                 task.completed_at = datetime.now()
                 self._stats["total_failed"] += 1
-                print(f"[TaskQueue] Task {task.id} failed permanently: {e}")
+                print(f"[TaskQueue] Task {task.id} failed permanently")
 
                 if task.on_failure:
                     try:
-                        task.on_failure(task.payload, str(e))
-                    except Exception as fe:
-                        print(f"[TaskQueue] Failure callback error: {fe}")
+                        task.on_failure(task.tenant_id, task.payload, task.error)
+                    except Exception:
+                        print("[TaskQueue] Failure callback error")
 
         finally:
             self.semaphore.release()

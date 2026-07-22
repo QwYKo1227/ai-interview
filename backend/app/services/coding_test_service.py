@@ -4,6 +4,7 @@ import secrets
 import random
 import os
 import json
+import logging
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, BackgroundTasks
@@ -13,6 +14,9 @@ from app.schemas.coding_test import CodingTestCreate, CodingTestUpdate
 from app.services.code_runner_service import run_code_against_tests
 from app.services.coding_test_ai_service import generate_coding_evaluation_background
 from app.services.tenant_reference_service import require_tenant_entity
+from app.config.tenant_session import tenant_session
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_references(db: Session, data: Dict[str, Any]) -> None:
@@ -156,7 +160,9 @@ def submit_public_code(db: Session, background_tasks: BackgroundTasks, token: st
     db.commit()
     db.refresh(db_sub)
 
-    background_tasks.add_task(generate_coding_evaluation_background, db_sub.id)
+    background_tasks.add_task(
+        generate_coding_evaluation_background, db_test.tenant_id, db_sub.id
+    )
 
     return db_sub
 
@@ -219,18 +225,21 @@ def submit_essay_answers(db: Session, background_tasks: BackgroundTasks, token: 
     db.commit()
     db.refresh(db_sub)
 
-    background_tasks.add_task(evaluate_essay_answers_background, db_sub.id)
+    background_tasks.add_task(
+        evaluate_essay_answers_background, db_test.tenant_id, db_sub.id
+    )
 
     return db_sub
 
 
-def evaluate_essay_answers_background(submission_id: UUID):
-    from app.config.database import SessionLocal
-    db = SessionLocal()
-    try:
+def evaluate_essay_answers_background(tenant_id: UUID, submission_id: UUID):
+    with tenant_session(tenant_id) as db:
         submission = db.query(CodingSubmission).filter(CodingSubmission.id == submission_id).first()
         if not submission:
-            print(f"Submission {submission_id} not found")
+            logger.warning(
+                "Essay evaluation resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(submission_id)},
+            )
             return
         
         test = submission.coding_test
@@ -257,7 +266,8 @@ def evaluate_essay_answers_background(submission_id: UUID):
                 user_answer,
                 reference,
                 keywords,
-                max_score
+                max_score,
+                db=db,
             )
             
             print(f"AI result for {q_id}: score={ai_result.get('score')}, evaluation={ai_result.get('evaluation')}")
@@ -283,15 +293,9 @@ def evaluate_essay_answers_background(submission_id: UUID):
         submission.evaluated_at = datetime.utcnow()
         db.commit()
         print(f"Essay evaluation completed for {submission_id}: total_score={total_score}")
-    except Exception as e:
-        print(f"Error evaluating essay answers: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        db.close()
 
 
-def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: str, keywords: list, max_score: int) -> dict:
+def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: str, keywords: list, max_score: int, *, db: Session) -> dict:
     from app.services.ai_service import _get_client, _get_llm_config, _get_extra_body
     
     if not user_answer or not user_answer.strip():
@@ -323,19 +327,19 @@ def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: s
 请给出评分和简要评价。"""
 
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": 0.3}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = 500
         
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         
@@ -343,7 +347,7 @@ def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: s
         score = min(max(0, int(result.get("score", 0))), max_score)
         return {"score": score, "evaluation": result.get("evaluation", "")}
     except Exception as e:
-        print(f"AI evaluation failed: {e}")
+        print("AI evaluation failed")
         if keywords:
             matched = sum(1 for kw in keywords if kw.lower() in user_answer.lower())
             score = int((matched / len(keywords)) * max_score) if keywords else 0
@@ -502,7 +506,7 @@ def _generate_questions_with_ai(
         
         return questions
     except Exception as e:
-        print(f"AI question generation failed: {e}")
+        print("AI question generation failed")
         return []
 
 
@@ -546,9 +550,8 @@ def generate_questions_from_bank(db: Session, question_bank_id: UUID, test_type:
     if bank.source_file:
         content = _read_file_content(bank.source_file)
         if content:
-            ai_db = db if db.info.get("tenant_id") is not None else None
             questions = _generate_questions_with_ai(
-                content, test_type, count, db=ai_db
+                content, test_type, count, db=db
             )
             if questions:
                 return questions
@@ -556,12 +559,14 @@ def generate_questions_from_bank(db: Session, question_bank_id: UUID, test_type:
     return []
 
 
-def generate_questions_background(coding_test_id: UUID, question_bank_id: UUID, test_type: str, count: int = 10):
-    from app.config.database import SessionLocal
-    db = SessionLocal()
-    try:
+def generate_questions_background(tenant_id: UUID, coding_test_id: UUID, question_bank_id: UUID, test_type: str, count: int = 10):
+    with tenant_session(tenant_id) as db:
         db_test = db.query(CodingTest).filter(CodingTest.id == coding_test_id).first()
         if not db_test:
+            logger.warning(
+                "Coding question generation resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(coding_test_id)},
+            )
             return
         
         try:
@@ -573,10 +578,6 @@ def generate_questions_background(coding_test_id: UUID, question_bank_id: UUID, 
                 db_test.question_generation_status = "failed"
             db.commit()
         except Exception as e:
-            print(f"Background question generation failed: {e}")
+            print("Background question generation failed")
             db_test.question_generation_status = "failed"
             db.commit()
-    except Exception as e:
-        print(f"Background task error: {e}")
-    finally:
-        db.close()

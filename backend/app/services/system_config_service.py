@@ -4,10 +4,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.models import SystemConfig
+from app.config.tenant_session import get_tenant_id
 
 
 def get_system_config(db: Session) -> Optional[SystemConfig]:
     """读取唯一的系统配置记录；不存在时返回空。"""
+    get_tenant_id(db)
     return (
         db.query(SystemConfig)
         .filter(SystemConfig.singleton_key.is_(True))

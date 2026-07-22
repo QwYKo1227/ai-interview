@@ -96,7 +96,7 @@ def analyze_resume(
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"AI analysis failed: {e}")
+        print("AI analysis failed")
         return {}
 
 def generate_resume_markdown(resume_text: str, *, db: Session | None = None) -> str:
@@ -128,7 +128,7 @@ def generate_resume_markdown(resume_text: str, *, db: Session | None = None) -> 
         content = content.replace("```markdown", "").replace("```", "").strip()
         return content
     except Exception as e:
-        print(f"Markdown generation failed: {e}")
+        print("Markdown generation failed")
         return resume_text
 
 def generate_interview_questions(
@@ -184,7 +184,7 @@ def generate_interview_questions(
             return result
         return result.get("questions", [])
     except Exception as e:
-        print(f"Question generation failed: {e}")
+        print("Question generation failed")
         return []
 
 def generate_interview_evaluation(
@@ -227,7 +227,7 @@ def generate_interview_evaluation(
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"Evaluation generation failed: {e}")
+        print("Evaluation generation failed")
         return {"evaluation": "生成评价失败", "suggestion": "waitlist"}
 
 
@@ -270,7 +270,7 @@ def generate_interview_evaluation_from_transcript(
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"Evaluation from transcript generation failed: {e}")
+        print("Evaluation from transcript generation failed")
         return {"evaluation": interviewer_evaluation, "suggestion": "waitlist"}
 
 
@@ -314,7 +314,7 @@ def generate_coding_test_evaluation(
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"Coding evaluation generation failed: {e}")
+        print("Coding evaluation generation failed")
         return {"evaluation": "生成评价失败"}
 
 def generate_jd(
@@ -360,7 +360,7 @@ def generate_jd(
             "requirements": result.get("requirements", "")
         }
     except Exception as e:
-        print(f"JD generation failed: {e}")
+        print("JD generation failed")
         return {"description": "生成岗位描述失败", "requirements": "生成任职要求失败"}
 
 def _stream_chat_events(client: OpenAI, request: Dict[str, Any], error_label: str):
@@ -502,5 +502,5 @@ def generate_text(prompt: str, *, db: Session | None = None) -> str:
         )
         return completion.choices[0].message.content
     except Exception as e:
-        print(f"Text generation failed: {e}")
+        print("Text generation failed")
         return ""

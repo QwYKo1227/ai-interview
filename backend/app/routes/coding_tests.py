@@ -106,6 +106,7 @@ def generate_questions_for_test_route(
     from app.services.coding_test_service import generate_questions_background
     background_tasks.add_task(
         generate_questions_background,
+        db_test.tenant_id,
         coding_test_id,
         question_bank_id,
         test_type,

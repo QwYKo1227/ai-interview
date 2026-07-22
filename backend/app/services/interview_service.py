@@ -5,6 +5,7 @@ from app.models.models import Interview, Resume, Position, InterviewStatus, Inte
 from app.schemas.interview import InterviewCreate, InterviewUpdate, InterviewScore
 from fastapi import BackgroundTasks
 import logging
+from app.config.tenant_session import tenant_session
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ def aggregate_panel_scores(db: Session, interview_id: UUID, background_tasks: Ba
 
         background_tasks.add_task(
             generate_evaluation_background,
+            db_interview.tenant_id,
             db_interview.id,
             {
                 "scores": aggregated_scores,
@@ -208,7 +210,6 @@ from app.services.resume_service import read_file_content
 import json
 from datetime import timezone
 
-from app.config.database import SessionLocal
 from fastapi import BackgroundTasks
 
 def _normalize_dt_utc(dt):
@@ -218,11 +219,21 @@ def _normalize_dt_utc(dt):
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
-def generate_questions_background(interview_id: UUID, question_bank_ids: list, question_count: int, interview_category: str = 'technical'):
-    db = SessionLocal()
+def generate_questions_background(tenant_id: UUID, interview_id: UUID, question_bank_ids: list, question_count: int, interview_category: str = 'technical'):
+    with tenant_session(tenant_id) as db:
+        return _generate_questions_background(
+            db, interview_id, question_bank_ids, question_count, interview_category
+        )
+
+
+def _generate_questions_background(db: Session, interview_id: UUID, question_bank_ids: list, question_count: int, interview_category: str = 'technical'):
     try:
         interview = db.query(Interview).filter(Interview.id == interview_id).first()
         if not interview:
+            logger.warning(
+                "Interview question resource not found",
+                extra={"resource_id": str(interview_id)},
+            )
             return
 
         resume = db.query(Resume).filter(Resume.id == interview.resume_id).first()
@@ -250,16 +261,18 @@ def generate_questions_background(interview_id: UUID, question_bank_ids: list, q
             position_desc,
             qb_content,
             question_count,
-            interview_category
+            interview_category,
+            db=db,
         )
 
         interview.questions = questions
         db.commit()
         
     except Exception as e:
-        print(f"Error generating questions for interview {interview_id}: {e}")
-    finally:
-        db.close()
+        logger.error(
+            "Interview question generation failed",
+            extra={"resource_id": str(interview_id)},
+        )
 
 def create_interview(db: Session, interview: InterviewCreate, background_tasks: BackgroundTasks):
     # 检查简历和岗位是否存在
@@ -292,6 +305,7 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     interview_category = interview.interview_category or 'technical'
 
     db_interview = Interview(
+        tenant_id=resume.tenant_id,
         resume_id=interview.resume_id,
         position_id=interview.position_id,
         interviewer=interview.interviewer,
@@ -324,6 +338,7 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     if not interview.skip_ai_questions:
         background_tasks.add_task(
             generate_questions_background,
+            db_interview.tenant_id,
             db_interview.id,
             interview.question_bank_ids,
             interview.question_count or 5,
@@ -333,24 +348,26 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     if not interview.skip_email:
         background_tasks.add_task(
             send_interview_invitation_background,
+            db_interview.tenant_id,
             db_interview.id
         )
 
     return db_interview
 
 
-def send_interview_invitation_background(interview_id: UUID):
+def send_interview_invitation_background(tenant_id: UUID, interview_id: UUID):
     """
     后台任务：发送面试邀请邮件
     """
-    from app.config.database import SessionLocal
     from app.services.mail_service import get_mail_service
 
-    db = SessionLocal()
-    try:
+    with tenant_session(tenant_id) as db:
         interview = db.query(Interview).filter(Interview.id == interview_id).first()
         if not interview:
-            logger.warning(f"Interview {interview_id} not found for sending invitation")
+            logger.warning(
+                "Interview invitation resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(interview_id)},
+            )
             return
 
         mail_service = get_mail_service(db)
@@ -360,11 +377,6 @@ def send_interview_invitation_background(interview_id: UUID):
             logger.info(f"Interview invitation sent successfully for interview {interview_id}")
         else:
             logger.warning(f"Failed to send invitation for interview {interview_id}: {result['errors']}")
-
-    except Exception as e:
-        logger.error(f"Error sending interview invitation for {interview_id}: {e}")
-    finally:
-        db.close()
 
 def export_interview_result(db: Session, interview_id: UUID, format: str = "markdown"):
     db_interview = db.query(Interview).options(
@@ -578,11 +590,19 @@ def get_submission_status(db: Session, interview_id: UUID):
         "members": submission_status
     }
 
-def generate_evaluation_background(interview_id: UUID, score_data: dict):
-    db = SessionLocal()
+def generate_evaluation_background(tenant_id: UUID, interview_id: UUID, score_data: dict):
+    with tenant_session(tenant_id) as db:
+        return _generate_evaluation_background(db, interview_id, score_data)
+
+
+def _generate_evaluation_background(db: Session, interview_id: UUID, score_data: dict):
     try:
         db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
         if not db_interview:
+            logger.warning(
+                "Interview evaluation resource not found",
+                extra={"resource_id": str(interview_id)},
+            )
             return
         
         if db_interview.status != InterviewStatus.ANALYZING:
@@ -612,12 +632,13 @@ def generate_evaluation_background(interview_id: UUID, score_data: dict):
                 scores,
                 average_score,
                 panel_details=panel_details,
-                transcripts=transcripts
+                transcripts=transcripts,
+                db=db,
             )
             db_interview.evaluation = evaluation_result.get("evaluation")
             db_interview.suggestion = evaluation_result.get("suggestion")
-        except Exception as eval_error:
-            print(f"Evaluation generation failed for interview {interview_id}: {eval_error}")
+        except Exception:
+            print(f"Evaluation generation failed for interview {interview_id}")
             db_interview.evaluation = "AI评价生成失败，请手动填写评价"
             db_interview.suggestion = "waitlist"
         
@@ -627,7 +648,10 @@ def generate_evaluation_background(interview_id: UUID, score_data: dict):
         db.commit()
         
     except Exception as e:
-        print(f"Error generating evaluation for interview {interview_id}: {e}")
+        logger.error(
+            "Interview evaluation failed",
+            extra={"resource_id": str(interview_id)},
+        )
         try:
             db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
             if db_interview:
@@ -636,20 +660,21 @@ def generate_evaluation_background(interview_id: UUID, score_data: dict):
                 db.commit()
         except:
             pass
-    finally:
-        db.close()
 
 
-def generate_combined_evaluation(interview_id: UUID, transcript: str, interviewer_evaluation: str, interviewer_suggestion: str, interviewer_score: int):
+def generate_combined_evaluation(tenant_id: UUID, interview_id: UUID, transcript: str, interviewer_evaluation: str, interviewer_suggestion: str, interviewer_score: int):
     """
     后台任务：结合录音转写和面试官评价生成综合评价
     """
     from app.services.ai_service import generate_interview_evaluation_from_transcript
     
-    db = SessionLocal()
-    try:
+    with tenant_session(tenant_id) as db:
         db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
         if not db_interview:
+            logger.warning(
+                "Combined interview evaluation resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(interview_id)},
+            )
             return
         
         if db_interview.status != InterviewStatus.ANALYZING:
@@ -660,31 +685,19 @@ def generate_combined_evaluation(interview_id: UUID, transcript: str, interviewe
             evaluation_result = generate_interview_evaluation_from_transcript(
                 transcript,
                 interviewer_evaluation,
-                interviewer_score
+                interviewer_score,
+                db=db,
             )
             db_interview.evaluation = evaluation_result.get("evaluation", interviewer_evaluation)
             db_interview.suggestion = evaluation_result.get("suggestion", interviewer_suggestion)
-        except Exception as eval_error:
-            print(f"Combined evaluation generation failed: {eval_error}")
+        except Exception:
+            print("Combined evaluation generation failed")
             db_interview.evaluation = interviewer_evaluation
             db_interview.suggestion = interviewer_suggestion
         
         db_interview.status = InterviewStatus.COMPLETED
         db_interview.result = InterviewResult.PENDING
         db.commit()
-        
-    except Exception as e:
-        print(f"Error in combined evaluation for interview {interview_id}: {e}")
-        try:
-            db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
-            if db_interview:
-                db_interview.status = InterviewStatus.COMPLETED
-                db_interview.result = InterviewResult.PENDING
-                db.commit()
-        except:
-            pass
-    finally:
-        db.close()
 
 
 def confirm_interview_result(db: Session, interview_id: UUID, result: str, background_tasks: BackgroundTasks = None):
@@ -740,24 +753,26 @@ def confirm_interview_result(db: Session, interview_id: UUID, result: str, backg
     if background_tasks and db_interview.result in [InterviewResult.HIRED, InterviewResult.REJECTED, InterviewResult.NEXT_ROUND]:
         background_tasks.add_task(
             send_result_notification_background,
+            db_interview.tenant_id,
             db_interview.id
         )
 
     return db_interview
 
 
-def send_result_notification_background(interview_id: UUID):
+def send_result_notification_background(tenant_id: UUID, interview_id: UUID):
     """
     后台任务：发送面试结果通知邮件
     """
-    from app.config.database import SessionLocal
     from app.services.mail_service import get_mail_service
 
-    db = SessionLocal()
-    try:
+    with tenant_session(tenant_id) as db:
         interview = db.query(Interview).filter(Interview.id == interview_id).first()
         if not interview:
-            logger.warning(f"Interview {interview_id} not found for sending result notification")
+            logger.warning(
+                "Interview result notification resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(interview_id)},
+            )
             return
 
         mail_service = get_mail_service(db)
@@ -767,11 +782,6 @@ def send_result_notification_background(interview_id: UUID):
             logger.info(f"Result notification sent successfully for interview {interview_id}")
         else:
             logger.warning(f"Failed to send result notification for interview {interview_id}: {result.get('error')}")
-
-    except Exception as e:
-        logger.error(f"Error sending result notification for {interview_id}: {e}")
-    finally:
-        db.close()
 
 def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID, score_data: InterviewScore, background_tasks: BackgroundTasks):
     """
@@ -825,6 +835,7 @@ def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID
     
     background_tasks.add_task(
         generate_evaluation_background,
+        db_interview.tenant_id,
         db_interview.id,
         {
             "scores": score_data.scores,

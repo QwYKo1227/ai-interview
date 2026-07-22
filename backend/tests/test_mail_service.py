@@ -24,10 +24,12 @@ def _db_with_mail_config(smtp_security: str):
 
 
 @patch("app.services.mail_service.smtplib.SMTP_SSL")
-def test_send_test_email_uses_ssl_smtp(mock_smtp_ssl):
+@patch("app.services.mail_service.get_system_config")
+def test_send_test_email_uses_ssl_smtp(mock_get_config, mock_smtp_ssl):
     server = MagicMock()
     mock_smtp_ssl.return_value = server
-    service = MailService(_db_with_mail_config("ssl"))
+    mock_get_config.return_value = _mail_config("ssl")
+    service = MailService(MagicMock())
 
     assert service.send_test_email("recipient@example.com") is True
 
@@ -40,10 +42,12 @@ def test_send_test_email_uses_ssl_smtp(mock_smtp_ssl):
 
 
 @patch("app.services.mail_service.smtplib.SMTP")
-def test_send_test_email_uses_starttls_smtp(mock_smtp):
+@patch("app.services.mail_service.get_system_config")
+def test_send_test_email_uses_starttls_smtp(mock_get_config, mock_smtp):
     server = MagicMock()
     mock_smtp.return_value = server
-    service = MailService(_db_with_mail_config("starttls"))
+    mock_get_config.return_value = _mail_config("starttls")
+    service = MailService(MagicMock())
 
     assert service.send_test_email("recipient@example.com") is True
 
@@ -56,11 +60,13 @@ def test_send_test_email_uses_starttls_smtp(mock_smtp):
 
 
 @patch("app.services.mail_service.smtplib.SMTP_SSL")
-def test_send_test_email_stays_successful_when_quit_fails_after_delivery(mock_smtp_ssl):
+@patch("app.services.mail_service.get_system_config")
+def test_send_test_email_stays_successful_when_quit_fails_after_delivery(mock_get_config, mock_smtp_ssl):
     server = MagicMock()
     server.quit.side_effect = OSError("connection already closed")
     mock_smtp_ssl.return_value = server
-    service = MailService(_db_with_mail_config("ssl"))
+    mock_get_config.return_value = _mail_config("ssl")
+    service = MailService(MagicMock())
 
     assert service.send_test_email("recipient@example.com") is True
 

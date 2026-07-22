@@ -20,6 +20,11 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy import or_, and_, func
 import json
+import logging
+
+from app.config.tenant_session import tenant_session
+
+logger = logging.getLogger(__name__)
 
 
 EXTRACTED_PROFILE_FIELDS = (
@@ -67,18 +72,25 @@ def read_file_content(file_path: str) -> str:
         print(f"Error reading file {file_path}: {e}")
     return content
 
-from app.config.database import SessionLocal
 from fastapi import BackgroundTasks
 
-def process_resume_task(payload: Dict[str, Any]):
+def process_resume_task(tenant_id: UUID, payload: Dict[str, Any]):
+    with tenant_session(tenant_id) as db:
+        return _process_resume_task(db, payload)
+
+
+def _process_resume_task(db: Session, payload: Dict[str, Any]):
     resume_id = payload["resume_id"]
     position_id = payload["position_id"]
     use_user_info = payload.get("use_user_info", False)
 
-    db = SessionLocal()
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
         if not resume:
+            logger.warning(
+                "Resume parse resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(resume_id)},
+            )
             return
         resume.parse_status = "processing"
         resume.parse_error = None
@@ -125,7 +137,9 @@ def process_resume_task(payload: Dict[str, Any]):
         else:
             other_positions_info = "暂无其他相近岗位"
 
-        parsed_data = analyze_resume(content, position_desc, other_positions_info)
+        parsed_data = analyze_resume(
+            content, position_desc, other_positions_info, db=db
+        )
 
         # 解析 AI 返回结果，兼容多种格式
         if not parsed_data:
@@ -214,22 +228,21 @@ def process_resume_task(payload: Dict[str, Any]):
 
         db.commit()
 
-    except Exception as e:
-        try:
-            resume = db.query(Resume).filter(Resume.id == resume_id).first()
-            if resume:
-                resume.parse_status = "failed"
-                resume.parse_error = str(e)[:500]
-                db.commit()
-        finally:
-            pass
-    finally:
-        db.close()
+    except Exception:
+        resume = db.query(Resume).filter(Resume.id == resume_id).first()
+        if resume:
+            resume.parse_status = "failed"
+            resume.parse_error = "简历解析过程中发生错误"
+            db.commit()
 
 
-def on_resume_parse_failure(payload: Dict[str, Any], error: str):
+def on_resume_parse_failure(tenant_id: UUID, payload: Dict[str, Any], error: str):
+    with tenant_session(tenant_id) as db:
+        return _on_resume_parse_failure(db, payload, error)
+
+
+def _on_resume_parse_failure(db: Session, payload: Dict[str, Any], error: str):
     resume_id = payload["resume_id"]
-    db = SessionLocal()
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
         if resume:
@@ -238,18 +251,18 @@ def on_resume_parse_failure(payload: Dict[str, Any], error: str):
             resume.candidate_name = "解析失败"
             db.commit()
             print(f"[TaskQueue] Updated resume {resume_id} status to failed")
-    except Exception as e:
-        print(f"[TaskQueue] Failed to update resume status: {e}")
-    finally:
-        db.close()
+    except Exception:
+        print("[TaskQueue] Failed to update resume status")
 
 
-def process_resume_background(resume_id: UUID, position_id: UUID, use_user_info: bool = False):
+def process_resume_background(tenant_id: UUID, resume_id: UUID, position_id: UUID, use_user_info: bool = False):
     queue = get_task_queue()
     queue.submit(
+        tenant_id=tenant_id,
         task_id=str(resume_id),
         task_type="resume_parse",
         payload={
+            "tenant_id": tenant_id,
             "resume_id": resume_id,
             "position_id": position_id,
             "use_user_info": use_user_info,
@@ -265,12 +278,17 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
     - 公开链接上传时，candidate_name/email/contact 由应聘者填写，解析时不会覆盖
     - 后台上传时，这些字段为空，解析时会从简历中提取
     """
+    position = db.query(Position).filter(Position.id == position_id).first()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
     # 1. Save file
     file_path = save_upload_file(file, "resumes")
 
     # 2. Create initial record
     # 如果有应聘者填写的信息，直接使用；否则显示"解析中..."
     db_resume = Resume(
+        tenant_id=position.tenant_id,
         file_path=file_path,
         position_id=position_id,
         status=ResumeStatus.PENDING_SCREENING,
@@ -286,7 +304,13 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
 
     # 3. Add background task - 传递是否使用用户填写的信息标记
     use_user_info = bool(candidate_name or email or contact)
-    background_tasks.add_task(process_resume_background, db_resume.id, position_id, use_user_info)
+    background_tasks.add_task(
+        process_resume_background,
+        db_resume.tenant_id,
+        db_resume.id,
+        position_id,
+        use_user_info,
+    )
 
     return db_resume
 
@@ -321,7 +345,9 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
     db.commit()
     db.refresh(resume)
 
-    background_tasks.add_task(process_resume_background, resume.id, resume.position_id)
+    background_tasks.add_task(
+        process_resume_background, resume.tenant_id, resume.id, resume.position_id
+    )
     return resume
 
 def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: str = None, status: str = None, position_id: UUID = None, reviewer_id: UUID = None):
@@ -854,6 +880,12 @@ def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID
     db.refresh(resume)
 
     # 触发重新解析
-    background_tasks.add_task(process_resume_background, resume.id, resume.position_id, False)
+    background_tasks.add_task(
+        process_resume_background,
+        resume.tenant_id,
+        resume.id,
+        resume.position_id,
+        False,
+    )
 
     return resume

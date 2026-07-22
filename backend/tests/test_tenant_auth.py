@@ -264,6 +264,42 @@ def test_valid_token_authenticates_user_with_uuid_subject(
     assert response.json()["id"] == str(user.id)
 
 
+def test_auth_me_returns_only_the_jwt_tenants_company_summary(
+    client, db, tenant_a, tenant_b
+):
+    user = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    tenant_a.logo_url = "https://cdn.example.com/careray.png"
+    db.add_all(
+        [
+            TenantDomain(
+                tenant_id=tenant_a.id,
+                domain="login.careray.example",
+                is_primary=True,
+            ),
+            TenantDomain(
+                tenant_id=tenant_b.id,
+                domain="login.photonthix.example",
+                is_primary=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.get(
+        f"/api/auth/me?tenant_id={tenant_b.id}",
+        headers={**auth_header(user), "X-Tenant-ID": str(tenant_b.id)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tenant"] == {
+        "id": str(tenant_a.id),
+        "code": "careray",
+        "name": "CareRay",
+        "logo_url": "https://cdn.example.com/careray.png",
+        "primary_domain": "login.careray.example",
+    }
+
+
 def test_matching_domain_is_normalized_for_case_and_port(client, db, tenant_a):
     user = create_user(db, tenant_a.id, "member@example.com", "Password123")
     db.add(

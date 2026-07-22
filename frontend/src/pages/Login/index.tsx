@@ -1,17 +1,23 @@
 import React from 'react';
-import { Form, Input, Button, Card, Typography, message } from 'antd';
-import { UserOutlined, LockOutlined } from '@ant-design/icons';
-import request from '../../utils/request';
+import { Alert, Button, Card, Form, Input, Typography, message } from 'antd';
+import { LockOutlined, UserOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { useNavigate, useLocation } from 'react-router-dom';
+import type { LoginPayload, TenantSummary } from '../../types/tenant';
+import request from '../../utils/request';
+import { resolveTenantSelection } from '../../utils/tenantRouting';
 
 const { Title, Text } = Typography;
 
 const Login: React.FC = () => {
   const { login, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
-  useLocation();
+  const [form] = Form.useForm<LoginPayload>();
   const [loading, setLoading] = React.useState(false);
+  const [tenants, setTenants] = React.useState<TenantSummary[]>([]);
+  const [tenantsLoading, setTenantsLoading] = React.useState(true);
+  const [tenantsError, setTenantsError] = React.useState(false);
+  const [lockedTenant, setLockedTenant] = React.useState<TenantSummary>();
 
   React.useEffect(() => {
     if (!authLoading && isAuthenticated) {
@@ -19,73 +25,94 @@ const Login: React.FC = () => {
     }
   }, [authLoading, isAuthenticated, navigate]);
 
-  const onFinish = async (values: any) => {
+  const loadTenants = React.useCallback(async () => {
+    setTenantsLoading(true);
+    setTenantsError(false);
+    try {
+      const response = await request.get('/auth/tenants') as TenantSummary[];
+      const nextTenants = Array.isArray(response) ? response : [];
+      setTenants(nextTenants);
+      const matchedTenant = resolveTenantSelection(window.location.hostname, nextTenants);
+      setLockedTenant(matchedTenant);
+      if (matchedTenant) form.setFieldValue('tenant_code', matchedTenant.code);
+    } catch {
+      setTenants([]);
+      setLockedTenant(undefined);
+      setTenantsError(true);
+    } finally {
+      setTenantsLoading(false);
+    }
+  }, [form]);
+
+  React.useEffect(() => {
+    void loadTenants();
+  }, [loadTenants]);
+
+  const onFinish = async (values: LoginPayload) => {
     setLoading(true);
     try {
-      // Use URLSearchParams to send form data as application/x-www-form-urlencoded
-      const formData = new URLSearchParams();
-      formData.append('username', values.email);
-      formData.append('password', values.password);
-
-      const res = await request.post('/auth/token', formData, {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      });
-      
-      await login((res as any).access_token);
+      const response = await request.post('/auth/login', values) as { access_token: string };
+      const authenticated = await login(response.access_token);
+      if (!authenticated) throw new Error('Unable to verify session');
       message.success('登录成功');
       navigate('/dashboard', { replace: true });
-    } catch (error) {
-      message.error('登录失败，请检查账号密码');
+    } catch {
+      message.error('登录失败，请检查公司、邮箱和密码后重试');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      justifyContent: 'center', 
-      alignItems: 'center', 
-      minHeight: '100vh',
-      background: '#f0f2f5' 
-    }}>
-      <Card style={{ width: 400, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: 'var(--background-color)' }}>
+      <Card style={{ width: 'min(400px, calc(100vw - 32px))', boxShadow: 'var(--shadow-md)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3}>AI 智能面试系统</Title>
-          <Text type="secondary">请登录您的账号</Text>
+          <Text type="secondary">选择公司后登录您的账号</Text>
         </div>
-        
-        <Form
-          name="login"
-          initialValues={{ remember: true }}
-          onFinish={onFinish}
-          size="large"
-        >
-          <Form.Item
-            name="email"
-            rules={[{ required: true, message: '请输入邮箱!' }]}
-          >
-            <Input prefix={<UserOutlined />} placeholder="邮箱 (admin@example.com)" />
+
+        <Form name="login" form={form} onFinish={onFinish} size="large">
+          {tenantsError && (
+            <Alert
+              type="error"
+              showIcon
+              title="公司列表加载失败"
+              description="请检查网络连接后重新加载。"
+              action={<Button size="small" onClick={() => void loadTenants()}>重新加载公司列表</Button>}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
+          <Form.Item label="公司" name="tenant_code" rules={[{ required: true, message: '请选择公司' }]}>
+            <select
+              aria-label="公司"
+              disabled={tenantsLoading || Boolean(lockedTenant)}
+              style={{ width: '100%', minHeight: 40, padding: '6px 12px', border: '1px solid var(--border-color)', borderRadius: 'var(--border-radius-sm)', background: 'var(--surface-color)', color: 'var(--text-primary)' }}
+            >
+              <option value="">{tenantsLoading ? '正在加载公司…' : '请选择公司'}</option>
+              {tenants.map((tenant) => <option key={tenant.id} value={tenant.code}>{tenant.name}</option>)}
+            </select>
           </Form.Item>
 
-          <Form.Item
-            name="password"
-            rules={[{ required: true, message: '请输入密码!' }]}
-          >
-            <Input.Password prefix={<LockOutlined />} placeholder="密码 (admin123)" />
+          {lockedTenant && (
+            <div role="status" style={{ marginTop: -8, marginBottom: 16, padding: '8px 12px', borderRadius: 'var(--border-radius-sm)', color: '#1D4ED8', background: '#EFF6FF', fontSize: 13 }}>
+              当前专属域名已锁定公司：{lockedTenant.name}
+            </div>
+          )}
+
+          <Form.Item label="邮箱" name="email" rules={[{ required: true, message: '请输入邮箱' }]}>
+            <Input prefix={<UserOutlined />} placeholder="admin@example.com" autoComplete="email" />
+          </Form.Item>
+
+          <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
+            <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete="current-password" />
           </Form.Item>
 
           <Form.Item>
-            <Button type="primary" htmlType="submit" style={{ width: '100%' }} loading={loading}>
+            <Button type="primary" htmlType="submit" style={{ width: '100%' }} loading={loading} disabled={tenantsLoading || tenantsError}>
               登录
             </Button>
           </Form.Item>
-          
-          <div style={{ textAlign: 'center' }}>
-             <Text type="secondary" style={{ fontSize: 12 }}>默认账号: admin@example.com / admin123</Text>
-          </div>
         </Form>
       </Card>
     </div>

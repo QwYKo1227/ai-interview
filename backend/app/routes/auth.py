@@ -6,9 +6,10 @@ from app.config.tenant_session import tenant_session
 from app.models.models import User, UserRole
 from app.models.tenant_models import Tenant, TenantDomain, TenantStatus
 from app.schemas.tenant import TenantSummary
-from app.schemas.user import Token, UserResponse, UserLogin, UserCreate, UserUpdateMe, ChangePasswordRequest
+from app.schemas.user import Token, UserResponse, CurrentUserResponse, UserLogin, UserCreate, UserUpdateMe, ChangePasswordRequest
 from app.core.security import verify_password, create_access_token, check_roles, get_password_hash
-from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
+from app.core.tenant_dependencies import get_current_user_dep, get_tenant_context, get_tenant_db
+from app.core.tenant_context import TenantContext
 from datetime import timedelta
 from typing import List
 import re
@@ -156,9 +157,35 @@ def login(login_data: UserLogin, db: Session = Depends(get_unscoped_db)):
     )
     return _token_for_user(tenant, user)
 
-@router.get("/me", response_model=UserResponse)
-def read_users_me(current_user: User = Depends(get_current_user)):
-    return current_user
+@router.get("/me", response_model=CurrentUserResponse)
+def read_users_me(
+    current_user: User = Depends(get_current_user),
+    tenant_context: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_unscoped_db),
+):
+    tenant, primary_domain = (
+        db.query(Tenant, TenantDomain.domain)
+        .outerjoin(
+            TenantDomain,
+            (TenantDomain.tenant_id == Tenant.id) & TenantDomain.is_primary,
+        )
+        .filter(Tenant.id == tenant_context.tenant_id)
+        .one()
+    )
+    return CurrentUserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        is_active=current_user.is_active,
+        tenant=TenantSummary(
+            id=tenant.id,
+            code=tenant.code,
+            name=tenant.name,
+            logo_url=tenant.logo_url,
+            primary_domain=primary_domain,
+        ),
+    )
 
 @router.put("/me", response_model=UserResponse)
 def update_users_me(

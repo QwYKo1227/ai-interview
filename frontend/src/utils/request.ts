@@ -1,47 +1,39 @@
 import axios from 'axios';
-import { message } from 'antd';
 
 const request: any = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   timeout: 10000,
 });
 
+const isUnauthenticatedEndpoint = (url?: string) => (
+  ['/auth/login', '/auth/tenants', '/auth/token'].includes(url || '')
+);
+
 request.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
-    if (token) {
+    if (token && !isUnauthenticatedEndpoint(config.url)) {
       config.headers.Authorization = `Bearer ${token}`;
+    } else if (isUnauthenticatedEndpoint(config.url) && config.headers) {
+      delete config.headers.Authorization;
     }
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error),
 );
 
 request.interceptors.response.use(
-  (response) => {
-    return response.data;
-  },
+  (response) => response.data,
   (error) => {
-    if (error.response) {
-      if (error.response.status === 401) {
-        localStorage.removeItem('token');
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
-        }
-      } else if (error.response.status === 403) {
-        const detail = error.response.data.detail || '';
-        if (detail.includes('禁用')) {
-          localStorage.removeItem('token');
-          if (window.location.pathname !== '/login') {
-            window.location.href = '/login';
-          }
-        }
-      }
+    const status = error.response?.status;
+    const detail = error.response?.data?.detail || '';
+    const sessionIsInvalid = status === 401 || (status === 403 && detail.includes('禁用'));
+    if (sessionIsInvalid) {
+      localStorage.removeItem('token');
+      if (window.location.pathname !== '/login') window.location.href = '/login';
     }
     return Promise.reject(error);
-  }
+  },
 );
 
 export default request;

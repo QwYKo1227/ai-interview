@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr, ConfigDict, Field
 from typing import Optional
 from uuid import UUID
 from app.models.models import UserRole
+from app.schemas.tenant import TenantSummary
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -32,6 +33,12 @@ class UserResponse(UserBase):
     id: UUID
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
+
+
+class CurrentUserResponse(UserResponse):
+    """Authenticated user response with the tenant identity bound to the JWT."""
+
+    tenant: TenantSummary
 
 class Token(BaseModel):
     access_token: str

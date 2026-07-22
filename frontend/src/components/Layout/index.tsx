@@ -22,7 +22,7 @@ const { Header, Sider, Content } = Layout;
 const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { logout, user } = useAuth();
+  const { logout, user, companyName } = useAuth();
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
@@ -182,9 +182,12 @@ const AppLayout: React.FC = () => {
           background: 'rgba(255, 255, 255, 0.8)',
           backdropFilter: 'blur(12px)'
         }}>
-          <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: '#0F172A' }}>
-            {pageTitle}
-          </h2>
+          <Space size="middle">
+            <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: '#0F172A' }}>
+              {pageTitle}
+            </h2>
+            {companyName && <span aria-label="当前公司" style={{ color: '#64748B', fontSize: 13 }}>{companyName}</span>}
+          </Space>
           <Space size="large">
             <Button type="text" icon={<BellOutlined style={{ fontSize: '18px', color: '#64748B' }} />} />
             <Dropdown menu={userMenu}>

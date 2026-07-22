@@ -61,6 +61,7 @@ from app.utils.file_storage import resolve_object_path
 from scripts.create_platform_admin import run_cli as run_platform_admin_cli
 from scripts.backfill_legacy_uploads import run_cli as run_legacy_backfill_cli
 from scripts.snapshot_tenant_counts import run_cli as run_tenant_count_snapshot_cli
+from scripts.verify_database_permissions import run_cli as run_permission_verifier_cli
 from scripts.verify_tenant_migration import run_cli as run_migration_verifier_cli
 
 
@@ -74,6 +75,15 @@ GLOBAL_TABLES = {
     "public_access_tokens",
 }
 APPLICATION_TABLES = TENANT_TABLES | GLOBAL_TABLES
+TENANT_DELETE_ORDER = tuple(
+    reversed(
+        [
+            table.name
+            for table in Base.metadata.sorted_tables
+            if table.name in TENANT_TABLES
+        ]
+    )
+)
 TEST_POSTGRES_CONTAINER = os.getenv(
     "TEST_POSTGRES_CONTAINER", "ai-interview-rls-test-postgres-1"
 )
@@ -200,7 +210,119 @@ def tenant_pair(migration_engine):
                 {"id": tenant_b, "code": f"b-{tenant_b.hex}", "name": "Tenant B"},
             ],
         )
-    return tenant_a, tenant_b
+    try:
+        yield tenant_a, tenant_b
+    finally:
+        _cleanup_test_tenants(migration_engine, (tenant_a, tenant_b))
+
+
+def _cleanup_test_tenants(migration_engine, tenant_ids) -> None:
+    tenant_ids = list(tenant_ids)
+    if not tenant_ids:
+        return
+    assert set(TENANT_DELETE_ORDER) == TENANT_TABLES
+    with migration_engine.begin() as connection:
+        for table in TENANT_TABLE_CATALOG:
+            connection.execute(
+                text(f'ALTER TABLE "{table}" NO FORCE ROW LEVEL SECURITY')
+            )
+        for table in TENANT_DELETE_ORDER:
+            connection.execute(
+                text(f'DELETE FROM "{table}" WHERE tenant_id = ANY(:tenant_ids)'),
+                {"tenant_ids": tenant_ids},
+            )
+        connection.execute(
+            text(
+                "DELETE FROM platform_audit_logs "
+                "WHERE target_tenant_id = ANY(:tenant_ids)"
+            ),
+            {"tenant_ids": tenant_ids},
+        )
+        connection.execute(
+            text("DELETE FROM public_access_tokens WHERE tenant_id = ANY(:tenant_ids)"),
+            {"tenant_ids": tenant_ids},
+        )
+        connection.execute(
+            text("DELETE FROM tenant_domains WHERE tenant_id = ANY(:tenant_ids)"),
+            {"tenant_ids": tenant_ids},
+        )
+        connection.execute(
+            text("DELETE FROM tenants WHERE id = ANY(:tenant_ids)"),
+            {"tenant_ids": tenant_ids},
+        )
+        for table in TENANT_TABLE_CATALOG:
+            connection.execute(
+                text(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY')
+            )
+
+
+@pytest.fixture
+def rollout_tenant_state(migration_engine, pg_session_factory):
+    rollout_tenant_id = uuid.uuid4()
+    state = {
+        "platform_emails": [],
+        "created_careray_config": None,
+    }
+    with migration_engine.begin() as connection:
+        careray_id = connection.execute(
+            text("SELECT id FROM tenants WHERE code='careray'")
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO tenants (id, code, name, status, created_at, updated_at) "
+                "VALUES (:id, :code, 'Rollout Tenant', 'active', now(), now())"
+            ),
+            {
+                "id": rollout_tenant_id,
+                "code": f"rollout-{rollout_tenant_id.hex}",
+            },
+        )
+    try:
+        for tenant_id in (careray_id, rollout_tenant_id):
+            with pg_session_factory(tenant_id) as db:
+                config = db.query(SystemConfig).first()
+                if config is None:
+                    config = SystemConfig()
+                    db.add(config)
+                    db.commit()
+                    if tenant_id == careray_id:
+                        state["created_careray_config"] = config.id
+        with migration_engine.connect() as connection:
+            state["expected_tenant_count"] = int(
+                connection.execute(text("SELECT count(*) FROM tenants")).scalar_one()
+            )
+        state["careray_id"] = careray_id
+        state["rollout_tenant_id"] = rollout_tenant_id
+        yield state
+    finally:
+        with migration_engine.begin() as connection:
+            if state["platform_emails"]:
+                connection.execute(
+                    text(
+                        "DELETE FROM platform_audit_logs WHERE actor_id IN ("
+                        "SELECT id FROM platform_users WHERE email = ANY(:emails))"
+                    ),
+                    {"emails": state["platform_emails"]},
+                )
+                connection.execute(
+                    text("DELETE FROM platform_users WHERE email = ANY(:emails)"),
+                    {"emails": state["platform_emails"]},
+                )
+            if state["created_careray_config"] is not None:
+                connection.execute(
+                    text(
+                        'ALTER TABLE "system_configs" '
+                        "NO FORCE ROW LEVEL SECURITY"
+                    )
+                )
+                connection.execute(
+                    text("DELETE FROM system_configs WHERE id=:id"),
+                    {"id": state["created_careray_config"]},
+                )
+                connection.execute(
+                    text('ALTER TABLE "system_configs" FORCE ROW LEVEL SECURITY')
+                )
+        _cleanup_test_tenants(migration_engine, (rollout_tenant_id,))
 
 
 @pytest.fixture
@@ -262,32 +384,9 @@ def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
     runtime_database_url,
     migration_engine,
     pg_session_factory,
+    rollout_tenant_state,
     tmp_path,
 ):
-    with migration_engine.begin() as connection:
-        careray_id = connection.execute(
-            text("SELECT id FROM tenants WHERE code = 'careray'")
-        ).scalar_one()
-        photonthix_id = connection.execute(
-            text("SELECT id FROM tenants WHERE code = 'photonthix'")
-        ).scalar_one_or_none()
-        if photonthix_id is None:
-            photonthix_id = uuid.uuid4()
-            connection.execute(
-                text(
-                    "INSERT INTO tenants "
-                    "(id, code, name, status, created_at, updated_at) "
-                    "VALUES (:id, 'photonthix', 'PhotonThix', 'active', now(), now())"
-                ),
-                {"id": photonthix_id},
-            )
-
-    for tenant_id in (careray_id, photonthix_id):
-        with pg_session_factory(tenant_id) as db:
-            if db.query(SystemConfig).first() is None:
-                db.add(SystemConfig())
-                db.commit()
-
     verifier_output = io.StringIO()
     verifier_status = run_migration_verifier_cli(
         environ={"MIGRATION_DATABASE_URL": migration_database_url},
@@ -297,7 +396,18 @@ def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
     assert verifier_status == 0
     assert verifier_payload["ok"] is True
     assert verifier_payload["counts"]["default_careray_tenants"] == 1
-    assert verifier_payload["counts"]["table_rows"]["system_configs"] == 2
+    assert verifier_payload["counts"]["table_rows"]["system_configs"] == (
+        rollout_tenant_state["expected_tenant_count"]
+    )
+
+    permission_output = io.StringIO()
+    assert run_permission_verifier_cli(
+        environ={"MIGRATION_DATABASE_URL": migration_database_url},
+        stdout=permission_output,
+    ) == 0, permission_output.getvalue()
+    permission_payload = json.loads(permission_output.getvalue())
+    assert permission_payload["counts"]["application_tables_expected"] == 23
+    assert permission_payload["counts"]["application_tables_with_runtime_dml"] == 23
 
     snapshot_json = tmp_path / "tenant-counts.json"
     snapshot_csv = tmp_path / "tenant-counts.csv"
@@ -350,6 +460,7 @@ def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
     assert forced_count == len(TENANT_TABLES)
 
     admin_email = f"platform-rollout-{uuid.uuid4().hex}@example.com"
+    rollout_tenant_state["platform_emails"].append(admin_email)
     admin_password = "PlatformRolloutPassword123"
     first_output = io.StringIO()
     assert run_platform_admin_cli(

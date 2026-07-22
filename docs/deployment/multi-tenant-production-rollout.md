@@ -98,6 +98,7 @@ ssh "$BACKUP_HOST" "cd '$BACKUP_DIR' && sha256sum -c uploads-before.tar.gz.sha25
 export DRILL_ID="ai-interview-drill-$RELEASE_ID"
 export DRILL_NETWORK="$DRILL_ID-network"
 export DRILL_DB_CONTAINER="$DRILL_ID-postgres"
+export DRILL_BACKEND_CONTAINER="$DRILL_ID-backend"
 export DRILL_DB_VOLUME="$DRILL_ID-postgres-data"
 export DRILL_UPLOAD_VOLUME="$DRILL_ID-uploads"
 export DRILL_DB='ai_interview_drill'
@@ -107,6 +108,31 @@ export DRILL_MIGRATION_PASSWORD="$(openssl rand -hex 24)"
 export BACKEND_IMAGE='<validated-backend-image@sha256:digest>'
 export DRILL_MIGRATION_URL="postgresql://app_migration:${DRILL_MIGRATION_PASSWORD}@${DRILL_DB_CONTAINER}:5432/${DRILL_DB}"
 export DRILL_RUNTIME_URL="postgresql://app_runtime:${DRILL_RUNTIME_PASSWORD}@${DRILL_DB_CONTAINER}:5432/${DRILL_DB}"
+
+# BEGIN DRILL CLEANUP TRAP
+cleanup_drill() {
+  local cleanup_status="${1:-$?}"
+  local containers=()
+  trap - EXIT INT TERM HUP
+  [[ -n "${DRILL_BACKEND_CONTAINER:-}" ]] && containers+=("$DRILL_BACKEND_CONTAINER")
+  [[ -n "${DRILL_DB_CONTAINER:-}" ]] && containers+=("$DRILL_DB_CONTAINER")
+  if ((${#containers[@]})); then
+    docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${DRILL_NETWORK:-}" ]]; then
+    docker network rm "$DRILL_NETWORK" >/dev/null 2>&1 || true
+  fi
+  unset DRILL_POSTGRES_PASSWORD DRILL_RUNTIME_PASSWORD DRILL_MIGRATION_PASSWORD
+  unset DRILL_MIGRATION_URL DRILL_RUNTIME_URL DRILL_SECRET_KEY
+  unset DRILL_PLATFORM_PASSWORD DRILL_CARERAY_PASSWORD DRILL_PHOTON_PASSWORD
+  unset DRILL_PLATFORM_TOKEN DRILL_CAR_TOKEN DRILL_PHOTON_TOKEN
+  return "$cleanup_status"
+}
+trap 'cleanup_status=$?; cleanup_drill "$cleanup_status"; exit "$cleanup_status"' EXIT
+trap 'cleanup_drill 130; exit 130' INT
+trap 'cleanup_drill 143; exit 143' TERM
+trap 'cleanup_drill 129; exit 129' HUP
+# END DRILL CLEANUP TRAP
 
 docker network create "$DRILL_NETWORK"
 docker volume create "$DRILL_DB_VOLUME"
@@ -167,23 +193,89 @@ if ! docker run --rm --network "$DRILL_NETWORK" \
   -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
   -e LEGACY_UPLOAD_ROOT=/app/uploads -e UPLOAD_ROOT=/app/uploads \
   -v "$DRILL_UPLOAD_VOLUME:/app/uploads" \
-  "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py migrate --dry-run \
-  | tee "$RELEASE_DIR/drill-backfill-dry-run.json"; then
-  echo '副本历史文件演练失败' >&2
+  "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py inventory --dry-run \
+  | tee "$RELEASE_DIR/drill-backfill-inventory.json"; then
+  echo '副本历史文件盘点失败' >&2
   exit 1
 fi
 if ! docker run --rm --network "$DRILL_NETWORK" \
   -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
   -e LEGACY_UPLOAD_ROOT=/app/uploads -e UPLOAD_ROOT=/app/uploads \
   -v "$DRILL_UPLOAD_VOLUME:/app/uploads" \
-  "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py migrate \
-  | tee "$RELEASE_DIR/drill-backfill.json"; then
-  echo '副本历史文件回填失败' >&2
+  "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py migrate --dry-run \
+  | tee "$RELEASE_DIR/drill-backfill-dry-run.json"; then
+  echo '副本历史文件演练失败' >&2
   exit 1
 fi
+if ! docker run --rm -v "$RELEASE_DIR:/artifacts:ro" \
+  "$BACKEND_IMAGE" python scripts/legacy_backfill_gate.py plan \
+  --inventory /artifacts/drill-backfill-inventory.json \
+  --dry-run /artifacts/drill-backfill-dry-run.json \
+  | tee "$RELEASE_DIR/drill-backfill-plan.json"; then
+  echo '副本历史文件计划不一致' >&2
+  exit 1
+fi
+DRILL_BACKFILL_ACTION="$(jq -er '.action' "$RELEASE_DIR/drill-backfill-plan.json")"
+DRILL_BACKFILL_PENDING="$(jq -er '.pending' "$RELEASE_DIR/drill-backfill-plan.json")"
+if [[ "$DRILL_BACKFILL_ACTION" == "migrate" ]]; then
+  if docker run --rm --network "$DRILL_NETWORK" \
+    -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
+    -e LEGACY_UPLOAD_ROOT=/app/uploads -e UPLOAD_ROOT=/app/uploads \
+    -v "$DRILL_UPLOAD_VOLUME:/app/uploads" \
+    "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py verify \
+    | tee "$RELEASE_DIR/drill-backfill-verify-before.json"; then
+    echo '副本存在pending时verify意外成功' >&2
+    exit 1
+  fi
+  if ! jq -e --argjson expected "$DRILL_BACKFILL_PENDING" \
+    '.schema == "ai-interview.legacy-upload-backfill" and .ok == false and .counts.pending == $expected and .counts.errors == 0' \
+    "$RELEASE_DIR/drill-backfill-verify-before.json" >/dev/null; then
+    echo '副本迁移前verify不是预期pending失败' >&2
+    exit 1
+  fi
+  if ! docker run --rm --network "$DRILL_NETWORK" \
+    -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
+    -e LEGACY_UPLOAD_ROOT=/app/uploads -e UPLOAD_ROOT=/app/uploads \
+    -v "$DRILL_UPLOAD_VOLUME:/app/uploads" \
+    "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py migrate \
+    | tee "$RELEASE_DIR/drill-backfill.json"; then
+    echo '副本历史文件回填失败' >&2
+    exit 1
+  fi
+  if ! docker run --rm -v "$RELEASE_DIR:/artifacts:ro" \
+    "$BACKEND_IMAGE" python scripts/legacy_backfill_gate.py finalize \
+    --plan /artifacts/drill-backfill-plan.json \
+    --migration /artifacts/drill-backfill.json \
+    | tee "$RELEASE_DIR/drill-backfill-result.json"; then
+    echo '副本实际迁移数与pending不一致' >&2
+    exit 1
+  fi
+else
+  if ! docker run --rm --network "$DRILL_NETWORK" \
+    -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
+    -e LEGACY_UPLOAD_ROOT=/app/uploads -e UPLOAD_ROOT=/app/uploads \
+    -v "$DRILL_UPLOAD_VOLUME:/app/uploads" \
+    "$BACKEND_IMAGE" python scripts/backfill_legacy_uploads.py verify \
+    | tee "$RELEASE_DIR/drill-backfill-verify-before.json"; then
+    echo '副本零pending时verify失败' >&2
+    exit 1
+  fi
+  if ! jq -e \
+    '.schema == "ai-interview.legacy-upload-backfill" and .ok == true and .counts.pending == 0 and .counts.errors == 0' \
+    "$RELEASE_DIR/drill-backfill-verify-before.json" >/dev/null; then
+    echo '副本零pending校验JSON异常' >&2
+    exit 1
+  fi
+  if ! docker run --rm -v "$RELEASE_DIR:/artifacts:ro" \
+    "$BACKEND_IMAGE" python scripts/legacy_backfill_gate.py finalize \
+    --plan /artifacts/drill-backfill-plan.json \
+    | tee "$RELEASE_DIR/drill-backfill-result.json"; then
+    echo '副本零pending收尾失败' >&2
+    exit 1
+  fi
+fi
 DRILL_STORED_FILE_INCREASE="$(jq -er \
-  '[.items[] | select(.status == "migrated")] | length' \
-  "$RELEASE_DIR/drill-backfill.json")"
+  '.stored_files_increase' "$RELEASE_DIR/drill-backfill-result.json")"
 if ! docker run --rm --network "$DRILL_NETWORK" \
   -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
   -e LEGACY_UPLOAD_ROOT=/app/uploads -e UPLOAD_ROOT=/app/uploads \
@@ -193,11 +285,29 @@ if ! docker run --rm --network "$DRILL_NETWORK" \
   echo '副本仍有旧文件或恶意路径' >&2
   exit 1
 fi
+if ! jq -e \
+  '.schema == "ai-interview.legacy-upload-backfill" and .ok == true and .counts.pending == 0 and .counts.errors == 0' \
+  "$RELEASE_DIR/drill-backfill-verify.json" >/dev/null; then
+  echo '副本最终历史文件JSON门禁失败' >&2
+  exit 1
+fi
 if ! docker run --rm --network "$DRILL_NETWORK" \
   -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
   -v "$DRILL_UPLOAD_VOLUME:/app/uploads" \
   "$BACKEND_IMAGE" alembic upgrade head; then
   echo '副本head迁移失败' >&2
+  exit 1
+fi
+if ! docker exec "$DRILL_DB_CONTAINER" \
+  sh /docker-entrypoint-initdb.d/01-app-roles.sh; then
+  echo '副本head后权限收敛失败' >&2
+  exit 1
+fi
+if ! docker run --rm --network "$DRILL_NETWORK" \
+  -e MIGRATION_DATABASE_URL="$DRILL_MIGRATION_URL" \
+  "$BACKEND_IMAGE" python scripts/verify_database_permissions.py \
+  | tee "$RELEASE_DIR/drill-database-permissions.json"; then
+  echo '副本数据库权限门禁失败' >&2
   exit 1
 fi
 ```
@@ -292,7 +402,6 @@ fi
 
 ```bash
 export DRILL_API_PORT=18080
-export DRILL_BACKEND_CONTAINER="$DRILL_ID-backend"
 export DRILL_SECRET_KEY="$(openssl rand -hex 32)"
 export DRILL_PLATFORM_EMAIL="platform-$RELEASE_ID@example.invalid"
 export DRILL_PLATFORM_PASSWORD="A$(openssl rand -hex 18)9"
@@ -430,11 +539,7 @@ fi
 数据库、文件、18 表对比、枚举、同邮箱登录和职位隔离全部通过后，记录恢复开始、数据库可用、文件可用和 smoke 完成时间；实测恢复耗时必须小于 RTO。RPO 是最后一致性副本与故障时刻之间可能丢失的数据时间。演练容器可删除，但副本卷和全部证据保留到生产观察期结束：
 
 ```bash
-docker rm -f "$DRILL_BACKEND_CONTAINER" "$DRILL_DB_CONTAINER"
-docker network rm "$DRILL_NETWORK"
-unset DRILL_POSTGRES_PASSWORD DRILL_RUNTIME_PASSWORD DRILL_MIGRATION_PASSWORD
-unset DRILL_SECRET_KEY DRILL_PLATFORM_PASSWORD DRILL_CARERAY_PASSWORD
-unset DRILL_PHOTON_PASSWORD DRILL_PLATFORM_TOKEN DRILL_CAR_TOKEN DRILL_PHOTON_TOKEN
+cleanup_drill 0
 ```
 
 ## 3. 发布前快照和停止写入
@@ -525,31 +630,85 @@ if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm b
   echo '生产历史文件盘点失败' >&2
   exit 1
 fi
-if docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
-  python scripts/backfill_legacy_uploads.py verify \
-  | tee "$RELEASE_DIR/uploads-verify-before.json"; then
-  echo '迁移前 verify 意外成功，请停止并检查盘点结果' >&2
-  exit 1
-fi
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
   python scripts/backfill_legacy_uploads.py migrate --dry-run \
   | tee "$RELEASE_DIR/uploads-migrate-dry-run.json"; then
   echo '生产历史文件迁移演练失败' >&2
   exit 1
 fi
-if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
-  python scripts/backfill_legacy_uploads.py migrate \
-  | tee "$RELEASE_DIR/uploads-migrate.json"; then
-  echo '生产历史文件迁移失败' >&2
+if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
+  -v "$RELEASE_DIR:/artifacts:ro" backend-migrate \
+  python scripts/legacy_backfill_gate.py plan \
+  --inventory /artifacts/uploads-inventory.json \
+  --dry-run /artifacts/uploads-migrate-dry-run.json \
+  | tee "$RELEASE_DIR/uploads-backfill-plan.json"; then
+  echo '生产历史文件计划不一致' >&2
   exit 1
 fi
+PRODUCTION_BACKFILL_ACTION="$(jq -er '.action' "$RELEASE_DIR/uploads-backfill-plan.json")"
+PRODUCTION_BACKFILL_PENDING="$(jq -er '.pending' "$RELEASE_DIR/uploads-backfill-plan.json")"
+if [[ "$PRODUCTION_BACKFILL_ACTION" == "migrate" ]]; then
+  if docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
+    python scripts/backfill_legacy_uploads.py verify \
+    | tee "$RELEASE_DIR/uploads-verify-before.json"; then
+    echo '生产存在pending时verify意外成功' >&2
+    exit 1
+  fi
+  if ! jq -e --argjson expected "$PRODUCTION_BACKFILL_PENDING" \
+    '.schema == "ai-interview.legacy-upload-backfill" and .ok == false and .counts.pending == $expected and .counts.errors == 0' \
+    "$RELEASE_DIR/uploads-verify-before.json" >/dev/null; then
+    echo '生产迁移前verify不是预期pending失败' >&2
+    exit 1
+  fi
+  if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
+    python scripts/backfill_legacy_uploads.py migrate \
+    | tee "$RELEASE_DIR/uploads-migrate.json"; then
+    echo '生产历史文件迁移失败' >&2
+    exit 1
+  fi
+  if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
+    -v "$RELEASE_DIR:/artifacts:ro" backend-migrate \
+    python scripts/legacy_backfill_gate.py finalize \
+    --plan /artifacts/uploads-backfill-plan.json \
+    --migration /artifacts/uploads-migrate.json \
+    | tee "$RELEASE_DIR/uploads-backfill-result.json"; then
+    echo '生产实际迁移数与pending不一致' >&2
+    exit 1
+  fi
+else
+  if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
+    python scripts/backfill_legacy_uploads.py verify \
+    | tee "$RELEASE_DIR/uploads-verify-before.json"; then
+    echo '生产零pending时verify失败' >&2
+    exit 1
+  fi
+  if ! jq -e \
+    '.schema == "ai-interview.legacy-upload-backfill" and .ok == true and .counts.pending == 0 and .counts.errors == 0' \
+    "$RELEASE_DIR/uploads-verify-before.json" >/dev/null; then
+    echo '生产零pending校验JSON异常' >&2
+    exit 1
+  fi
+  if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
+    -v "$RELEASE_DIR:/artifacts:ro" backend-migrate \
+    python scripts/legacy_backfill_gate.py finalize \
+    --plan /artifacts/uploads-backfill-plan.json \
+    | tee "$RELEASE_DIR/uploads-backfill-result.json"; then
+    echo '生产零pending收尾失败' >&2
+    exit 1
+  fi
+fi
 PRODUCTION_STORED_FILE_INCREASE="$(jq -er \
-  '[.items[] | select(.status == "migrated")] | length' \
-  "$RELEASE_DIR/uploads-migrate.json")"
+  '.stored_files_increase' "$RELEASE_DIR/uploads-backfill-result.json")"
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm backend-migrate \
   python scripts/backfill_legacy_uploads.py verify \
   | tee "$RELEASE_DIR/uploads-verify-after.json"; then
   echo '生产历史文件迁移后验证失败' >&2
+  exit 1
+fi
+if ! jq -e \
+  '.schema == "ai-interview.legacy-upload-backfill" and .ok == true and .counts.pending == 0 and .counts.errors == 0' \
+  "$RELEASE_DIR/uploads-verify-after.json" >/dev/null; then
+  echo '生产最终历史文件JSON门禁失败' >&2
   exit 1
 fi
 ```
@@ -566,6 +725,12 @@ if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm b
 fi
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm postgres-finalize; then
   echo '生产运行角色权限收敛失败' >&2
+  exit 1
+fi
+if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
+  backend-migrate python scripts/verify_database_permissions.py \
+  | tee "$RELEASE_DIR/production-database-permissions.json"; then
+  echo '生产数据库权限门禁失败' >&2
   exit 1
 fi
 ```

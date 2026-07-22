@@ -57,6 +57,8 @@ def test_rollout_scripts_are_directly_executable_from_backend_root():
         ("create_platform_admin.py", [], 1),
         ("backfill_legacy_uploads.py", ["--help"], 0),
         ("snapshot_tenant_counts.py", ["--help"], 0),
+        ("legacy_backfill_gate.py", ["--help"], 0),
+        ("verify_database_permissions.py", [], 1),
     )
     for script, arguments, expected_status in commands:
         completed = subprocess.run(
@@ -229,6 +231,103 @@ def test_runbook_bash_blocks_are_syntax_valid_and_fail_stop(tmp_path):
         )
 
 
+def test_clone_runbook_finalizes_and_gates_permissions_before_backend_smoke():
+    root = Path(__file__).parents[2]
+    runbook = (
+        root / "docs" / "deployment" / "multi-tenant-production-rollout.md"
+    ).read_text(encoding="utf-8")
+    clone = runbook.split("### 2.3", 1)[1].split("## 3.", 1)[0]
+
+    head = clone.index('"$BACKEND_IMAGE" alembic upgrade head')
+    finalize = clone.index(
+        "sh /docker-entrypoint-initdb.d/01-app-roles.sh",
+        head,
+    )
+    permission_gate = clone.index(
+        "python scripts/verify_database_permissions.py",
+        finalize,
+    )
+    backend_smoke = clone.index("uvicorn app.main:app", permission_gate)
+
+    assert head < finalize < permission_gate < backend_smoke
+    assert runbook.count("python scripts/verify_database_permissions.py") >= 2
+
+
+def test_runbook_branches_safely_for_zero_and_positive_legacy_candidates():
+    root = Path(__file__).parents[2]
+    runbook = (
+        root / "docs" / "deployment" / "multi-tenant-production-rollout.md"
+    ).read_text(encoding="utf-8")
+
+    assert runbook.count("python scripts/legacy_backfill_gate.py plan") == 2
+    assert runbook.count("python scripts/legacy_backfill_gate.py finalize") == 4
+    for prefix in ("DRILL", "PRODUCTION"):
+        assert (
+            f'if [[ "${prefix}_BACKFILL_ACTION" == "migrate" ]]; then'
+            in runbook
+        )
+        assert f'{prefix}_BACKFILL_PENDING="$(jq -er' in runbook
+        assert f'{prefix}_STORED_FILE_INCREASE="$(jq -er' in runbook
+    assert runbook.count("legacy-upload-backfill") >= 4
+    assert runbook.count("counts.pending") >= 4
+
+
+def test_clone_cleanup_trap_removes_runtime_resources_and_preserves_evidence(
+    tmp_path,
+):
+    bash = _portable_tool("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable")
+    root = Path(__file__).parents[2]
+    runbook = (
+        root / "docs" / "deployment" / "multi-tenant-production-rollout.md"
+    ).read_text(encoding="utf-8")
+    cleanup = runbook.split("# BEGIN DRILL CLEANUP TRAP", 1)[1].split(
+        "# END DRILL CLEANUP TRAP", 1
+    )[0]
+    script = tmp_path / "simulate-drill-cleanup.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        'LOG="$1"\nEVIDENCE="$2"\nmkdir -p "$EVIDENCE"\n'
+        'touch "$EVIDENCE/backup.dump"\n'
+        'docker() { printf \'%s\\n\' "$*" >> "$LOG"; }\n'
+        "set +e\n(\n"
+        "export DRILL_BACKEND_CONTAINER=marker-backend\n"
+        "export DRILL_DB_CONTAINER=marker-postgres\n"
+        "export DRILL_NETWORK=marker-network\n"
+        "export DRILL_DB_VOLUME=marker-db-volume\n"
+        "export DRILL_UPLOAD_VOLUME=marker-upload-volume\n"
+        "export DRILL_POSTGRES_PASSWORD=secret\n"
+        + cleanup
+        + "\nfalse\n)\nFAILURE_STATUS=$?\nset -e\n"
+        "test \"$FAILURE_STATUS\" -ne 0\n"
+        "export DRILL_BACKEND_CONTAINER=marker-backend\n"
+        "export DRILL_DB_CONTAINER=marker-postgres\n"
+        "export DRILL_NETWORK=marker-network\n"
+        "export DRILL_POSTGRES_PASSWORD=secret\n"
+        + cleanup
+        + "\ncleanup_drill 0\ncleanup_drill 0\n"
+        "test -z \"${DRILL_POSTGRES_PASSWORD+x}\"\n"
+        'grep -q "rm -f marker-backend marker-postgres" "$LOG"\n'
+        'grep -q "network rm marker-network" "$LOG"\n'
+        'if grep -q "volume rm" "$LOG"; then exit 1; fi\n'
+        'test -f "$EVIDENCE/backup.dump"\n',
+        encoding="utf-8",
+    )
+    log = tmp_path / "docker.log"
+    evidence = tmp_path / "evidence"
+
+    completed = subprocess.run(
+        [bash, str(script), log.as_posix(), evidence.as_posix()],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_compose_env_file_preserves_spaced_domains_without_executing_commands(
     tmp_path,
 ):
@@ -385,6 +484,181 @@ def test_authoritative_tenant_count_snapshot_and_comparison_contract(tmp_path):
     assert csv_path.read_text(encoding="utf-8").splitlines()[0] == (
         "table,present,rows"
     )
+
+
+def _legacy_gate_payload(*, mode, pending, statuses, dry_run=True):
+    items = [
+        {
+            "table": "resumes",
+            "row_id": str(UUID(int=index + 1)),
+            "tenant_id": str(UUID(int=100 + index)),
+            "status": status,
+            "file_id": None,
+        }
+        for index, status in enumerate(statuses)
+    ]
+    return {
+        "schema": "ai-interview.legacy-upload-backfill",
+        "version": 1,
+        "ok": True,
+        "mode": mode,
+        "dry_run": dry_run,
+        "counts": {
+            "candidates": len(items),
+            "pending": pending,
+            "errors": 0,
+        },
+        "items": items,
+    }
+
+
+def test_legacy_backfill_gate_zero_pending_skips_real_migration():
+    from scripts.legacy_backfill_gate import (
+        finalize_legacy_backfill,
+        plan_legacy_backfill,
+    )
+
+    inventory = _legacy_gate_payload(
+        mode="inventory", pending=0, statuses=[]
+    )
+    dry_run = _legacy_gate_payload(mode="migrate", pending=0, statuses=[])
+
+    plan = plan_legacy_backfill(inventory, dry_run)
+
+    assert plan["ok"] is True
+    assert plan["action"] == "skip"
+    assert plan["pending"] == 0
+    assert finalize_legacy_backfill(plan)["stored_files_increase"] == 0
+
+
+def test_legacy_backfill_gate_positive_pending_requires_exact_migrated_count():
+    from scripts.legacy_backfill_gate import (
+        LegacyBackfillGateError,
+        finalize_legacy_backfill,
+        plan_legacy_backfill,
+    )
+
+    inventory = _legacy_gate_payload(
+        mode="inventory",
+        pending=2,
+        statuses=["would_migrate", "would_migrate"],
+    )
+    dry_run = _legacy_gate_payload(
+        mode="migrate",
+        pending=2,
+        statuses=["would_migrate", "would_migrate"],
+    )
+    plan = plan_legacy_backfill(inventory, dry_run)
+    migration = _legacy_gate_payload(
+        mode="migrate",
+        pending=0,
+        statuses=["migrated", "migrated"],
+        dry_run=False,
+    )
+
+    assert plan["action"] == "migrate"
+    assert finalize_legacy_backfill(plan, migration)[
+        "stored_files_increase"
+    ] == 2
+
+    migration["items"][1]["status"] = "already_migrated"
+    with pytest.raises(LegacyBackfillGateError):
+        finalize_legacy_backfill(plan, migration)
+
+
+def test_legacy_backfill_gate_cli_handles_zero_and_positive_paths(tmp_path):
+    from scripts.legacy_backfill_gate import run_cli as run_legacy_gate_cli
+
+    inventory_path = tmp_path / "inventory.json"
+    dry_run_path = tmp_path / "dry-run.json"
+    plan_path = tmp_path / "plan.json"
+    migration_path = tmp_path / "migration.json"
+
+    inventory_path.write_text(
+        json.dumps(_legacy_gate_payload(mode="inventory", pending=0, statuses=[])),
+        encoding="utf-8",
+    )
+    dry_run_path.write_text(
+        json.dumps(_legacy_gate_payload(mode="migrate", pending=0, statuses=[])),
+        encoding="utf-8",
+    )
+    output = io.StringIO()
+    assert run_legacy_gate_cli(
+        [
+            "plan",
+            "--inventory",
+            str(inventory_path),
+            "--dry-run",
+            str(dry_run_path),
+        ],
+        stdout=output,
+    ) == 0
+    zero_plan = json.loads(output.getvalue())
+    assert zero_plan["action"] == "skip"
+    plan_path.write_text(json.dumps(zero_plan), encoding="utf-8")
+    output = io.StringIO()
+    assert run_legacy_gate_cli(
+        ["finalize", "--plan", str(plan_path)], stdout=output
+    ) == 0
+    assert json.loads(output.getvalue())["stored_files_increase"] == 0
+
+    inventory_path.write_text(
+        json.dumps(
+            _legacy_gate_payload(
+                mode="inventory",
+                pending=2,
+                statuses=["would_migrate", "would_migrate"],
+            )
+        ),
+        encoding="utf-8",
+    )
+    dry_run_path.write_text(
+        json.dumps(
+            _legacy_gate_payload(
+                mode="migrate",
+                pending=2,
+                statuses=["would_migrate", "would_migrate"],
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = io.StringIO()
+    assert run_legacy_gate_cli(
+        [
+            "plan",
+            "--inventory",
+            str(inventory_path),
+            "--dry-run",
+            str(dry_run_path),
+        ],
+        stdout=output,
+    ) == 0
+    positive_plan = json.loads(output.getvalue())
+    assert positive_plan["action"] == "migrate"
+    plan_path.write_text(json.dumps(positive_plan), encoding="utf-8")
+    migration_path.write_text(
+        json.dumps(
+            _legacy_gate_payload(
+                mode="migrate",
+                pending=0,
+                statuses=["migrated", "migrated"],
+                dry_run=False,
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = io.StringIO()
+    assert run_legacy_gate_cli(
+        [
+            "finalize",
+            "--plan",
+            str(plan_path),
+            "--migration",
+            str(migration_path),
+        ],
+        stdout=output,
+    ) == 0
+    assert json.loads(output.getvalue())["stored_files_increase"] == 2
 
 
 def test_verifier_fails_when_tenant_id_is_null(tmp_path):

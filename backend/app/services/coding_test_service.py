@@ -410,7 +410,13 @@ def _read_file_content(file_path: str) -> str:
     return ""
 
 
-def _generate_questions_with_ai(content: str, test_type: str, count: int) -> List[Dict[str, Any]]:
+def _generate_questions_with_ai(
+    content: str,
+    test_type: str,
+    count: int,
+    *,
+    db: Session | None = None,
+) -> List[Dict[str, Any]]:
     from app.services.ai_service import _get_client, _get_llm_config, _get_extra_body
     
     if test_type == "choice":
@@ -470,19 +476,19 @@ def _generate_questions_with_ai(content: str, test_type: str, count: int) -> Lis
 请确保题目覆盖题库中的核心知识点，难度适中。"""
     
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": 0.7}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
         
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         
@@ -540,7 +546,10 @@ def generate_questions_from_bank(db: Session, question_bank_id: UUID, test_type:
     if bank.source_file:
         content = _read_file_content(bank.source_file)
         if content:
-            questions = _generate_questions_with_ai(content, test_type, count)
+            ai_db = db if db.info.get("tenant_id") is not None else None
+            questions = _generate_questions_with_ai(
+                content, test_type, count, db=ai_db
+            )
             if questions:
                 return questions
     

@@ -216,7 +216,8 @@ def submit_hr_decision_route(
     """
     HR提交最终决策
     """
-    return submit_hr_decision(db, resume_id, decision_data.hr_id, decision_data)
+    # decision_data.hr_id is retained for request compatibility but is not trusted.
+    return submit_hr_decision(db, resume_id, current_user.id, decision_data)
 
 
 @router.post("/{resume_id}/confirm-rejection", response_model=ResumeResponse)

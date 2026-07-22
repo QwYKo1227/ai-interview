@@ -151,11 +151,12 @@ def delete_position(db: Session, position_id: UUID):
     db.commit()
     return db_position
 
-def generate_position_jd(title: str, department: str = None, location: str = None, salary_range: str = None, keywords: str = None) -> dict:
+def generate_position_jd(db: Session, title: str, department: str = None, location: str = None, salary_range: str = None, keywords: str = None) -> dict:
     return generate_jd(
         title=title,
         department=department,
         location=location,
         salary_range=salary_range,
-        keywords=keywords
+        keywords=keywords,
+        db=db,
     )

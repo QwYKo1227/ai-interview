@@ -417,6 +417,10 @@ def check_duplicate_resume(db: Session, email: Optional[str], contact: Optional[
     检查同一岗位下是否存在相同邮箱或手机号的简历
     返回已存在的简历或 None
     """
+    position = db.query(Position).filter(Position.id == position_id).first()
+    if position is None:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+
     conditions = []
 
     if email:
@@ -447,6 +451,10 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
     resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="简历不存在")
+
+    reviewer = db.query(User).filter(User.id == reviewer_id).first()
+    if reviewer is None:
+        raise HTTPException(status_code=404, detail="评审人不存在")
 
     # 检查是否已经指派过该评审人
     existing = db.query(DepartmentReview).filter(

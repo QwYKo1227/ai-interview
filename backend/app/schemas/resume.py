@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
@@ -129,7 +129,11 @@ class DepartmentReviewResponse(DepartmentReviewBase):
 
 # HR决策相关 Schema
 class HRDecisionCreate(BaseModel):
-    hr_id: UUID  # HR用户ID
+    hr_id: UUID = Field(
+        ...,
+        deprecated=True,
+        description="Deprecated: ignored; the authenticated user is used instead.",
+    )
     decision: ResumeStatus  # REJECTED, WAITLIST, PENDING_INTERVIEW 等
     reject_reason_category: Optional[RejectReasonCategory] = None
     reject_reason_detail: Optional[str] = None

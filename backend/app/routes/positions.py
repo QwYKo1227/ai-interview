@@ -56,9 +56,11 @@ def get_public_positions_route(
 @router.post("/generate-jd", response_model=JDGenerateResponse)
 def generate_jd_route(
     request: JDGenerateRequest,
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     result = generate_position_jd(
+        db=db,
         title=request.title,
         department=request.department,
         location=request.location,
@@ -70,6 +72,7 @@ def generate_jd_route(
 @router.post("/generate-jd-stream")
 def generate_jd_stream_route(
     request: JDGenerateRequest,
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return StreamingResponse(
@@ -78,7 +81,8 @@ def generate_jd_stream_route(
             department=request.department,
             location=request.location,
             salary_range=request.salary_range,
-            keywords=request.keywords
+            keywords=request.keywords,
+            db=db,
         ),
         media_type="text/event-stream"
     )
@@ -86,13 +90,15 @@ def generate_jd_stream_route(
 @router.post("/chat-jd-stream")
 def chat_jd_stream_route(
     request: JDChatRequest,
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return StreamingResponse(
         chat_jd_stream(
             messages=request.messages,
             current_description=request.current_description,
-            current_requirements=request.current_requirements
+            current_requirements=request.current_requirements,
+            db=db,
         ),
         media_type="text/event-stream"
     )

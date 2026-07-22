@@ -272,13 +272,17 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
         raise HTTPException(status_code=404, detail="Position not found")
 
     panel_member_ids = []
+    seen_panel_members = set()
     for interviewer_id in interview.panel_members or []:
         try:
             interviewer_uuid = UUID(interviewer_id) if isinstance(interviewer_id, str) else interviewer_id
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid panel member ID")
+        if interviewer_uuid in seen_panel_members:
+            raise HTTPException(status_code=400, detail="Duplicate panel member ID")
         if not db.query(User).filter(User.id == interviewer_uuid).first():
             raise HTTPException(status_code=404, detail="Panel member not found")
+        seen_panel_members.add(interviewer_uuid)
         panel_member_ids.append(interviewer_uuid)
 
     for question_bank_id in interview.question_bank_ids or []:

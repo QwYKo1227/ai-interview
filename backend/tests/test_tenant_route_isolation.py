@@ -1,6 +1,7 @@
 import ast
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,6 +30,7 @@ from app.models.models import (
     QuestionCategory,
     QuestionDifficulty,
     Resume,
+    RejectReasonCategory,
     ResumeStatus,
     SystemConfig,
     User,
@@ -58,8 +60,9 @@ from app.schemas.coding_test import CodingTestCreate, CodingTestUpdate
 from app.schemas.interview import InterviewCreate
 from app.schemas.offer import OfferCreate
 from app.schemas.position import PositionCreate, PositionUpdate
-from app.schemas.resume import DepartmentReviewUpdate
+from app.schemas.resume import DepartmentReviewUpdate, HRDecisionCreate
 from app.services import (
+    ai_service,
     coding_test_service,
     interview_service,
     offer_service,
@@ -68,6 +71,7 @@ from app.services import (
     resume_service,
 )
 from app.services.offer_template_service import create_template
+from app.services.workflow_service import NodeExecutor
 
 
 @compiles(ARRAY, "sqlite")
@@ -214,6 +218,12 @@ def tenant_b_resume(
 @pytest.fixture
 def tenant_a_db(db: Session, tenant_a: Tenant):
     with TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id) as tenant_db:
+        yield tenant_db
+
+
+@pytest.fixture
+def tenant_b_db(db: Session, tenant_b: Tenant):
+    with TenantSession(bind=db.get_bind(), tenant_id=tenant_b.id) as tenant_db:
         yield tenant_db
 
 
@@ -1045,11 +1055,231 @@ def test_resume_transfer_preserves_cross_tenant_reviews_with_same_parent_id(
     assert db.get(DepartmentReview, foreign_review_id) is not None
 
 
+def test_synchronous_ai_uses_only_callers_tenant_config_and_prompt(
+    db: Session,
+    tenant_a_db: Session,
+    tenant_b_db: Session,
+    tenant_a: Tenant,
+    tenant_b: Tenant,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config_a = SystemConfig(
+        tenant_id=tenant_a.id,
+        llm_provider="openai_compatible",
+        llm_base_url="https://tenant-a-ai.example/v1",
+        llm_model="tenant-a-model",
+        llm_api_key="tenant-a-key",
+        prompt_configs={
+            "generate_jd": {
+                "system": "TENANT-A-SYSTEM",
+                "user": "TENANT-A-USER {title}",
+            }
+        },
+    )
+    config_b = SystemConfig(
+        tenant_id=tenant_b.id,
+        llm_provider="openai_compatible",
+        llm_base_url="https://tenant-b-ai.example/v1",
+        llm_model="tenant-b-model",
+        llm_api_key="tenant-b-key",
+        prompt_configs={
+            "generate_jd": {
+                "system": "TENANT-B-SYSTEM",
+                "user": "TENANT-B-USER {title}",
+            }
+        },
+    )
+    db.add_all([config_a, config_b])
+    db.commit()
+
+    calls: list[dict] = []
+
+    class FakeOpenAI:
+        def __init__(self, api_key, base_url):
+            self.api_key = api_key
+            self.base_url = base_url
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            calls.append(
+                {
+                    "api_key": self.api_key,
+                    "base_url": self.base_url,
+                    **kwargs,
+                }
+            )
+            content = '{"description":"ok","requirements":"ok"}'
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
+
+    monkeypatch.setattr(ai_service, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(ai_service, "_client_cache", None)
+    monkeypatch.setattr(ai_service, "_client_cache_key", None)
+
+    ai_service.generate_jd("A role", db=tenant_a_db)
+    ai_service.generate_jd("B role", db=tenant_b_db)
+
+    assert len(calls) == 2
+    assert calls[0]["api_key"] == "tenant-a-key"
+    assert calls[0]["base_url"] == "https://tenant-a-ai.example/v1"
+    assert calls[0]["model"] == "tenant-a-model"
+    assert calls[0]["messages"][0]["content"] == "TENANT-A-SYSTEM"
+    assert calls[0]["messages"][1]["content"] == "TENANT-A-USER A role"
+    assert "TENANT-B" not in str(calls[0])
+    assert calls[1]["api_key"] == "tenant-b-key"
+    assert calls[1]["base_url"] == "https://tenant-b-ai.example/v1"
+    assert calls[1]["model"] == "tenant-b-model"
+    assert calls[1]["messages"][0]["content"] == "TENANT-B-SYSTEM"
+    assert calls[1]["messages"][1]["content"] == "TENANT-B-USER B role"
+    assert "TENANT-A" not in str(calls[1])
+
+
+def test_ai_config_without_db_uses_safe_defaults_without_database_read(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    database_reads: list[object] = []
+    monkeypatch.setattr(
+        ai_service,
+        "get_system_config",
+        lambda db: database_reads.append(db) or None,
+    )
+
+    config = ai_service._get_llm_config()
+
+    assert database_reads == []
+    assert config["llm_base_url"]
+    assert config["llm_model"]
+
+
+def test_create_department_review_rejects_cross_tenant_reviewer(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    tenant_b_user: User,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        resume_service.create_department_review(
+            tenant_a_db, test_resume.id, tenant_b_user.id
+        )
+
+    assert exc_info.value.status_code == 404
+    assert tenant_a_db.query(DepartmentReview).count() == 0
+
+
+def test_hr_decision_uses_authenticated_user_instead_of_body_hr_id(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    test_user: User,
+    tenant_b_user: User,
+):
+    scoped_resume = tenant_a_db.query(Resume).filter(Resume.id == test_resume.id).one()
+    scoped_resume.status = ResumeStatus.PENDING_HR_DECISION
+    tenant_a_db.commit()
+    decision = HRDecisionCreate(
+        hr_id=tenant_b_user.id,
+        decision=ResumeStatus.REJECTED,
+        reject_reason_category=RejectReasonCategory.OTHER,
+        reject_reason_detail="Not selected",
+    )
+
+    result = resumes.submit_hr_decision_route(
+        test_resume.id,
+        decision,
+        db=tenant_a_db,
+        current_user=test_user,
+    )
+
+    assert result.rejected_by == test_user.id
+    assert result.rejected_by != tenant_b_user.id
+
+
+def test_hr_decision_body_hr_id_is_marked_deprecated():
+    field = HRDecisionCreate.model_fields["hr_id"]
+
+    assert field.deprecated is True
+    assert "authenticated user" in (field.description or "").lower()
+
+
+def test_workflow_review_tool_rejects_cross_tenant_reviewer(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    tenant_b_user: User,
+):
+    executor = NodeExecutor(tenant_a_db, None, {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        executor._tool_create_department_review(
+            {"resume_id": test_resume.id, "reviewer_id": tenant_b_user.id}, {}
+        )
+
+    assert exc_info.value.status_code == 404
+    assert tenant_a_db.query(DepartmentReview).count() == 0
+
+
+def test_duplicate_check_rejects_cross_tenant_position(
+    tenant_a_db: Session,
+    tenant_b_position: Position,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        resume_service.check_duplicate_resume(
+            tenant_a_db,
+            email="candidate@example.com",
+            contact=None,
+            position_id=tenant_b_position.id,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_interview_create_rejects_duplicate_panel_members(
+    tenant_a_db: Session,
+    test_resume: Resume,
+    test_position: Position,
+    test_user: User,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        interview_service.create_interview(
+            tenant_a_db,
+            InterviewCreate(
+                resume_id=test_resume.id,
+                position_id=test_position.id,
+                panel_members=[str(test_user.id), str(test_user.id)],
+                skip_ai_questions=True,
+                skip_email=True,
+            ),
+            BackgroundTasks(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert tenant_a_db.query(Interview).count() == 0
+
+
 def test_prompt_manager_does_not_open_an_unscoped_session():
     prompt_manager_path = Path(__file__).parents[1] / "app" / "utils" / "prompt_manager.py"
     source = prompt_manager_path.read_text(encoding="utf-8")
 
     assert "SessionLocal" not in source
+
+
+def test_ai_service_does_not_open_an_unscoped_session_and_threads_prompt_db():
+    ai_service_path = Path(__file__).parents[1] / "app" / "services" / "ai_service.py"
+    source = ai_service_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assert "SessionLocal" not in source
+    prompt_calls = [
+        call
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "get_prompt"
+    ]
+    assert len(prompt_calls) == 8
+    for call in prompt_calls:
+        db_keywords = [keyword for keyword in call.keywords if keyword.arg == "db"]
+        assert len(db_keywords) == 1, f"line {call.lineno} must pass scoped db/default"
 
 
 def test_sensitive_interview_endpoints_require_active_user_dependency():
@@ -1087,12 +1317,15 @@ def test_sensitive_interview_endpoints_require_active_user_dependency():
 def test_tenant_critical_services_do_not_use_query_bulk_writes():
     service_dir = Path(__file__).parents[1] / "app" / "services"
     filenames = {
+        "ai_service.py",
         "coding_test_service.py",
         "interview_service.py",
         "offer_service.py",
+        "offer_template_service.py",
         "position_service.py",
         "question_bank_service.py",
         "resume_service.py",
+        "workflow_service.py",
     }
 
     for filename in filenames:

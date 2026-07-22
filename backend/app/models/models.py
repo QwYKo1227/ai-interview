@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float, UniqueConstraint, text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKeyConstraint, Float, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
@@ -6,6 +6,21 @@ from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship
 from app.models.tenant_models import TenantScopedMixin
+
+
+def _tenant_identity(table_name):
+    return UniqueConstraint(
+        "tenant_id", "id", name=f"uq_{table_name}_tenant_id_id"
+    )
+
+
+def _tenant_reference(table_name, column_name, target_table, ondelete=None):
+    return ForeignKeyConstraint(
+        ["tenant_id", column_name],
+        [f"{target_table}.tenant_id", f"{target_table}.id"],
+        name=f"fk_{table_name}_{column_name}_tenant",
+        ondelete=ondelete,
+    )
 
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
@@ -47,6 +62,10 @@ class PositionType(str, enum.Enum):
 
 class Position(TenantScopedMixin, Base):
     __tablename__ = "positions"
+    __table_args__ = (
+        _tenant_identity("positions"),
+        _tenant_reference("positions", "hiring_manager_id", "users"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String, nullable=False)
@@ -59,7 +78,7 @@ class Position(TenantScopedMixin, Base):
     urgency = Column(Enum(PositionUrgency), default=PositionUrgency.MEDIUM)
     position_type = Column(Enum(PositionType), default=PositionType.FULL_TIME)
     headcount = Column(Integer, default=1)
-    hiring_manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    hiring_manager_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -78,6 +97,11 @@ class QuestionDifficulty(str, enum.Enum):
 
 class QuestionBank(TenantScopedMixin, Base):
     __tablename__ = "question_banks"
+    __table_args__ = (
+        _tenant_identity("question_banks"),
+        _tenant_reference("question_banks", "source_file_id", "stored_files"),
+        _tenant_reference("question_banks", "position_id", "positions"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
@@ -86,8 +110,8 @@ class QuestionBank(TenantScopedMixin, Base):
     tags = Column(ARRAY(String))
     questions = Column(JSON)
     source_file = Column(String)
-    source_file_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id"), nullable=True, index=True)
-    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"))
+    source_file_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    position_id = Column(UUID(as_uuid=True))
     created_at = Column(DateTime, default=datetime.utcnow)
     
     position = relationship("Position")
@@ -126,14 +150,23 @@ class RejectReasonCategory(str, enum.Enum):
 
 class Resume(TenantScopedMixin, Base):
     __tablename__ = "resumes"
+    __table_args__ = (
+        _tenant_identity("resumes"),
+        _tenant_reference("resumes", "position_id", "positions"),
+        _tenant_reference("resumes", "file_id", "stored_files"),
+        # PostgreSQL uses ON DELETE SET NULL (rejected_by) for this composite
+        # key. SQLAlchemy 2.0 cannot render the PostgreSQL column-list action,
+        # so Alembic owns that clause explicitly while metadata models the key.
+        _tenant_reference("resumes", "rejected_by", "users"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     candidate_name = Column(String)
     contact = Column(String)
     email = Column(String, index=True)  # 添加索引用于查重
-    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"))
+    position_id = Column(UUID(as_uuid=True))
     file_path = Column(String)
-    file_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id"), nullable=True, index=True)
+    file_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     raw_text = Column(Text)
     resume_markdown = Column(Text)
     parsed_data = Column(JSON)
@@ -152,12 +185,16 @@ class Resume(TenantScopedMixin, Base):
     reject_reason_category = Column(Enum(RejectReasonCategory, values_callable=lambda obj: [e.value for e in obj]), nullable=True)
     reject_reason_detail = Column(Text, nullable=True)
     rejected_at = Column(DateTime, nullable=True)
-    rejected_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    rejected_by = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     position = relationship("Position")
     rejector = relationship("User", foreign_keys=[rejected_by])
-    department_reviews = relationship("DepartmentReview", back_populates="resume")
+    department_reviews = relationship(
+        "DepartmentReview",
+        back_populates="resume",
+        foreign_keys="DepartmentReview.resume_id",
+    )
 
 class ReviewRecommendation(str, enum.Enum):
     RECOMMEND = "recommend"  # 推荐
@@ -167,10 +204,19 @@ class ReviewRecommendation(str, enum.Enum):
 class DepartmentReview(TenantScopedMixin, Base):
     """用人部门评审记录"""
     __tablename__ = "department_reviews"
+    __table_args__ = (
+        _tenant_identity("department_reviews"),
+        _tenant_reference(
+            "department_reviews", "resume_id", "resumes", ondelete="CASCADE"
+        ),
+        _tenant_reference(
+            "department_reviews", "reviewer_id", "users", ondelete="CASCADE"
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=False)
-    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    resume_id = Column(UUID(as_uuid=True), nullable=False)
+    reviewer_id = Column(UUID(as_uuid=True), nullable=False)
     technical_score = Column(Integer)  # 技术评分 1-10
     experience_score = Column(Integer)  # 经验评分 1-10
     overall_score = Column(Integer)  # 综合评分 1-10
@@ -180,8 +226,10 @@ class DepartmentReview(TenantScopedMixin, Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    resume = relationship("Resume", back_populates="department_reviews")
-    reviewer = relationship("User")
+    resume = relationship(
+        "Resume", back_populates="department_reviews", foreign_keys=[resume_id]
+    )
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
 
 class InterviewResult(str, enum.Enum):
     PENDING = "pending"
@@ -200,11 +248,17 @@ class InterviewStatus(str, enum.Enum):
 
 class Interview(TenantScopedMixin, Base):
     __tablename__ = "interviews"
+    __table_args__ = (
+        _tenant_identity("interviews"),
+        _tenant_reference("interviews", "resume_id", "resumes"),
+        _tenant_reference("interviews", "position_id", "positions"),
+        _tenant_reference("interviews", "interviewer_id", "users"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id"))
-    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"))
-    interviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True) # Link to User
+    resume_id = Column(UUID(as_uuid=True))
+    position_id = Column(UUID(as_uuid=True))
+    interviewer_id = Column(UUID(as_uuid=True), nullable=True) # Link to User
     interviewer = Column(String) # Keep for backward compatibility or display name
     round = Column(Integer, default=1) # Interview round
     interview_time = Column(DateTime(timezone=True))
@@ -226,17 +280,26 @@ class Interview(TenantScopedMixin, Base):
     status = Column(Enum(InterviewStatus, values_callable=lambda obj: [e.value for e in obj]), default=InterviewStatus.SCHEDULED)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    resume = relationship("Resume")
-    position = relationship("Position")
-    interviewer_user = relationship("User")
-    panels = relationship("InterviewPanel", back_populates="interview")
+    resume = relationship("Resume", foreign_keys=[resume_id])
+    position = relationship("Position", foreign_keys=[position_id])
+    interviewer_user = relationship("User", foreign_keys=[interviewer_id])
+    panels = relationship(
+        "InterviewPanel",
+        back_populates="interview",
+        foreign_keys="InterviewPanel.interview_id",
+    )
 
 class InterviewPanel(TenantScopedMixin, Base):
     __tablename__ = "interview_panels"
+    __table_args__ = (
+        _tenant_identity("interview_panels"),
+        _tenant_reference("interview_panels", "interview_id", "interviews"),
+        _tenant_reference("interview_panels", "interviewer_id", "users"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    interview_id = Column(UUID(as_uuid=True), ForeignKey("interviews.id"))
-    interviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    interview_id = Column(UUID(as_uuid=True))
+    interviewer_id = Column(UUID(as_uuid=True))
     scores = Column(JSON) # Individual scores
     comments = Column(JSON) # Individual comments
     audio_records = Column(JSON) # Audio file paths per question
@@ -246,8 +309,10 @@ class InterviewPanel(TenantScopedMixin, Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    interview = relationship("Interview", back_populates="panels")
-    interviewer_user = relationship("User")
+    interview = relationship(
+        "Interview", back_populates="panels", foreign_keys=[interview_id]
+    )
+    interviewer_user = relationship("User", foreign_keys=[interviewer_id])
 
 class OfferStatus(str, enum.Enum):
     DRAFT = "draft"
@@ -260,10 +325,16 @@ class OfferStatus(str, enum.Enum):
 
 class Offer(TenantScopedMixin, Base):
     __tablename__ = "offers"
+    __table_args__ = (
+        _tenant_identity("offers"),
+        _tenant_reference("offers", "resume_id", "resumes"),
+        _tenant_reference("offers", "position_id", "positions"),
+        _tenant_reference("offers", "created_by", "users"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=False)
-    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"), nullable=False)
+    resume_id = Column(UUID(as_uuid=True), nullable=False)
+    position_id = Column(UUID(as_uuid=True), nullable=False)
     candidate_name = Column(String, nullable=False)
     candidate_email = Column(String, nullable=False)
     
@@ -298,18 +369,23 @@ class Offer(TenantScopedMixin, Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_by = Column(UUID(as_uuid=True))
     
-    resume = relationship("Resume")
-    position = relationship("Position")
-    creator = relationship("User")
+    resume = relationship("Resume", foreign_keys=[resume_id])
+    position = relationship("Position", foreign_keys=[position_id])
+    creator = relationship("User", foreign_keys=[created_by])
 
 class OfferTemplate(TenantScopedMixin, Base):
     __tablename__ = "offer_templates"
+    __table_args__ = (
+        _tenant_identity("offer_templates"),
+        _tenant_reference("offer_templates", "position_id", "positions"),
+        _tenant_reference("offer_templates", "created_by", "users"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
-    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"), nullable=True)
+    position_id = Column(UUID(as_uuid=True), nullable=True)
     
     salary_monthly = Column(Float)
     salary_annual = Column(Float)
@@ -336,10 +412,10 @@ class OfferTemplate(TenantScopedMixin, Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_by = Column(UUID(as_uuid=True))
     
-    position = relationship("Position")
-    creator = relationship("User")
+    position = relationship("Position", foreign_keys=[position_id])
+    creator = relationship("User", foreign_keys=[created_by])
 
 class CodingTestStatus(str, enum.Enum):
     DRAFT = "draft"
@@ -353,6 +429,13 @@ class CodingTestType(str, enum.Enum):
 
 class CodingTest(TenantScopedMixin, Base):
     __tablename__ = "coding_tests"
+    __table_args__ = (
+        _tenant_identity("coding_tests"),
+        _tenant_reference("coding_tests", "question_bank_id", "question_banks"),
+        _tenant_reference("coding_tests", "created_by", "users"),
+        _tenant_reference("coding_tests", "resume_id", "resumes"),
+        _tenant_reference("coding_tests", "position_id", "positions"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String, nullable=False)
@@ -366,20 +449,20 @@ class CodingTest(TenantScopedMixin, Base):
     memory_limit_mb = Column(Integer, default=256)
     public_token = Column(String, unique=True, index=True, nullable=False)
     status = Column(Enum(CodingTestStatus), default=CodingTestStatus.DRAFT)
-    question_bank_id = Column(UUID(as_uuid=True), ForeignKey("question_banks.id"), nullable=True)
+    question_bank_id = Column(UUID(as_uuid=True), nullable=True)
     questions = Column(JSON)
     question_generation_status = Column(String(20), default="pending")
     duration_minutes = Column(Integer, default=60)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
-    resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=True)
-    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True))
+    resume_id = Column(UUID(as_uuid=True), nullable=True)
+    position_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    creator = relationship("User")
-    resume = relationship("Resume")
-    position = relationship("Position")
-    question_bank = relationship("QuestionBank")
+    creator = relationship("User", foreign_keys=[created_by])
+    resume = relationship("Resume", foreign_keys=[resume_id])
+    position = relationship("Position", foreign_keys=[position_id])
+    question_bank = relationship("QuestionBank", foreign_keys=[question_bank_id])
     submissions = relationship("CodingSubmission", back_populates="coding_test")
 
 class CodingSubmissionStatus(str, enum.Enum):
@@ -389,9 +472,13 @@ class CodingSubmissionStatus(str, enum.Enum):
 
 class CodingSubmission(TenantScopedMixin, Base):
     __tablename__ = "coding_submissions"
+    __table_args__ = (
+        _tenant_identity("coding_submissions"),
+        _tenant_reference("coding_submissions", "coding_test_id", "coding_tests"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    coding_test_id = Column(UUID(as_uuid=True), ForeignKey("coding_tests.id"))
+    coding_test_id = Column(UUID(as_uuid=True))
     candidate_name = Column(String)
     candidate_email = Column(String)
     language = Column(String)
@@ -412,6 +499,7 @@ class SystemConfig(TenantScopedMixin, Base):
     __tablename__ = "system_configs"
     __table_args__ = (
         UniqueConstraint("tenant_id", name="uq_system_configs_tenant"),
+        _tenant_identity("system_configs"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

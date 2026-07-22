@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.models.base import Base
@@ -11,6 +11,9 @@ class StoredFile(TenantScopedMixin, Base):
     __tablename__ = "stored_files"
     __table_args__ = (
         Index("ix_stored_files_tenant_resource", "tenant_id", "resource_type", "resource_id"),
+        UniqueConstraint(
+            "tenant_id", "id", name="uq_stored_files_tenant_id_id"
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

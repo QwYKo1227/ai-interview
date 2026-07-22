@@ -1,21 +1,68 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
     container_name: ai_interview_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-ai_interview}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?Set APP_RUNTIME_PASSWORD in .env}
+      APP_MIGRATION_PASSWORD: ${APP_MIGRATION_PASSWORD:?Set APP_MIGRATION_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init/01-app-roles.sh:/docker-entrypoint-initdb.d/01-app-roles.sh:ro
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  postgres-init:
+    image: postgres:15-alpine
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_interview}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?Set APP_RUNTIME_PASSWORD in .env}
+      APP_MIGRATION_PASSWORD: ${APP_MIGRATION_PASSWORD:?Set APP_MIGRATION_PASSWORD in .env}
+    volumes:
+      - ./docker/postgres/init/01-app-roles.sh:/usr/local/bin/initialize-app-roles.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/initialize-app-roles.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend-migrate:
+    build:
+      context: ./backend
+    image: ai-interview-backend:latest
+    environment:
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set the app_migration MIGRATION_DATABASE_URL in .env}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  postgres-finalize:
+    image: postgres:15-alpine
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_interview}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?Set APP_RUNTIME_PASSWORD in .env}
+      APP_MIGRATION_PASSWORD: ${APP_MIGRATION_PASSWORD:?Set APP_MIGRATION_PASSWORD in .env}
+    volumes:
+      - ./docker/postgres/init/01-app-roles.sh:/usr/local/bin/initialize-app-roles.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/initialize-app-roles.sh"]
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+    restart: "no"
 
   backend:
     build:
@@ -23,7 +70,7 @@ services:
     image: ai-interview-backend:latest
     container_name: ai_interview_backend
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_interview}
+      DATABASE_URL: ${DATABASE_URL:?Set the app_runtime DATABASE_URL in .env}
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env before starting production}
       INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@example.com}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Set INITIAL_ADMIN_PASSWORD in .env before first production startup}
@@ -34,10 +81,10 @@ services:
       APP_ENV: production
     volumes:
       - backend_uploads:/app/uploads
-    command: ["sh", "-c", "python scripts/migrate_system_config_singleton.py && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-finalize:
+        condition: service_completed_successfully
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]

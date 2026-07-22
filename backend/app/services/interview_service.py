@@ -73,6 +73,7 @@ def submit_interview_panel_score(db: Session, interview_id: UUID, interviewer_id
 
     if not panel:
         panel = InterviewPanel(
+            tenant_id=db_interview.tenant_id,
             interview_id=interview_id,
             interviewer_id=interviewer_id,
             scores=score_data.scores,
@@ -338,6 +339,7 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     if panel_member_ids:
         for interviewer_uuid in panel_member_ids:
             panel = InterviewPanel(
+                tenant_id=db_interview.tenant_id,
                 interview_id=db_interview.id,
                 interviewer_id=interviewer_uuid,
                 is_submitted=False
@@ -823,6 +825,7 @@ def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID
 
     if not panel:
         panel = InterviewPanel(
+            tenant_id=db_interview.tenant_id,
             interview_id=interview_id,
             interviewer_id=interviewer_id,
             scores=score_data.scores,

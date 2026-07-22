@@ -170,7 +170,7 @@ def test_public_access_token_rejects_raw_or_non_sha256_hashes(tenant_a):
         )
 
 
-def test_tenant_scoped_mixin_allows_null_tenant_id_during_migration():
+def test_tenant_scoped_mixin_requires_tenant_id_after_final_migration():
     class TenantScopedRecord(TenantScopedMixin, Base):
         __tablename__ = "test_tenant_scoped_records"
 
@@ -179,7 +179,7 @@ def test_tenant_scoped_mixin_allows_null_tenant_id_during_migration():
     tenant_id = TenantScopedRecord.__table__.c.tenant_id
 
     assert isinstance(tenant_id.type, UUID)
-    assert tenant_id.nullable is True
+    assert tenant_id.nullable is False
     assert tenant_id.index is True
     assert {foreign_key.target_fullname for foreign_key in tenant_id.foreign_keys} == {"tenants.id"}
 

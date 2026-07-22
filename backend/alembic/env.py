@@ -38,7 +38,13 @@ target_metadata = Base.metadata
 # ... etc.
 
 def get_url():
-    return os.getenv("DATABASE_URL")
+    migration_url = os.getenv("MIGRATION_DATABASE_URL")
+    if not migration_url:
+        raise RuntimeError(
+            "MIGRATION_DATABASE_URL is required for Alembic; "
+            "DATABASE_URL is reserved for the runtime application"
+        )
+    return migration_url
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.

@@ -71,7 +71,7 @@ def prevent_tenant_code_change(mapper, connection, target):
 class TenantScopedMixin:
     @declared_attr
     def tenant_id(cls):
-        return Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True)
+        return Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
 
 
 class TenantDomain(Base):

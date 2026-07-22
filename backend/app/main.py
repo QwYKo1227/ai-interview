@@ -7,13 +7,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, platform, public_review, workflows, files
 from app.routes.offers import router as offers_router, public_router as offers_public_router
-from app.config.database import engine, SessionLocal
-from app.models.models import Base, User, UserRole
+from app.config.database import SessionLocal
+from app.config.tenant_session import set_tenant_context, tenant_session
+from app.models.models import User, UserRole
+from app.models.tenant_models import Tenant, TenantStatus
 from app.core.security import get_password_hash
 from app.services.workflow_service import create_builtin_workflows
-
-# Create tables
-Base.metadata.create_all(bind=engine)
 
 # Seed initial user if not exists
 def seed_db():
@@ -23,10 +22,18 @@ def seed_db():
         admin_password = os.getenv("INITIAL_ADMIN_PASSWORD")
         admin_name = os.getenv("INITIAL_ADMIN_NAME", "System Admin")
         app_env = os.getenv("APP_ENV", "development")
+        tenant_code = os.getenv("INITIAL_TENANT_CODE", "careray")
 
         if not admin_password and app_env == "development":
             admin_password = "admin123"
 
+        tenant = db.query(Tenant).filter(Tenant.code == tenant_code).first()
+        if tenant is None:
+            print(
+                f"Skipping initial admin user. Tenant {tenant_code!r} does not exist."
+            )
+            return
+        set_tenant_context(db, tenant.id)
         user = db.query(User).filter(User.email == admin_email).first()
         if not user:
             if not admin_password:
@@ -92,13 +99,28 @@ app.include_router(files.public_router, prefix="/api")
 
 
 def init_builtin_workflows_on_startup():
-    db = SessionLocal()
+    control_db = SessionLocal()
     try:
-        create_builtin_workflows(db)
+        tenant_ids = [
+            tenant_id
+            for (tenant_id,) in control_db.query(Tenant.id)
+            .filter(Tenant.status == TenantStatus.ACTIVE)
+            .all()
+        ]
     except Exception as e:
-        print(f"Error initializing builtin workflows: {e}")
+        print(f"Error listing tenants for builtin workflows: {e}")
+        return
     finally:
-        db.close()
+        control_db.close()
+
+    for tenant_id in tenant_ids:
+        try:
+            with tenant_session(tenant_id) as db:
+                create_builtin_workflows(db)
+        except Exception as e:
+            print(
+                f"Error initializing builtin workflows for tenant {tenant_id}: {e}"
+            )
 
 init_builtin_workflows_on_startup()
 

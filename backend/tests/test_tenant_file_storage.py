@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -190,6 +191,21 @@ def test_audio_temp_and_frontend_blob_lifecycle_have_static_guards():
     assert "audio_file_path + \".wav\"" not in audio_source
     assert "AbortController" in hook_source and "revokeObjectURL" in hook_source
     assert "previewGenerationRef" in bank_source and "revokeObjectURL" in bank_source
+
+
+def test_task_frontend_files_never_log_caught_error_objects():
+    root = Path(__file__).parents[2] / "frontend" / "src"
+    paths = [
+        root / "hooks" / "useAuthenticatedFileUrl.ts",
+        root / "pages" / "QuestionBanks" / "List.tsx",
+        root / "pages" / "Resumes" / "Detail.tsx",
+        root / "pages" / "Interviews" / "Score.tsx",
+    ]
+    pattern = re.compile(
+        r"console\.(?:error|log|warn)\([^\n]*(?:,\s*err(?:or)?\b|event\.error)"
+    )
+    for path in paths:
+        assert pattern.search(path.read_text(encoding="utf-8")) is None, path
 
 
 def test_business_models_link_new_uploads_to_stored_files():

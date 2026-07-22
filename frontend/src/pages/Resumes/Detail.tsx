@@ -108,7 +108,7 @@ const ResumeDetail: React.FC = () => {
       const res = await request.get(`/resumes/${resumeId}/department-reviews`);
       setDeptReviewSummary(res);
     } catch (error) {
-      console.error('获取部门评审汇总失败', error);
+      console.error('获取部门评审汇总失败');
     }
   };
 
@@ -117,7 +117,7 @@ const ResumeDetail: React.FC = () => {
       const res = await request.get('/auth/interviewers');
       setReviewers(res);
     } catch (error) {
-      console.error('获取评审人列表失败', error);
+      console.error('获取评审人列表失败');
     }
   };
 

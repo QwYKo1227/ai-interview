@@ -1516,6 +1516,7 @@ def test_business_route_database_dependencies_are_explicitly_scoped():
 @pytest.mark.parametrize(
     ("endpoint", "form_data"),
     [
+        ("audio/0", None),
         ("full-audio", None),
         (
             "direct-evaluation-with-audio",
@@ -1533,16 +1534,33 @@ def test_audio_transcription_exception_is_redacted_from_response_and_database(
     caplog,
     endpoint,
     form_data,
+    tmp_path,
 ):
     from app.services import audio_service
     from app.routes import interviews as interview_routes
 
     secret = "Authorization: Bearer SECRET"
 
-    def fail_transcription(_path):
-        raise RuntimeError(secret)
+    class Sound:
+        def set_frame_rate(self, _rate):
+            return self
 
-    monkeypatch.setattr(audio_service, "transcribe_audio", fail_transcription)
+        def set_channels(self, _channels):
+            return self
+
+        def export(self, path, format):
+            Path(path).write_bytes(b"wav")
+
+    class BrokenRecognition:
+        def __init__(self, **_kwargs):
+            pass
+
+        def call(self, _path):
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(audio_service.AudioSegment, "from_file", lambda _path: Sound())
+    monkeypatch.setattr(audio_service, "Recognition", BrokenRecognition)
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
     monkeypatch.setattr(
         interview_routes, "generate_evaluation_from_transcript", lambda *_args: None
     )
@@ -1573,3 +1591,4 @@ def test_audio_transcription_exception_is_redacted_from_response_and_database(
     assert secret not in emitted
     assert stored.audio_records is None
     assert db.query(StoredFile).count() == 0
+    assert not list(tmp_path.rglob("*.*"))

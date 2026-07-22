@@ -156,7 +156,7 @@ const InterviewScore: React.FC = () => {
             navigate(`/interviews/${id}/result`);
           }
         } catch (error) {
-          console.error('Polling error:', error);
+          console.error('面试状态轮询失败');
         }
       }, 3000);
       
@@ -430,7 +430,7 @@ const InterviewScore: React.FC = () => {
         };
         
         recog.onerror = (event: any) => {
-          console.log('Speech recognition error:', event.error);
+          console.warn('语音识别失败');
         };
         
         recog.start();
@@ -607,7 +607,7 @@ const InterviewScore: React.FC = () => {
           }
           setRecordingUploaded(true);
         } catch (e) {
-          console.error('上传录音失败', e);
+          console.error('上传录音失败');
         } finally {
           setUploadingRecording(false);
         }

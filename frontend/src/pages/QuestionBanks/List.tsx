@@ -111,14 +111,12 @@ const QuestionBanksList: React.FC = () => {
         const result = await mammoth.convertToHtml({ arrayBuffer });
         if (generation !== previewGenerationRef.current) return;
         setDocxHtml(result.value);
-        if (result.messages.length > 0) {
-          console.log('Mammoth warnings:', result.messages);
-        }
+        if (result.messages.length > 0) console.warn('题库文档转换存在警告');
       }
     } catch (err) {
       if (controller.signal.aborted || generation !== previewGenerationRef.current) return;
-      console.error('File load error:', err);
-      setPreviewError(`文件加载失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      console.error('题库文件预览失败');
+      setPreviewError('文件加载失败，请稍后重试');
     } finally {
       if (generation === previewGenerationRef.current) setPreviewLoading(false);
     }

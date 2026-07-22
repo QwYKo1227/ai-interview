@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.services import audio_service
 
 
@@ -39,7 +41,8 @@ def test_transcription_removes_temporary_wav_when_provider_raises(tmp_path, monk
             raise RuntimeError("provider secret must not escape")
 
     monkeypatch.setattr(audio_service, "Recognition", BrokenRecognition)
-    audio_service.transcribe_audio(str(source))
+    with pytest.raises(audio_service.AudioTranscriptionError):
+        audio_service.transcribe_audio(str(source))
     assert exported
     assert all(not path.exists() for path in exported)
     assert all(path.parent != source.parent for path in exported)

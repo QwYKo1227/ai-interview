@@ -59,18 +59,16 @@ def _login_error() -> HTTPException:
 def _authenticate_tenant_user(
     db: Session, *, tenant_code: str, email: str, password: str
 ) -> tuple[Tenant, User]:
+    tenant_code = tenant_code.strip().lower()
+    email = email.strip().lower()
     tenant = (
         db.query(Tenant)
-        .filter(
-            Tenant.code == tenant_code,
-            Tenant.status == TenantStatus.ACTIVE,
-        )
+        .filter(Tenant.code == tenant_code)
         .first()
     )
     if tenant is None:
         verify_password(password, DUMMY_PASSWORD_HASH)
         raise _login_error()
-
     with tenant_session(tenant.id) as tenant_db:
         user = (
             tenant_db.query(User)
@@ -89,6 +87,12 @@ def _authenticate_tenant_user(
             or not password_matches
         ):
             raise _login_error()
+
+    if tenant.status != TenantStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant access is disabled",
+        )
 
     return tenant, user
 

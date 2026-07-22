@@ -228,6 +228,40 @@ def set_tenant_context(db: TenantCapableSession, tenant_id: UUID) -> None:
         db.execute(_SET_POSTGRES_TENANT, {"tenant_id": str(tenant_id)})
 
 
+def _release_platform_onboarding_context(
+    db: TenantCapableSession, tenant_id: UUID
+) -> None:
+    """Release the platform-onboarding binding after scoped objects detach.
+
+    This private escape hatch is intentionally restricted to an exact unscoped
+    ``TenantCapableSession``. Ordinary ``TenantSession`` instances retain their
+    immutable binding for their entire lifetime.
+    """
+
+    if type(db) is not TenantCapableSession:
+        raise TypeError(
+            "platform onboarding release requires an exact TenantCapableSession"
+        )
+    tenant_id = _require_uuid(tenant_id)
+    configured_tenant = _TENANT_BINDINGS.get(db)
+    if configured_tenant != tenant_id:
+        raise ValueError("tenant_id does not match session tenant")
+    if db.in_transaction():
+        raise RuntimeError("cannot release tenant context during a transaction")
+    session_objects = (
+        list(db.identity_map.values())
+        + list(db.new)
+        + list(db.dirty)
+        + list(db.deleted)
+    )
+    if any(isinstance(obj, TenantScopedMixin) for obj in session_objects):
+        raise RuntimeError(
+            "cannot release tenant context while tenant-scoped objects remain"
+        )
+    _TENANT_BINDINGS.pop(db, None)
+    db.info.pop("tenant_id", None)
+
+
 @contextmanager
 def tenant_session(tenant_id: UUID) -> Iterator[TenantSession]:
     """Open a tenant-bound Session and always release its transaction/connection."""

@@ -58,16 +58,14 @@ def get_tenant_context(
             detail="Token tenant does not match request domain",
         )
 
-    tenant = (
-        db.query(Tenant)
-        .filter(
-            Tenant.id == claims.tenant_id,
-            Tenant.status == TenantStatus.ACTIVE,
-        )
-        .first()
-    )
+    tenant = db.query(Tenant).filter(Tenant.id == claims.tenant_id).first()
     if tenant is None:
         raise _credentials_exception()
+    if tenant.status != TenantStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant access is disabled",
+        )
 
     return TenantContext(
         tenant_id=tenant.id,

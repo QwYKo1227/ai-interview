@@ -106,7 +106,6 @@ def test_tenant_a_password_cannot_login_to_tenant_b(client, db, tenant_a, tenant
     ("tenant_code", "email", "password"),
     [
         ("missing", "member@example.com", "Password123"),
-        ("disabled-co", "member@example.com", "Password123"),
         ("careray", "missing@example.com", "Password123"),
         ("careray", "disabled@example.com", "Password123"),
         ("careray", "member@example.com", "WrongPassword123"),
@@ -334,7 +333,44 @@ def test_disabled_tenant_invalidates_an_existing_token(client, db, tenant_a):
 
     response = client.get("/api/auth/me", headers=headers)
 
-    assert response.status_code == 401
+    assert response.status_code == 403
+
+
+def test_disabled_tenant_only_returns_403_after_valid_credentials(
+    client, db, tenant_a
+):
+    create_user(db, tenant_a.id, "member@example.com", "Password123")
+    tenant_a.status = TenantStatus.DISABLED
+    db.commit()
+
+    wrong_password = client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": tenant_a.code,
+            "email": "member@example.com",
+            "password": "WrongPassword123",
+        },
+    )
+    missing_user = client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": tenant_a.code,
+            "email": "missing@example.com",
+            "password": "Password123",
+        },
+    )
+    valid_credentials = client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": tenant_a.code,
+            "email": "member@example.com",
+            "password": "Password123",
+        },
+    )
+
+    assert wrong_password.status_code == 401
+    assert missing_user.status_code == 401
+    assert valid_credentials.status_code == 403
 
 
 @pytest.mark.parametrize(

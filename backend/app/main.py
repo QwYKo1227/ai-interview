@@ -5,7 +5,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, public_review, workflows, files
+from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, platform, public_review, workflows, files
 from app.routes.offers import router as offers_router, public_router as offers_public_router
 from app.config.database import engine, SessionLocal
 from app.models.models import Base, User, UserRole
@@ -72,6 +72,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(platform.router, prefix="/api")
 app.include_router(positions.router, prefix="/api")
 app.include_router(positions.public_router, prefix="/api")
 app.include_router(question_banks.router, prefix="/api")

@@ -2,9 +2,9 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.tenant_models import TenantStatus
+from app.models.tenant_models import TenantDomain, TenantStatus
 
 
 class TenantSummary(BaseModel):
@@ -27,3 +27,71 @@ class TenantResponse(TenantSummary):
     status: TenantStatus
     created_at: datetime
     updated_at: datetime
+
+
+class PlatformLoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=72)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class TenantStatusUpdate(BaseModel):
+    status: TenantStatus
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TenantOnboardingRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
+    name: str = Field(min_length=1, max_length=255)
+    primary_domain: str = Field(min_length=1, max_length=253)
+    admin_email: EmailStr
+    admin_password: str = Field(min_length=12, max_length=72)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("primary_domain", mode="before")
+    @classmethod
+    def normalize_domain(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("primary_domain")
+    @classmethod
+    def validate_domain(cls, value: str) -> str:
+        # Reuse the model's authoritative hostname normalization and validation.
+        return TenantDomain(domain=value, tenant_id=UUID(int=0)).domain
+
+    @field_validator("admin_email", mode="after")
+    @classmethod
+    def normalize_email(cls, value: EmailStr) -> str:
+        normalized = str(value).strip().lower()
+        if len(normalized) > 255:
+            raise ValueError("email must be at most 255 characters")
+        return normalized
+
+    @field_validator("admin_password")
+    @classmethod
+    def validate_admin_password(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("password must be at most 72 bytes")
+        if not any(character.isalpha() for character in value):
+            raise ValueError("password must include a letter")
+        if not any(character.isdigit() for character in value):
+            raise ValueError("password must include a digit")
+        return value

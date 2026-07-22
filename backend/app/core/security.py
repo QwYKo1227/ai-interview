@@ -61,6 +61,7 @@ def create_access_token(
         "sub": str(user_id),
         "tenant_id": str(tenant_id),
         "role": role,
+        "token_type": "tenant",
         "exp": expire,
     }
     return jwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
@@ -77,6 +78,7 @@ def decode_access_token(token: str) -> AccessTokenClaims:
     subject = payload.get("sub")
     tenant_id = payload.get("tenant_id")
     role = payload.get("role")
+    token_type = payload.get("token_type")
     expiration = payload.get("exp")
     if not isinstance(subject, str):
         raise JWTError("sub must be a UUID string")
@@ -84,6 +86,8 @@ def decode_access_token(token: str) -> AccessTokenClaims:
         raise JWTError("tenant_id must be a UUID string")
     if not isinstance(role, str) or not role:
         raise JWTError("role must be a non-empty string")
+    if token_type != "tenant":
+        raise JWTError("token_type must be tenant")
     if isinstance(expiration, bool) or not isinstance(expiration, (int, float)):
         raise JWTError("exp must be a numeric date")
 

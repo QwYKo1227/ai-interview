@@ -37,6 +37,7 @@ from app.models.models import (
     User,
     UserRole,
 )
+from app.models.file_models import StoredFile
 from app.models.tenant_models import Tenant
 from app.models.workflow_models import (
     Workflow,
@@ -1557,7 +1558,8 @@ def test_audio_transcription_exception_is_redacted_from_response_and_database(
             data=form_data or {},
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Audio upload failed"
     db.expire_all()
     stored = db.get(Interview, test_interview.id)
     captured = capsys.readouterr()
@@ -1569,4 +1571,5 @@ def test_audio_transcription_exception_is_redacted_from_response_and_database(
         + caplog.text
     )
     assert secret not in emitted
-    assert "转写失败，请稍后重试" in response.text
+    assert stored.audio_records is None
+    assert db.query(StoredFile).count() == 0

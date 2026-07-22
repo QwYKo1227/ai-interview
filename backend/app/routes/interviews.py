@@ -9,7 +9,7 @@ from app.services.interview_service import (
     submit_interview_panel_score, aggregate_panel_scores, start_interview, cancel_interview, get_submission_status
 )
 from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore, InterviewPanelResponse
-from app.models.models import User, UserRole, Resume, Position, InterviewStatus, InterviewResult, InterviewPanel
+from app.models.models import User, UserRole, Resume, Position, Interview, InterviewStatus, InterviewResult, InterviewPanel
 from app.routes.auth import get_current_user
 from app.core.security import check_roles
 
@@ -327,7 +327,10 @@ def submit_score_route(
 from fastapi import UploadFile, File
 from app.services.audio_service import transcribe_audio
 from app.config.tenant_session import get_tenant_id
-from app.utils.file_storage import UPLOAD_ROOT, delete_object_file, save_upload_file, stored_file_path
+from app.utils.file_storage import (
+    UPLOAD_ROOT, cleanup_new_file, commit_file_replacement, save_upload_file,
+    stored_file_path, tenant_files_from_urls,
+)
 
 # ...
 
@@ -339,32 +342,16 @@ def upload_audio_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Upload audio recording for a specific question, transcribe it, and save to panel record.
-    """
+    """Upload, transcribe and atomically replace one question recording."""
     interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
-    tenant_id = get_tenant_id(db)
-    stored = save_upload_file(file, tenant_id, "interview_audio", resource_type="interview", resource_id=interview_id)
-    file_path = str(stored_file_path(stored))
-    db.add(stored)
-        
-    # 2. Transcribe
-    transcript_data = transcribe_audio(file_path)
-    transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
-    
-    # 3. Update DB (InterviewPanel)
-    # We need to find or create the panel for this user
     from app.models.models import InterviewPanel
-    
     panel = db.query(InterviewPanel).filter(
         InterviewPanel.interview_id == interview_id,
         InterviewPanel.interviewer_id == current_user.id
     ).first()
-    
     if not panel:
-        # Create provisional panel if not exists
         panel = InterviewPanel(
             interview_id=interview_id,
             interviewer_id=current_user.id,
@@ -374,26 +361,35 @@ def upload_audio_route(
             transcripts={}
         )
         db.add(panel)
-    
-    # Update JSON fields
-    # Note: SQLAlchemy JSON mutation requires re-assignment or flag_modified
-    audio_records = dict(panel.audio_records) if panel.audio_records else {}
-    transcripts = dict(panel.transcripts) if panel.transcripts else {}
-    
-    audio_records[question_index] = f"/api/files/{stored.id}"
-    transcripts[question_index] = transcript
-    
-    panel.audio_records = audio_records
-    panel.transcripts = transcripts
-    
+    tenant_id = get_tenant_id(db)
+    old_files = tenant_files_from_urls(
+        db, tenant_id, "interview", interview_id, "interview_audio",
+        [(panel.audio_records or {}).get(question_index)],
+    )
+    stored = None
     try:
-        db.commit()
+        stored = save_upload_file(
+            file, tenant_id, "interview_audio",
+            resource_type="interview", resource_id=interview_id,
+        )
+        db.add(stored)
+        transcript_data = transcribe_audio(str(stored_file_path(stored)))
+        transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
+        audio_records = dict(panel.audio_records or {})
+        transcripts = dict(panel.transcripts or {})
+        audio_records[question_index] = f"/api/files/{stored.id}"
+        transcripts[question_index] = transcript
+        panel.audio_records = audio_records
+        panel.transcripts = transcripts
+        commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
     except Exception:
-        db.rollback()
-        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
-        raise
+        if stored is not None:
+            cleanup_new_file(db, stored, root=UPLOAD_ROOT)
+        else:
+            db.rollback()
+        logger.warning("Interview audio upload failed", extra={"resource_id": str(interview_id)})
+        raise HTTPException(status_code=500, detail="Audio upload failed") from None
     db.refresh(panel)
-    
     return {"transcript": transcript, "file_id": str(stored.id), "download_url": f"/api/files/{stored.id}"}
 
 @router.delete("/{interview_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -541,31 +537,33 @@ def upload_full_interview_audio(
         raise HTTPException(status_code=404, detail="Interview not found")
 
     tenant_id = get_tenant_id(db)
-    stored = save_upload_file(file, tenant_id, "interview_audio", resource_type="interview", resource_id=interview_id)
-    file_path = str(stored_file_path(stored))
-    db.add(stored)
-
+    old_files = tenant_files_from_urls(
+        db, tenant_id, "interview", interview_id, "interview_audio",
+        [(interview.audio_records or {}).get("full_interview")],
+    )
+    stored = None
     try:
-        transcript_data = transcribe_audio(file_path)
+        stored = save_upload_file(
+            file, tenant_id, "interview_audio",
+            resource_type="interview", resource_id=interview_id,
+        )
+        db.add(stored)
+        transcript_data = transcribe_audio(str(stored_file_path(stored)))
         transcript_text = transcript_data.get("text", "")
         formatted_transcript = format_transcript_for_display(transcript_data)
-    except Exception as error:
-        logger.warning("Interview transcription failed (%s)", type(error).__name__)
-        transcript_text = "转写失败，请稍后重试"
-        formatted_transcript = transcript_text
-        transcript_data = {"text": transcript_text, "segments": []}
-
-    interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
-    interview.transcripts = {
-        "full_interview": transcript_text,
-        "full_interview_data": transcript_data
-    }
-    try:
-        db.commit()
+        interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
+        interview.transcripts = {
+            "full_interview": transcript_text,
+            "full_interview_data": transcript_data,
+        }
+        commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
     except Exception:
-        db.rollback()
-        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
-        raise
+        if stored is not None:
+            cleanup_new_file(db, stored, root=UPLOAD_ROOT)
+        else:
+            db.rollback()
+        logger.warning("Full interview audio upload failed", extra={"resource_id": str(interview_id)})
+        raise HTTPException(status_code=500, detail="Audio upload failed") from None
 
     if transcript_text and background_tasks:
         background_tasks.add_task(
@@ -722,120 +720,91 @@ def submit_direct_evaluation_with_audio(
         raise HTTPException(status_code=404, detail="Interview not found")
 
     tenant_id = get_tenant_id(db)
-    stored = save_upload_file(file, tenant_id, "interview_audio", resource_type="interview", resource_id=interview_id)
-    file_path = str(stored_file_path(stored))
-    db.add(stored)
-
+    old_files = tenant_files_from_urls(
+        db, tenant_id, "interview", interview_id, "interview_audio",
+        [(interview.audio_records or {}).get("full_interview")],
+    )
+    stored = None
+    background_payload = None
     try:
-        transcript_data = transcribe_audio(file_path)
+        stored = save_upload_file(
+            file, tenant_id, "interview_audio",
+            resource_type="interview", resource_id=interview_id,
+        )
+        db.add(stored)
+        transcript_data = transcribe_audio(str(stored_file_path(stored)))
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
-    except Exception as error:
-        logger.warning("Interview transcription failed (%s)", type(error).__name__)
-        transcript = "转写失败，请稍后重试"
-        transcript_data = {"text": transcript, "segments": []}
+        interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
+        interview.transcripts = {
+            "full_interview": transcript,
+            "full_interview_data": transcript_data,
+        }
 
-    interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
-    interview.transcripts = {
-        "full_interview": transcript,
-        "full_interview_data": transcript_data
-    }
-
-    panel_members = interview.panel_members or []
-    is_multi_interviewer = len(panel_members) > 1
-
-    if is_multi_interviewer:
-        panel = db.query(InterviewPanel).filter(
-            InterviewPanel.interview_id == interview_id,
-            InterviewPanel.interviewer_id == current_user.id
-        ).first()
-        
-        if panel:
-            panel.scores = {"overall": score}
-            panel.comments = {"overall": evaluation}
-            panel.total_score = score
-            panel.is_submitted = True
-            db.commit()
-            db.refresh(panel)
-        
-        submitted_panels = db.query(InterviewPanel).filter(
-            InterviewPanel.interview_id == interview_id,
-            InterviewPanel.is_submitted == True
-        ).all()
-        
-        submitted_ids = [str(p.interviewer_id) for p in submitted_panels]
-        required_ids = [str(uid) for uid in panel_members]
-        
-        print(f"[Direct Eval Audio] Submitted IDs: {submitted_ids}")
-        print(f"[Direct Eval Audio] Required IDs: {required_ids}")
-        
-        all_submitted = all(uid in submitted_ids for uid in required_ids)
-        print(f"[Direct Eval Audio] All submitted: {all_submitted}")
-        
-        if all_submitted:
-            interview.status = InterviewStatus.ANALYZING
-            interview.result = InterviewResult.PENDING
-            
-            all_evaluations = []
-            for p in submitted_panels:
-                interviewer_name = p.interviewer_user.full_name if p.interviewer_user else str(p.interviewer_id)
-                all_evaluations.append(f"**{interviewer_name}**: {p.comments.get('overall', '')} (评分: {p.total_score})")
-            
-            combined_evaluation = "\n\n".join(all_evaluations)
-            avg_score = sum(p.total_score or 0 for p in submitted_panels) // len(submitted_panels)
-            
-            interview.evaluation = combined_evaluation
-            interview.suggestion = "综合多位面试官评价"
-            interview.total_score = avg_score
-            interview.scores = {"overall": avg_score}
-            interview.comments = {"overall": combined_evaluation}
-            
-            db.commit()
-            db.refresh(interview)
-            
+        panel_members = interview.panel_members or []
+        if len(panel_members) > 1:
+            panel = db.query(InterviewPanel).filter(
+                InterviewPanel.interview_id == interview_id,
+                InterviewPanel.interviewer_id == current_user.id,
+            ).first()
+            if panel:
+                panel.scores = {"overall": score}
+                panel.comments = {"overall": evaluation}
+                panel.total_score = score
+                panel.is_submitted = True
+            submitted_panels = db.query(InterviewPanel).filter(
+                InterviewPanel.interview_id == interview_id,
+                InterviewPanel.is_submitted == True,
+            ).all()
+            submitted_ids = {str(item.interviewer_id) for item in submitted_panels}
+            if all(str(uid) in submitted_ids for uid in panel_members):
+                all_evaluations = []
+                for item in submitted_panels:
+                    name = item.interviewer_user.full_name if item.interviewer_user else str(item.interviewer_id)
+                    all_evaluations.append(
+                        f"**{name}**: {item.comments.get('overall', '')} (评分: {item.total_score})"
+                    )
+                combined = "\n\n".join(all_evaluations)
+                average = sum(item.total_score or 0 for item in submitted_panels) // len(submitted_panels)
+                interview.status = InterviewStatus.ANALYZING if transcript else InterviewStatus.COMPLETED
+                interview.result = InterviewResult.PENDING
+                interview.evaluation = combined
+                interview.suggestion = "综合多位面试官评价"
+                interview.total_score = average
+                interview.scores = {"overall": average}
+                interview.comments = {"overall": combined}
+                if transcript:
+                    background_payload = (transcript, combined, "综合多位面试官评价", average)
+            else:
+                interview.result = InterviewResult.PENDING
+        else:
+            interview.evaluation = evaluation
+            interview.suggestion = suggestion
+            interview.total_score = score
+            interview.scores = {"overall": score}
+            interview.comments = {"overall": evaluation}
             if transcript:
-                background_tasks.add_task(
-                    generate_combined_evaluation,
-                    interview.tenant_id,
-                    interview_id,
-                    transcript,
-                    combined_evaluation,
-                    "综合多位面试官评价",
-                    avg_score
-                )
+                interview.status = InterviewStatus.ANALYZING
+                background_payload = (transcript, evaluation, suggestion, score)
             else:
                 interview.status = InterviewStatus.COMPLETED
-                db.commit()
-                db.refresh(interview)
+            interview.result = InterviewResult.PENDING
+        commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
+    except Exception:
+        if stored is not None:
+            cleanup_new_file(db, stored, root=UPLOAD_ROOT)
         else:
-            interview.result = InterviewResult.PENDING
-            db.commit()
-            db.refresh(interview)
-    else:
-        interview.evaluation = evaluation
-        interview.suggestion = suggestion
-        interview.total_score = score
-        interview.scores = {"overall": score}
-        interview.comments = {"overall": evaluation}
+            db.rollback()
+        logger.warning("Direct evaluation audio upload failed", extra={"resource_id": str(interview_id)})
+        raise HTTPException(status_code=500, detail="Audio upload failed") from None
 
-        if transcript:
-            interview.status = InterviewStatus.ANALYZING
-            interview.result = InterviewResult.PENDING
-            background_tasks.add_task(
-                generate_combined_evaluation,
-                interview.tenant_id,
-                interview_id,
-                transcript,
-                evaluation,
-                suggestion,
-                score
-            )
-        else:
-            interview.status = InterviewStatus.COMPLETED
-            interview.result = InterviewResult.PENDING
-
-        db.commit()
-        db.refresh(interview)
-
+    db.refresh(interview)
+    if background_payload:
+        background_tasks.add_task(
+            generate_combined_evaluation,
+            interview.tenant_id,
+            interview_id,
+            *background_payload,
+        )
     return interview
 
 

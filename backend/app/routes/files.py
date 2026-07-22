@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
@@ -10,8 +11,9 @@ from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
 from app.models.models import User
-from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
-from app.utils.file_storage import UPLOAD_ROOT as DEFAULT_UPLOAD_ROOT, resolve_object_path
+from app.schemas.file import PublicFileTokenRequest, PublicFileTokenResponse
+from app.services.public_token_service import enforce_public_request_tenant, issue_public_token, resolve_public_token
+from app.utils.file_storage import UPLOAD_ROOT as DEFAULT_UPLOAD_ROOT, resolve_object_path, sanitize_content_type
 
 
 UPLOAD_ROOT = DEFAULT_UPLOAD_ROOT
@@ -34,7 +36,7 @@ def _response(record: StoredFile) -> FileResponse:
     disposition = f"attachment; filename*=UTF-8''{quote(safe_name, safe='')}"
     return FileResponse(
         path,
-        media_type=record.content_type or "application/octet-stream",
+        media_type=sanitize_content_type(record.original_filename, record.content_type),
         headers={"Content-Disposition": disposition, "X-Content-Type-Options": "nosniff"},
     )
 
@@ -51,6 +53,27 @@ def download_file(
     if record is None:
         raise _not_found()
     return _response(record)
+
+
+@router.post("/{file_id}/public-token", response_model=PublicFileTokenResponse)
+def create_public_file_token(
+    file_id: UUID,
+    payload: PublicFileTokenRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user_dep),
+):
+    record = db.query(StoredFile).filter(
+        StoredFile.id == file_id, StoredFile.tenant_id == current_user.tenant_id
+    ).first()
+    if record is None:
+        raise _not_found()
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=payload.ttl_seconds)
+    raw_token = issue_public_token(db, current_user.tenant_id, "stored_file", record.id, expires_at)
+    return PublicFileTokenResponse(
+        token=raw_token,
+        url=f"/api/public/files/{raw_token}",
+        expires_at=expires_at,
+    )
 
 
 @public_router.get("/{token}")

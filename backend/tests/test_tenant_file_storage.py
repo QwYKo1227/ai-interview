@@ -6,10 +6,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, UploadFile
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 from app.config.database import get_unscoped_db
+from app.config.tenant_session import TenantSession
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
 from app.models.tenant_models import PublicAccessToken, TenantDomain
@@ -20,6 +21,8 @@ from app.utils.file_storage import (
     delete_object_file,
     resolve_object_path,
     save_upload_file,
+    commit_file_replacement,
+    tenant_files_from_urls,
 )
 
 
@@ -167,9 +170,26 @@ def test_all_business_uploads_use_tenant_storage_and_no_direct_upload_writes():
     interview_source = (app_root / "routes" / "interviews.py").read_text(encoding="utf-8")
     assert 'save_upload_file(file, tenant_id, "resumes"' in resume_source
     assert 'save_upload_file(file, tenant_id, "question_banks"' in bank_source
-    assert interview_source.count('save_upload_file(file, tenant_id, "interview_audio"') == 3
+    assert interview_source.count("stored = save_upload_file(") == 3
     assert 'f"uploads/' not in interview_source
     assert "shutil.copyfileobj" not in interview_source
+    assert interview_source.count("commit_file_replacement(db, stored, old_files") == 3
+    assert interview_source.count('detail="Audio upload failed"') == 3
+    for service_name in ("resume_service.py", "question_bank_service.py", "interview_service.py"):
+        service_source = (app_root / "services" / service_name).read_text(encoding="utf-8")
+        assert "stage_file_deletions" in service_source
+        assert "unlink_file_locations" in service_source
+
+
+def test_audio_temp_and_frontend_blob_lifecycle_have_static_guards():
+    root = Path(__file__).parents[2]
+    audio_source = (root / "backend" / "app" / "services" / "audio_service.py").read_text(encoding="utf-8")
+    hook_source = (root / "frontend" / "src" / "hooks" / "useAuthenticatedFileUrl.ts").read_text(encoding="utf-8")
+    bank_source = (root / "frontend" / "src" / "pages" / "QuestionBanks" / "List.tsx").read_text(encoding="utf-8")
+    assert "TemporaryDirectory" in audio_source and "finally:" in audio_source
+    assert "audio_file_path + \".wav\"" not in audio_source
+    assert "AbortController" in hook_source and "revokeObjectURL" in hook_source
+    assert "previewGenerationRef" in bank_source and "revokeObjectURL" in bank_source
 
 
 def test_business_models_link_new_uploads_to_stored_files():
@@ -177,3 +197,191 @@ def test_business_models_link_new_uploads_to_stored_files():
 
     assert hasattr(Resume, "file_id")
     assert hasattr(QuestionBank, "source_file_id")
+
+
+@pytest.mark.parametrize(
+    ("name", "claimed", "expected"),
+    [
+        ("resume.pdf", "text/html", "application/pdf"),
+        ("voice.webm", "text/html\r\nX-Evil: yes", "audio/webm"),
+        ("payload.svg", "image/svg+xml", "application/octet-stream"),
+        ("unknown.bin", "application/javascript", "application/octet-stream"),
+    ],
+)
+def test_upload_uses_server_mime_allowlist(tmp_path, tenant_a, name, claimed, expected):
+    stored = save_upload_file(_upload(name, b"content", claimed), tenant_a.id, "resumes", root=tmp_path)
+    assert stored.content_type == expected
+
+
+def test_authenticated_user_can_issue_short_lived_public_file_token(db, tenant_a, tmp_path):
+    stored = save_upload_file(_upload(), tenant_a.id, "resumes", root=tmp_path)
+    db.add(stored)
+    db.commit()
+    app = _app(db, tenant_a, tmp_path)
+    with TestClient(app) as client:
+        response = client.post(f"/api/files/{stored.id}/public-token", json={"ttl_seconds": 120})
+    assert response.status_code == 200
+    payload = response.json()
+    token_record = db.query(PublicAccessToken).one()
+    assert token_record.token_hash == hash_token(payload["token"])
+    assert token_record.token_hash != payload["token"]
+    assert payload["url"] == f"/api/public/files/{payload['token']}"
+
+
+@pytest.mark.parametrize("ttl", [0, 86401])
+def test_public_file_token_ttl_is_bounded(db, tenant_a, tmp_path, ttl):
+    stored = save_upload_file(_upload(), tenant_a.id, "resumes", root=tmp_path)
+    db.add(stored)
+    db.commit()
+    with TestClient(_app(db, tenant_a, tmp_path)) as client:
+        response = client.post(f"/api/files/{stored.id}/public-token", json={"ttl_seconds": ttl})
+    assert response.status_code == 422
+
+
+def test_public_file_token_issue_hides_other_tenant_file(db, tenant_a, tenant_b, tmp_path):
+    foreign = save_upload_file(_upload(), tenant_b.id, "resumes", root=tmp_path)
+    db.add(foreign)
+    db.commit()
+    with TestClient(_app(db, tenant_a, tmp_path)) as client:
+        response = client.post(f"/api/files/{foreign.id}/public-token", json={})
+    assert response.status_code == 404
+
+
+def test_replacement_commit_removes_old_metadata_and_file(db, tenant_a, tmp_path):
+    old = save_upload_file(_upload("old.pdf", b"old"), tenant_a.id, "resumes", root=tmp_path)
+    db.add(old)
+    db.commit()
+    old_path = resolve_object_path(tmp_path, tenant_a.id, old.object_key)
+    new = save_upload_file(_upload("new.pdf", b"new"), tenant_a.id, "resumes", root=tmp_path)
+    db.add(new)
+    commit_file_replacement(db, new, [old], root=tmp_path)
+    assert db.query(StoredFile).filter(StoredFile.id == old.id).first() is None
+    assert db.query(StoredFile).filter(StoredFile.id == new.id).first() is not None
+    assert not old_path.exists()
+    assert resolve_object_path(tmp_path, tenant_a.id, new.object_key).exists()
+
+
+def test_replacement_commit_failure_preserves_old_and_cleans_new(
+    db, tenant_a, tmp_path, monkeypatch
+):
+    old = save_upload_file(_upload("old.pdf", b"old"), tenant_a.id, "resumes", root=tmp_path)
+    db.add(old)
+    db.commit()
+    old_id = old.id
+    old_path = resolve_object_path(tmp_path, tenant_a.id, old.object_key)
+    new = save_upload_file(_upload("new.pdf", b"new"), tenant_a.id, "resumes", root=tmp_path)
+    new_path = resolve_object_path(tmp_path, tenant_a.id, new.object_key)
+    db.add(new)
+    real_commit = db.commit
+    monkeypatch.setattr(db, "commit", lambda: (_ for _ in ()).throw(RuntimeError("db unavailable")))
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        commit_file_replacement(db, new, [old], root=tmp_path)
+    monkeypatch.setattr(db, "commit", real_commit)
+    assert db.query(StoredFile).filter(StoredFile.id == old_id).first() is not None
+    assert old_path.exists()
+    assert not new_path.exists()
+
+
+def test_delete_resume_revokes_download_and_unlinks_file(
+    db, tenant_a, test_resume, tmp_path, monkeypatch
+):
+    from app.services import resume_service
+
+    stored = save_upload_file(
+        _upload(), tenant_a.id, "resumes", root=tmp_path,
+        resource_type="resume", resource_id=test_resume.id,
+    )
+    path = resolve_object_path(tmp_path, tenant_a.id, stored.object_key)
+    test_resume.file_id = stored.id
+    test_resume.file_path = f"/api/files/{stored.id}"
+    db.add(stored)
+    db.commit()
+    monkeypatch.setattr(resume_service, "UPLOAD_ROOT", tmp_path)
+    resume_service.delete_resume(db, test_resume.id)
+    assert db.query(StoredFile).filter(StoredFile.id == stored.id).first() is None
+    assert not path.exists()
+    with TestClient(_app(db, tenant_a, tmp_path)) as client:
+        assert client.get(f"/api/files/{stored.id}").status_code == 404
+
+
+def test_delete_interview_revokes_all_audio_files(
+    db, tenant_a, test_interview, tmp_path, monkeypatch
+):
+    from app.services import interview_service
+
+    stored = save_upload_file(
+        _upload("voice.webm", b"audio"), tenant_a.id, "interview_audio", root=tmp_path,
+        resource_type="interview", resource_id=test_interview.id,
+    )
+    path = resolve_object_path(tmp_path, tenant_a.id, stored.object_key)
+    test_interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
+    db.add(stored)
+    db.commit()
+    monkeypatch.setattr(interview_service, "UPLOAD_ROOT", tmp_path)
+    interview_service.delete_interview(db, test_interview.id)
+    assert db.query(StoredFile).filter(StoredFile.id == stored.id).first() is None
+    assert not path.exists()
+
+
+def test_replacement_url_lookup_is_strict_and_tenant_scoped(db, tenant_a, tenant_b, tmp_path):
+    own = save_upload_file(
+        _upload("voice.webm"), tenant_a.id, "interview_audio", root=tmp_path,
+        resource_type="interview", resource_id=uuid4(),
+    )
+    foreign = save_upload_file(
+        _upload("voice.webm"), tenant_b.id, "interview_audio", root=tmp_path,
+        resource_type="interview", resource_id=own.resource_id,
+    )
+    db.add_all([own, foreign])
+    db.commit()
+    urls = [f"/api/files/{own.id}", f"/api/files/{foreign.id}", "../../secret", "/uploads/old.wav"]
+    found = tenant_files_from_urls(
+        db, tenant_a.id, "interview", own.resource_id, "interview_audio", urls
+    )
+    assert [item.id for item in found] == [own.id]
+
+
+def test_question_audio_transcription_failure_leaves_no_metadata_or_file(
+    db, tenant_a, test_interview, test_interviewer, tmp_path, monkeypatch
+):
+    from app.routes import interviews as interview_routes
+
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(
+        interview_routes, "transcribe_audio",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("provider detail")),
+    )
+    with pytest.raises(HTTPException) as exc:
+        interview_routes.upload_audio_route(
+            test_interview.id, "0", _upload("voice.webm", b"audio", "audio/webm"),
+            scoped, test_interviewer,
+        )
+    assert exc.value.detail == "Audio upload failed"
+    assert scoped.query(StoredFile).count() == 0
+    assert not list(tmp_path.rglob("*.*"))
+    scoped.close()
+
+
+def test_full_audio_business_failure_leaves_no_metadata_or_file(
+    db, tenant_a, test_interview, test_interviewer, tmp_path, monkeypatch
+):
+    from app.routes import interviews as interview_routes
+    from app.services import audio_service
+
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path: {"text": "ok", "segments": []})
+    monkeypatch.setattr(
+        audio_service, "format_transcript_for_display",
+        lambda _data: (_ for _ in ()).throw(RuntimeError("format detail")),
+    )
+    with pytest.raises(HTTPException) as exc:
+        interview_routes.upload_full_interview_audio(
+            test_interview.id, _upload("voice.webm", b"audio", "audio/webm"),
+            BackgroundTasks(), scoped, test_interviewer,
+        )
+    assert exc.value.detail == "Audio upload failed"
+    assert scoped.query(StoredFile).count() == 0
+    assert not list(tmp_path.rglob("*.*"))
+    scoped.close()

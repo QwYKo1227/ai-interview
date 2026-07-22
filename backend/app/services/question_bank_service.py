@@ -4,7 +4,10 @@ from app.schemas.question_bank import QuestionBankCreate, QuestionBankUpdate
 from uuid import UUID, uuid4
 from fastapi import UploadFile, HTTPException
 from app.config.tenant_session import get_tenant_id
-from app.utils.file_storage import UPLOAD_ROOT, delete_object_file, save_upload_file
+from app.utils.file_storage import (
+    UPLOAD_ROOT, delete_object_file, save_upload_file, stage_file_deletions,
+    tenant_resource_files, unlink_file_locations,
+)
 import json
 
 from typing import List
@@ -81,6 +84,17 @@ def delete_question_bank(db: Session, question_bank_id: UUID):
             detail=f"无法删除：该题库已关联 {linked_tests} 个笔试题，请先解除关联"
         )
 
+    tenant_id = get_tenant_id(db)
+    file_locations = stage_file_deletions(
+        db, tenant_resource_files(
+            db, tenant_id, "question_bank", question_bank_id, "question_banks"
+        )
+    )
     db.delete(db_question_bank)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    unlink_file_locations(file_locations, root=UPLOAD_ROOT)
     return db_question_bank

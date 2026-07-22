@@ -10,7 +10,10 @@ from app.schemas.resume import (
 )
 from uuid import UUID, uuid4
 from fastapi import UploadFile, HTTPException
-from app.utils.file_storage import delete_object_file, save_upload_file, stored_file_path, UPLOAD_ROOT
+from app.utils.file_storage import (
+    delete_object_file, save_upload_file, stage_file_deletions,
+    stored_file_path, tenant_resource_files, unlink_file_locations, UPLOAD_ROOT,
+)
 from app.models.file_models import StoredFile
 from app.services.ai_service import analyze_resume, generate_resume_markdown
 from app.services.task_queue import get_task_queue
@@ -435,8 +438,15 @@ def delete_resume(db: Session, resume_id: UUID):
     if not db_resume:
         return None
 
+    tenant_id = db_resume.tenant_id
+    file_records = tenant_resource_files(db, tenant_id, "resume", resume_id, "resumes")
     # Get interview IDs for this resume
     interview_ids = [i.id for i in db.query(Interview).filter(Interview.resume_id == resume_id).all()]
+    for interview_id in interview_ids:
+        file_records.extend(tenant_resource_files(
+            db, tenant_id, "interview", interview_id, "interview_audio"
+        ))
+    file_locations = stage_file_deletions(db, file_records)
 
     # Delete associated interview panels first (due to foreign key constraint)
     if interview_ids:
@@ -464,7 +474,12 @@ def delete_resume(db: Session, resume_id: UUID):
     db_resume = db.query(Resume).options(joinedload(Resume.position)).filter(Resume.id == resume_id).first()
 
     db.delete(db_resume)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    unlink_file_locations(file_locations, root=UPLOAD_ROOT)
     return db_resume
 
 

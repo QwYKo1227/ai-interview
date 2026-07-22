@@ -8,6 +8,7 @@ import logging
 from app.config.tenant_session import tenant_session
 from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
+from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_resource_files, unlink_file_locations
 
 logger = logging.getLogger(__name__)
 
@@ -529,8 +530,19 @@ def delete_interview(db: Session, interview_id: UUID):
     if not db_interview:
         return None
 
+    tenant_id = db_interview.tenant_id
+    file_locations = stage_file_deletions(
+        db, tenant_resource_files(
+            db, tenant_id, "interview", interview_id, "interview_audio"
+        )
+    )
     db.delete(db_interview)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    unlink_file_locations(file_locations, root=UPLOAD_ROOT)
     return db_interview
 
 def cancel_interview(db: Session, interview_id: UUID, reason: str = None):

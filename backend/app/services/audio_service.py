@@ -31,11 +31,14 @@ def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> d
     if not os.path.exists(audio_file_path):
         return {"text": "", "segments": []}
         
+    wav_path = None
+    temp_dir = None
     try:
         sound = AudioSegment.from_file(audio_file_path)
         sound = sound.set_frame_rate(16000).set_channels(1)
         
-        wav_path = audio_file_path + ".wav"
+        temp_dir = tempfile.TemporaryDirectory(prefix="ai-interview-audio-")
+        wav_path = os.path.join(temp_dir.name, "converted.wav")
         sound.export(wav_path, format="wav")
         
         recognition = Recognition(
@@ -48,9 +51,6 @@ def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> d
         
         result = recognition.call(wav_path)
         
-        if os.path.exists(wav_path):
-            os.remove(wav_path)
-            
         if result.status_code == HTTPStatus.OK:
             sentences = result.get_sentence()
             
@@ -106,6 +106,9 @@ def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> d
     except Exception as e:
         logger.error(f"Transcription process failed: {e}")
         return {"text": f"[语音转写异常: {str(e)}]", "segments": []}
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
 
 
 def transcribe_audio_simple(audio_file_path: str) -> str:

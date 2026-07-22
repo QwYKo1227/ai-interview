@@ -8,23 +8,29 @@ export const useAuthenticatedFileUrl = (path?: string) => {
   const [contentType, setContentType] = useState('');
 
   useEffect(() => {
+    const controller = new AbortController();
+    setUrl(previous => {
+      if (previous) URL.revokeObjectURL(previous);
+      return '';
+    });
+    setContentType('');
     if (!path) {
-      setUrl('');
-      setContentType('');
       return;
     }
     let objectUrl = '';
-    let cancelled = false;
-    request.get(apiPath(path), { responseType: 'blob' }).then((blob: Blob) => {
-      if (cancelled) return;
+    request.get(apiPath(path), { responseType: 'blob', signal: controller.signal }).then((blob: Blob) => {
+      if (controller.signal.aborted) return;
       objectUrl = URL.createObjectURL(blob);
       setContentType(blob.type || 'application/octet-stream');
       setUrl(objectUrl);
     }).catch(() => {
-      if (!cancelled) setUrl('');
+      if (!controller.signal.aborted) {
+        setUrl('');
+        setContentType('');
+      }
     });
     return () => {
-      cancelled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [path]);

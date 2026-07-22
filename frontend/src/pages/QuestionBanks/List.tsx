@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Form, Input, Select, Upload, Tooltip, Typography, Drawer, Divider, Spin } from 'antd';
 import { PlusOutlined, UploadOutlined, DeleteOutlined, EyeOutlined, DownloadOutlined, FileWordOutlined, FileTextOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
@@ -28,6 +28,25 @@ const QuestionBanksList: React.FC = () => {
   const [previewType, setPreviewType] = useState('');
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [docxHtml, setDocxHtml] = useState<string>('');
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const previewUrlRef = useRef('');
+  const previewGenerationRef = useRef(0);
+
+  const disposePreview = () => {
+    previewGenerationRef.current += 1;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = '';
+  };
+
+  const clearPreview = () => {
+    disposePreview();
+    setPreviewUrl('');
+    setPreviewType('');
+    setFileContent(null);
+    setDocxHtml('');
+  };
 
   const fetchQuestionBanks = async () => {
     setLoading(true);
@@ -58,37 +77,50 @@ const QuestionBanksList: React.FC = () => {
   useEffect(() => {
     if (isDrawerVisible && viewingRecord?.source_file) {
       loadFile(viewingRecord.source_file);
+    } else {
+      clearPreview();
     }
   }, [isDrawerVisible, viewingRecord]);
 
+  useEffect(() => () => disposePreview(), []);
+
   const loadFile = async (filePath: string) => {
+    clearPreview();
+    const generation = previewGenerationRef.current;
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
     setPreviewLoading(true);
     setPreviewError(null);
-    setDocxHtml('');
     try {
-      const blob = await request.get(authenticatedApiPath(filePath), { responseType: 'blob' }) as Blob;
+      const blob = await request.get(authenticatedApiPath(filePath), {
+        responseType: 'blob', signal: controller.signal,
+      }) as Blob;
       const objectUrl = URL.createObjectURL(blob);
-      setPreviewUrl(previous => {
-        if (previous) URL.revokeObjectURL(previous);
-        return objectUrl;
-      });
+      if (controller.signal.aborted || generation !== previewGenerationRef.current) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      previewUrlRef.current = objectUrl;
+      setPreviewUrl(objectUrl);
       setPreviewType(blob.type);
       if (blob.type.startsWith('text/')) {
         const text = await blob.text();
-        setFileContent(text);
+        if (generation === previewGenerationRef.current) setFileContent(text);
       } else if (blob.type.includes('wordprocessingml')) {
         const arrayBuffer = await blob.arrayBuffer();
         const result = await mammoth.convertToHtml({ arrayBuffer });
+        if (generation !== previewGenerationRef.current) return;
         setDocxHtml(result.value);
         if (result.messages.length > 0) {
           console.log('Mammoth warnings:', result.messages);
         }
       }
     } catch (err) {
+      if (controller.signal.aborted || generation !== previewGenerationRef.current) return;
       console.error('File load error:', err);
       setPreviewError(`文件加载失败: ${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
-      setPreviewLoading(false);
+      if (generation === previewGenerationRef.current) setPreviewLoading(false);
     }
   };
 

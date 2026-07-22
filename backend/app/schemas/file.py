@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class StoredFileResponse(BaseModel):
@@ -20,3 +20,13 @@ class StoredFileResponse(BaseModel):
         return f"/api/files/{self.id}"
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PublicFileTokenRequest(BaseModel):
+    ttl_seconds: int = Field(default=900, ge=60, le=86400)
+
+
+class PublicFileTokenResponse(BaseModel):
+    token: str
+    url: str
+    expires_at: datetime

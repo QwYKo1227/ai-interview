@@ -1,11 +1,15 @@
 import os
 import re
+import logging
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
 
 from app.models.file_models import StoredFile
+
+logger = logging.getLogger(__name__)
 
 
 UPLOAD_ROOT = Path(os.getenv("UPLOAD_ROOT", "uploads"))
@@ -14,6 +18,20 @@ ALLOWED_CATEGORIES = frozenset(
     {"resumes", "question_banks", "interview_audio", "coding_attachments", "offers"}
 )
 SAFE_EXTENSION = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+FILE_DOWNLOAD_URL = re.compile(r"^/api/files/([0-9a-fA-F-]{36})$")
+SAFE_MIME_BY_EXTENSION = {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".webm": "audio/webm",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+}
 
 
 def _validated_category(category: str) -> str:
@@ -26,6 +44,12 @@ def _safe_original_filename(filename: str | None) -> str:
     value = (filename or "upload").replace("\r", "").replace("\n", "")
     value = Path(value).name[:255]
     return value or "upload"
+
+
+def sanitize_content_type(filename: str, _claimed_type: str | None = None) -> str:
+    """Infer a passive media type from a safe extension; never trust multipart MIME."""
+    suffix = Path(_safe_original_filename(filename)).suffix.lower()
+    return SAFE_MIME_BY_EXTENSION.get(suffix, "application/octet-stream")
 
 
 def resolve_object_path(root: Path, tenant_id: UUID, object_key: str) -> Path:
@@ -84,7 +108,7 @@ def save_upload_file(
         tenant_id=tenant_id,
         object_key=object_key,
         original_filename=original_filename,
-        content_type=upload_file.content_type,
+        content_type=sanitize_content_type(original_filename, upload_file.content_type),
         size=size,
         category=category,
         resource_type=resource_type,
@@ -101,3 +125,94 @@ def delete_object_file(root: Path, tenant_id: UUID, object_key: str) -> None:
     if path.exists() and not path.is_file():
         raise ValueError("stored object is not a regular file")
     path.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class StoredFileLocation:
+    tenant_id: UUID
+    object_key: str
+    file_id: UUID
+
+
+def tenant_resource_files(
+    db, tenant_id: UUID, resource_type: str, resource_id: UUID, category: str
+):
+    _validated_category(category)
+    return db.query(StoredFile).filter(
+        StoredFile.tenant_id == tenant_id,
+        StoredFile.resource_type == resource_type,
+        StoredFile.resource_id == resource_id,
+        StoredFile.category == category,
+    ).all()
+
+
+def tenant_files_from_urls(
+    db, tenant_id: UUID, resource_type: str, resource_id: UUID, category: str, urls
+):
+    _validated_category(category)
+    file_ids = []
+    for value in urls:
+        if not isinstance(value, str):
+            continue
+        match = FILE_DOWNLOAD_URL.fullmatch(value)
+        if match is None:
+            continue
+        try:
+            file_ids.append(UUID(match.group(1)))
+        except ValueError:
+            continue
+    if not file_ids:
+        return []
+    return db.query(StoredFile).filter(
+        StoredFile.id.in_(file_ids),
+        StoredFile.tenant_id == tenant_id,
+        StoredFile.resource_type == resource_type,
+        StoredFile.resource_id == resource_id,
+        StoredFile.category == category,
+    ).all()
+
+
+def stage_file_deletions(db, records) -> list[StoredFileLocation]:
+    locations = []
+    seen = set()
+    for record in records:
+        if record.id in seen:
+            continue
+        seen.add(record.id)
+        locations.append(StoredFileLocation(record.tenant_id, record.object_key, record.id))
+        db.delete(record)
+    return locations
+
+
+def unlink_file_locations(locations, root: Path = UPLOAD_ROOT) -> None:
+    for location in locations:
+        try:
+            delete_object_file(root, location.tenant_id, location.object_key)
+        except Exception:
+            logger.warning(
+                "Stored file cleanup failed",
+                extra={"tenant_id": str(location.tenant_id), "file_id": str(location.file_id)},
+            )
+
+
+def cleanup_new_file(db, record: StoredFile, root: Path = UPLOAD_ROOT) -> None:
+    db.rollback()
+    try:
+        delete_object_file(root, record.tenant_id, record.object_key)
+    except Exception:
+        logger.warning(
+            "New stored file cleanup failed",
+            extra={"tenant_id": str(record.tenant_id), "file_id": str(record.id)},
+        )
+
+
+def commit_file_replacement(
+    db, new_file: StoredFile, old_files, root: Path = UPLOAD_ROOT
+) -> None:
+    locations = stage_file_deletions(db, old_files)
+    try:
+        db.commit()
+    except Exception:
+        cleanup_new_file(db, new_file, root=root)
+        raise
+    unlink_file_locations(locations, root=root)

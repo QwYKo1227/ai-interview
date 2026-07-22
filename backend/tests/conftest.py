@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.models.models import (
     Base, User, UserRole, Position, PositionStatus, PositionUrgency, PositionType,
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
-    InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission
+    InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission, Offer
 )
 from app.models.tenant_models import (
     PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
@@ -79,6 +79,7 @@ def db() -> Generator[Session, None, None]:
         SystemConfig.__table__,
         CodingTest.__table__,
         CodingSubmission.__table__,
+        Offer.__table__,
     ]
 
     for table in tables_to_create:

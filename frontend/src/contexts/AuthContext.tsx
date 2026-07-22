@@ -45,9 +45,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const generation = invalidatePendingRequest();
     const controller = new AbortController();
     controllerRef.current = controller;
-    const isCurrentRequest = () => (
+    const isCurrentGeneration = () => (
       mountedRef.current
       && generationRef.current === generation
+    );
+    const isCurrentRequest = () => (
+      isCurrentGeneration()
       && localStorage.getItem('token') === tokenSnapshot
     );
 
@@ -68,13 +71,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setTenant(response.tenant ?? null);
       return true;
     } catch {
-      if (!isCurrentRequest()) return false;
+      if (!isCurrentGeneration() || controller.signal.aborted) return false;
       localStorage.removeItem('token');
       setUser(null);
       setTenant(null);
       return false;
     } finally {
-      if (isCurrentRequest()) {
+      if (isCurrentGeneration()) {
         setLoading(false);
         if (controllerRef.current === controller) controllerRef.current = null;
       }

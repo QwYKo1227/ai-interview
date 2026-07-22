@@ -29,14 +29,19 @@ const tenantResponse = (name: string, code: string) => ({
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 };
 
 const AuthProbe = () => {
-  const { companyName, isAuthenticated, login, logout } = useAuth();
+  const { companyName, isAuthenticated, loading, login, logout } = useAuth();
   return <>
     <span data-testid="auth-state">{isAuthenticated ? companyName || '缺少公司' : '已退出'}</span>
+    <span data-testid="auth-loading">{loading ? '加载中' : '加载完成'}</span>
     <button onClick={logout}>退出</button>
     <button onClick={() => void login('new-token')}>登录新公司</button>
   </>;
@@ -78,7 +83,21 @@ describe('AuthContext', () => {
     expect(localStorage.getItem('token')).toBeNull();
   });
 
-  it('does not let an old company response overwrite a later login', async () => {
+  it('clears the current auth state when /auth/me fails after its token is removed', async () => {
+    localStorage.setItem('token', 'valid-token');
+    mockGet.mockImplementationOnce(async () => {
+      localStorage.removeItem('token');
+      throw new Error('Unauthorized');
+    });
+
+    render(<AuthProvider><AuthProbe /></AuthProvider>);
+
+    await waitFor(() => expect(screen.getByTestId('auth-loading')).toHaveTextContent('加载完成'));
+    expect(screen.getByTestId('auth-state')).toHaveTextContent('已退出');
+    expect(localStorage.getItem('token')).toBeNull();
+  });
+
+  it('does not let an old 401 clear the later login state', async () => {
     localStorage.setItem('token', 'old-token');
     const oldRequest = deferred<ReturnType<typeof tenantResponse>>();
     const newRequest = deferred<ReturnType<typeof tenantResponse>>();
@@ -90,8 +109,9 @@ describe('AuthContext', () => {
     await act(async () => { newRequest.resolve(tenantResponse('新公司', 'new')); });
     expect(await screen.findByText('新公司')).toBeInTheDocument();
 
-    await act(async () => { oldRequest.resolve(tenantResponse('旧公司', 'old')); });
+    await act(async () => { oldRequest.reject({ response: { status: 401 } }); });
     expect(screen.getByTestId('auth-state')).toHaveTextContent('新公司');
+    expect(localStorage.getItem('token')).toBe('new-token');
   });
 
   it('does not write auth state after the provider unmounts', async () => {

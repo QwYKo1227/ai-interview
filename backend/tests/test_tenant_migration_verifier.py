@@ -21,6 +21,7 @@ from scripts.backfill_legacy_uploads import (
     LegacyFileCandidate,
     LegacyFileError,
     backfill_candidate,
+    candidate_fingerprint,
 )
 from scripts.create_platform_admin import (
     PlatformAdminInputError,
@@ -492,6 +493,7 @@ def _legacy_gate_payload(*, mode, pending, statuses, dry_run=True):
             "table": "resumes",
             "row_id": str(UUID(int=index + 1)),
             "tenant_id": str(UUID(int=100 + index)),
+            "fingerprint": f"{index + 1:064x}",
             "status": status,
             "file_id": None,
         }
@@ -510,6 +512,44 @@ def _legacy_gate_payload(*, mode, pending, statuses, dry_run=True):
         },
         "items": items,
     }
+
+
+def test_legacy_backfill_gate_binds_exact_candidate_fingerprints():
+    from scripts.legacy_backfill_gate import (
+        LegacyBackfillGateError,
+        finalize_legacy_backfill,
+        plan_legacy_backfill,
+    )
+
+    inventory = _legacy_gate_payload(
+        mode="inventory",
+        pending=2,
+        statuses=["would_migrate", "would_migrate"],
+    )
+    # Model two audio references in one row: row identity is deliberately equal,
+    # while the non-secret fingerprints bind their distinct JSON paths/values.
+    inventory["items"][1]["table"] = inventory["items"][0]["table"] = "interviews"
+    inventory["items"][1]["tenant_id"] = inventory["items"][0]["tenant_id"]
+    inventory["items"][1]["row_id"] = inventory["items"][0]["row_id"]
+    dry_run = json.loads(json.dumps(inventory))
+    dry_run["mode"] = "migrate"
+
+    plan = plan_legacy_backfill(inventory, dry_run)
+    assert plan["candidate_fingerprints"] == [
+        inventory["items"][0]["fingerprint"],
+        inventory["items"][1]["fingerprint"],
+    ]
+
+    migration = json.loads(json.dumps(dry_run))
+    migration["dry_run"] = False
+    migration["counts"]["pending"] = 0
+    for item in migration["items"]:
+        item["status"] = "migrated"
+    assert finalize_legacy_backfill(plan, migration)["stored_files_increase"] == 2
+
+    migration["items"][1]["fingerprint"] = "f" * 64
+    with pytest.raises(LegacyBackfillGateError):
+        finalize_legacy_backfill(plan, migration)
 
 
 def test_legacy_backfill_gate_zero_pending_skips_real_migration():
@@ -901,6 +941,34 @@ def _candidate(tenant_id: UUID, row_id: UUID, legacy_path: Path):
         category="resumes",
         resource_type="resume",
     )
+
+
+def test_candidate_fingerprint_binds_json_path_and_reference_without_disclosure():
+    tenant_id = uuid4()
+    row_id = uuid4()
+    secret_path = "uploads/audio/private-candidate-name.webm"
+    first = LegacyFileCandidate(
+        "interviews", row_id, tenant_id, secret_path, "audio_records", None,
+        "interview_audio", "interview", ("questions", 0, "audio_url")
+    )
+    second = LegacyFileCandidate(
+        "interviews", row_id, tenant_id, secret_path, "audio_records", None,
+        "interview_audio", "interview", ("questions", 1, "audio_url")
+    )
+    changed = LegacyFileCandidate(
+        "interviews", row_id, tenant_id, "uploads/audio/replaced.webm",
+        "audio_records", None, "interview_audio", "interview",
+        ("questions", 0, "audio_url")
+    )
+
+    fingerprints = {
+        candidate_fingerprint(first),
+        candidate_fingerprint(second),
+        candidate_fingerprint(changed),
+    }
+    assert len(fingerprints) == 3
+    assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in fingerprints)
+    assert all("private-candidate-name" not in value for value in fingerprints)
 
 
 def _seed_resume_for_backfill(db, tenant_id: UUID, row_id: UUID, legacy_path: Path):

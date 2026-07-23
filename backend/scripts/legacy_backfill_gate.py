@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import sys
@@ -19,14 +20,19 @@ class LegacyBackfillGateError(ValueError):
     """Stable validation failure which never includes source payload values."""
 
 
-def _candidate_keys(payload: dict) -> list[tuple[str, str, str]]:
+def _candidate_fingerprints(payload: dict) -> list[str]:
     try:
-        return sorted(
-            (item["table"], item["tenant_id"], item["row_id"])
-            for item in payload["items"]
-        )
+        fingerprints = [item["fingerprint"] for item in payload["items"]]
     except (KeyError, TypeError):
         raise LegacyBackfillGateError("invalid legacy candidate items") from None
+    if any(
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in fingerprints
+    ):
+        raise LegacyBackfillGateError("invalid legacy candidate fingerprints")
+    return sorted(fingerprints)
 
 
 def _validate_dry_payload(payload: dict, *, mode: str) -> int:
@@ -55,7 +61,9 @@ def _validate_dry_payload(payload: dict, *, mode: str) -> int:
         valid = False
     if not valid:
         raise LegacyBackfillGateError("invalid legacy dry-run payload")
-    _candidate_keys(payload)
+    fingerprints = _candidate_fingerprints(payload)
+    if sum(Counter(fingerprints).values()) != candidates:
+        raise LegacyBackfillGateError("invalid legacy candidate fingerprints")
     return pending
 
 
@@ -64,7 +72,8 @@ def plan_legacy_backfill(inventory: dict, dry_run: dict) -> dict:
     dry_run_pending = _validate_dry_payload(dry_run, mode="migrate")
     if inventory_pending != dry_run_pending:
         raise LegacyBackfillGateError("legacy pending counts changed during planning")
-    if _candidate_keys(inventory) != _candidate_keys(dry_run):
+    inventory_fingerprints = _candidate_fingerprints(inventory)
+    if inventory_fingerprints != _candidate_fingerprints(dry_run):
         raise LegacyBackfillGateError("legacy candidates changed during planning")
     return {
         "schema": PLAN_SCHEMA,
@@ -72,13 +81,15 @@ def plan_legacy_backfill(inventory: dict, dry_run: dict) -> dict:
         "ok": True,
         "action": "migrate" if inventory_pending else "skip",
         "pending": inventory_pending,
+        "candidate_fingerprints": inventory_fingerprints,
     }
 
 
-def _validate_plan(plan: dict) -> tuple[str, int]:
+def _validate_plan(plan: dict) -> tuple[str, int, list[str]]:
     try:
         action = plan["action"]
         pending = plan["pending"]
+        fingerprints = plan["candidate_fingerprints"]
         valid = (
             plan["schema"] == PLAN_SCHEMA
             and plan["version"] == VERSION
@@ -88,16 +99,25 @@ def _validate_plan(plan: dict) -> tuple[str, int]:
             and not isinstance(pending, bool)
             and pending >= 0
             and ((pending == 0) == (action == "skip"))
+            and isinstance(fingerprints, list)
+            and len(fingerprints) == pending
         )
     except (KeyError, TypeError):
         valid = False
     if not valid:
         raise LegacyBackfillGateError("invalid legacy backfill plan")
-    return action, pending
+    if sorted(fingerprints) != fingerprints or any(
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in fingerprints
+    ):
+        raise LegacyBackfillGateError("invalid legacy backfill plan")
+    return action, pending, fingerprints
 
 
 def finalize_legacy_backfill(plan: dict, migration: dict | None = None) -> dict:
-    action, pending = _validate_plan(plan)
+    action, pending, planned_fingerprints = _validate_plan(plan)
     if action == "skip":
         if migration is not None:
             raise LegacyBackfillGateError("zero-pending plan must skip migration")
@@ -124,6 +144,7 @@ def finalize_legacy_backfill(plan: dict, migration: dict | None = None) -> dict:
                 and all(
                     item["status"] == "migrated" for item in migration["items"]
                 )
+                and _candidate_fingerprints(migration) == planned_fingerprints
             )
         except (KeyError, TypeError):
             valid = False

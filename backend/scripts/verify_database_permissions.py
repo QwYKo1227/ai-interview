@@ -38,8 +38,15 @@ def verify_database_permissions(connection) -> dict:
     violations: list[str] = []
     if connection.dialect.name != "postgresql":
         return _result(["postgresql_required"])
-    if connection.execute(text("SELECT current_user")).scalar_one() != "app_migration":
-        return _result(["migration_role_required"])
+    session_identity = connection.execute(
+        text("SELECT session_user, current_user")
+    ).one()
+    if session_identity != ("app_migration", "app_migration"):
+        return _result(
+            ["session_identity_invalid"],
+            session_identity_valid=False,
+            application_role_memberships=-1,
+        )
 
     roles = {
         row.rolname: row
@@ -67,6 +74,16 @@ def verify_database_permissions(connection) -> dict:
             )
         ):
             violations.append(f"unsafe_role_attributes:{role_name}")
+
+    application_role_memberships = connection.execute(
+        text(
+            "SELECT count(*) FROM pg_auth_members membership "
+            "JOIN pg_roles member ON member.oid = membership.member "
+            "WHERE member.rolname IN ('app_runtime', 'app_migration')"
+        )
+    ).scalar_one()
+    if int(application_role_memberships):
+        violations.append("application_role_membership")
 
     public_tables = {
         row.table_name
@@ -217,6 +234,8 @@ def verify_database_permissions(connection) -> dict:
         violations,
         application_tables_expected=len(APPLICATION_TABLES),
         application_tables_with_runtime_dml=len(runtime_dml_tables),
+        application_role_memberships=int(application_role_memberships),
+        session_identity_valid=True,
         public_tables=len(public_tables),
         public_sequences=len(sequence_owners),
     )

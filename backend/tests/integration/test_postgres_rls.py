@@ -1785,8 +1785,42 @@ def test_role_initialization_revokes_only_application_role_memberships(
                 text(f'GRANT "{unrelated_parent}" TO "{unrelated_member}"')
             )
 
+        unsafe_output = io.StringIO()
+        assert run_permission_verifier_cli(
+            environ={"MIGRATION_DATABASE_URL": migration_database_url},
+            stdout=unsafe_output,
+        ) == 1
+        unsafe_payload = json.loads(unsafe_output.getvalue())
+        assert unsafe_payload["ok"] is False
+        assert "application_role_membership" in unsafe_payload["violations"]
+
         role_result = _run_role_script()
         assert role_result.returncode == 0, role_result.stdout + role_result.stderr
+
+        safe_output = io.StringIO()
+        assert run_permission_verifier_cli(
+            environ={"MIGRATION_DATABASE_URL": migration_database_url},
+            stdout=safe_output,
+        ) == 0, safe_output.getvalue()
+        safe_payload = json.loads(safe_output.getvalue())
+        assert safe_payload["counts"]["application_role_memberships"] == 0
+
+        admin_parts = urlsplit(admin_database_url)
+        forged_query = "&".join(
+            part for part in (
+                admin_parts.query,
+                "options=" + quote("-c role=app_migration", safe=""),
+            ) if part
+        )
+        forged_url = urlunsplit(admin_parts._replace(query=forged_query))
+        forged_output = io.StringIO()
+        assert run_permission_verifier_cli(
+            environ={"MIGRATION_DATABASE_URL": forged_url},
+            stdout=forged_output,
+        ) == 1
+        assert "session_identity_invalid" in json.loads(
+            forged_output.getvalue()
+        )["violations"]
 
         with admin_engine.connect() as connection:
             application_memberships = connection.execute(

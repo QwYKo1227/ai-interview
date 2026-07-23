@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -63,6 +64,7 @@ class BackfillItemResult:
     table: str
     row_id: str
     tenant_id: str
+    fingerprint: str
     status: str
     file_id: str | None = None
 
@@ -75,11 +77,34 @@ _MODEL_BY_TABLE = {
 }
 
 
+def candidate_fingerprint(candidate: LegacyFileCandidate) -> str:
+    """Return a stable, non-reversible identity for one exact legacy reference."""
+
+    reference = candidate.legacy_path
+    while reference.startswith("./"):
+        reference = reference[2:]
+    if reference.startswith("/uploads/"):
+        reference = "uploads/" + reference[len("/uploads/") :]
+    payload = {
+        "table": candidate.table,
+        "tenant_id": str(candidate.tenant_id),
+        "row_id": str(candidate.row_id),
+        "path_field": candidate.path_field,
+        "json_path": list(candidate.json_path),
+        "legacy_reference": reference,
+    }
+    serialized = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
 def _result(candidate: LegacyFileCandidate, status: str, file_id=None):
     return BackfillItemResult(
         table=candidate.table,
         row_id=str(candidate.row_id),
         tenant_id=str(candidate.tenant_id),
+        fingerprint=candidate_fingerprint(candidate),
         status=status,
         file_id=str(file_id) if file_id else None,
     )

@@ -312,6 +312,8 @@ if ! docker run --rm --network "$DRILL_NETWORK" \
 fi
 ```
 
+权限 JSON 必须同时满足 `session_identity_valid=true`、`application_role_memberships=0`，并显示 23 张应用表拥有精确 DML。验证器要求 `session_user` 与 `current_user` 都是 `app_migration`，因此管理账号通过 `SET ROLE` 冒充也会失败；任一应用数据库角色残留上游 membership 同样阻断演练。
+
 升级后再次保存同一 18 表，并把回填 JSON 中实际 `migrated` 数作为唯一允许的 `stored_files` 增量；其余 17 表必须严格相等，`stored_files` 也必须精确相差该数，默认允许增量为零：
 
 ```bash
@@ -735,7 +737,7 @@ if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
 fi
 ```
 
-此阶段会把 18 个租户表设置为强制 RLS，并对 29 组租户复合引用建立约束。`postgres-finalize` 必须撤销运行角色不需要的权限。
+此阶段会把 18 个租户表设置为强制 RLS，并对 29 组租户复合引用建立约束。`postgres-finalize` 必须撤销运行角色不需要的权限。权限 JSON 必须显示 `session_identity_valid=true`、`application_role_memberships=0`，以及 23 张应用表的精确 DML；否则不得启动后端。
 
 使用迁移角色核对强制 RLS 和租户复合外键数量，结果必须分别为 18 和 29：
 

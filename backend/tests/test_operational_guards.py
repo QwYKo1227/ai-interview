@@ -393,6 +393,66 @@ def test_public_upload_subject_is_stable_private_and_preserves_ip_quota():
     assert rotated_identity.value.status_code == 429
 
 
+def test_public_upload_with_empty_identity_uses_only_each_request_ip(
+    client, db, tenant_a, test_resume, monkeypatch
+):
+    """空姓名/邮箱/电话不应让不同 IP 共用同一个候选人桶。"""
+
+    from app.core import rate_limit
+    from app.core.rate_limit import ApplicationRateLimiter, RateLimit
+    from app.routes import resumes
+    from app.schemas.resume import ResumeResponse
+
+    client.app.state.rate_limiter = ApplicationRateLimiter(
+        policies={
+            "public_upload": RateLimit(limit=1, window_seconds=60),
+            "public_upload_tenant": RateLimit(limit=100, window_seconds=60),
+        }
+    )
+    resume_response = ResumeResponse.model_validate(test_resume)
+    monkeypatch.setattr(
+        rate_limit,
+        "resolve_client_ip",
+        lambda request: request.headers["x-test-client-ip"],
+    )
+    monkeypatch.setattr(
+        resumes,
+        "upload_public_resume",
+        lambda *_args, **_kwargs: resume_response,
+    )
+    tenant_code = tenant_a.code
+    position_id = test_resume.position_id
+    data = {
+        "tenant_code": tenant_code,
+        "position_id": str(position_id),
+    }
+    db.expunge_all()
+    files = {"file": ("resume.pdf", b"%PDF-1.4", "application/pdf")}
+
+    first_ip = client.post(
+        "/api/resumes",
+        data=data,
+        files=files,
+        headers={"x-test-client-ip": "198.51.100.10"},
+    )
+    different_ip = client.post(
+        "/api/resumes",
+        data=data,
+        files=files,
+        headers={"x-test-client-ip": "198.51.100.11"},
+    )
+    repeated_first_ip = client.post(
+        "/api/resumes",
+        data=data,
+        files=files,
+        headers={"x-test-client-ip": "198.51.100.10"},
+    )
+
+    assert first_ip.status_code == 200
+    assert different_ip.status_code == 200
+    assert repeated_first_ip.status_code == 429
+
+
 def test_public_code_run_has_its_own_429_tier(client, monkeypatch):
     from app.core.rate_limit import ApplicationRateLimiter, RateLimit
     from app.routes import coding_tests
@@ -511,6 +571,39 @@ def test_production_access_logs_cannot_record_public_token_urls():
     assert "docker logs" in windows_verifier
     assert "SENTINEL" in verifier
     assert "sentinel" in windows_verifier
+    for script in (verifier, windows_verifier):
+        assert "SAFE_SENTINEL" in script or "safeSentinel" in script
+        assert "State.Running" in script
+        assert "200" in script
+        assert "404" in script
+        assert "502" in script
+        assert "504" in script
+    assert "[ ! -L \"$file\" ]" in verifier
+    assert "cat \"$file\"" in verifier
+    assert r"/^[[:space:]]*HTTP\/1\.[01] [0-9][0-9][0-9]/" in verifier
+    assert "Get-Content" not in windows_verifier
+
+
+def test_rollout_waits_for_caddy_ca_before_each_certificate_export():
+    root = Path(__file__).parents[2]
+    rollout = (
+        root / "docs" / "deployment" / "multi-tenant-production-rollout.md"
+    ).read_text(encoding="utf-8")
+
+    exports = [
+        index
+        for index in range(len(rollout))
+        if rollout.startswith(
+            "caddy:/data/caddy/pki/authorities/local/root.crt",
+            index,
+        )
+    ]
+    assert len(exports) == 2
+    for export_index in exports:
+        preceding = rollout[max(0, export_index - 1200):export_index]
+        assert "CADDY_CA_READY" in preceding
+        assert "30" in preceding
+        assert "test -s /data/caddy/pki/authorities/local/root.crt" in preceding
 
 
 def test_rollout_host_allowlist_and_https_order_match_production_policy():

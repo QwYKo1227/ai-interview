@@ -60,7 +60,13 @@ def submit_panel_score_route(
     current_user: User = Depends(get_current_user)
 ):
     require_interview_assignment(db, interview_id, current_user)
-    panel, all_submitted = submit_interview_panel_score(db, interview_id, current_user.id, score_data)
+    panel, all_submitted = submit_interview_panel_score(
+        db,
+        interview_id,
+        current_user.id,
+        score_data,
+        actor=current_user,
+    )
     
     if not panel:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -326,7 +332,14 @@ def submit_score_route(
     current_user: User = Depends(get_current_user)
 ):
     require_interview_assignment(db, interview_id, current_user)
-    db_interview = submit_interview_score(db, interview_id, current_user.id, score_data, background_tasks)
+    db_interview = submit_interview_score(
+        db,
+        interview_id,
+        current_user.id,
+        score_data,
+        background_tasks,
+        actor=current_user,
+    )
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     return db_interview
@@ -602,14 +615,20 @@ def submit_direct_evaluation(
             InterviewPanel.interview_id == interview_id,
             InterviewPanel.interviewer_id == current_user.id
         ).first()
-        
-        if panel:
-            panel.scores = {"overall": evaluation_data.score}
-            panel.comments = {"overall": evaluation_data.evaluation}
-            panel.total_score = evaluation_data.score
-            panel.is_submitted = True
-            db.commit()
-            db.refresh(panel)
+
+        if panel is None:
+            panel = InterviewPanel(
+                tenant_id=interview.tenant_id,
+                interview_id=interview_id,
+                interviewer_id=current_user.id,
+            )
+            db.add(panel)
+        panel.scores = {"overall": evaluation_data.score}
+        panel.comments = {"overall": evaluation_data.evaluation}
+        panel.total_score = evaluation_data.score
+        panel.is_submitted = True
+        db.commit()
+        db.refresh(panel)
         
         submitted_panels = db.query(InterviewPanel).filter(
             InterviewPanel.interview_id == interview_id,
@@ -736,11 +755,17 @@ def submit_direct_evaluation_with_audio(
                 InterviewPanel.interview_id == interview_id,
                 InterviewPanel.interviewer_id == current_user.id,
             ).first()
-            if panel:
-                panel.scores = {"overall": score}
-                panel.comments = {"overall": evaluation}
-                panel.total_score = score
-                panel.is_submitted = True
+            if panel is None:
+                panel = InterviewPanel(
+                    tenant_id=interview.tenant_id,
+                    interview_id=interview_id,
+                    interviewer_id=current_user.id,
+                )
+                db.add(panel)
+            panel.scores = {"overall": score}
+            panel.comments = {"overall": evaluation}
+            panel.total_score = score
+            panel.is_submitted = True
             submitted_panels = db.query(InterviewPanel).filter(
                 InterviewPanel.interview_id == interview_id,
                 InterviewPanel.is_submitted == True,

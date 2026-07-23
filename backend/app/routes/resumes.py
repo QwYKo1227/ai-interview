@@ -91,12 +91,14 @@ def _public_upload_rate_subject(
     candidate_name: str | None,
     email: str | None,
     contact: str | None,
-) -> str:
+) -> str | None:
     """Build one stable, non-reversible candidate identity for rate limiting."""
 
     normalized_name = " ".join((candidate_name or "").strip().casefold().split())
     normalized_email = (email or "").strip().casefold()
     normalized_contact = re.sub(r"\D+", "", contact or "")
+    if not any((normalized_name, normalized_email, normalized_contact)):
+        return None
     payload = "\x1f".join(
         (
             str(tenant_id),
@@ -126,17 +128,17 @@ def create_resume_route(
         db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
     enforce_rate_limit(request, "public_upload_tenant", tenant_id)
-    enforce_rate_limit(
-        request,
-        "public_upload",
-        _public_upload_rate_subject(
-            tenant_id,
-            position_id,
-            candidate_name=candidate_name,
-            email=email,
-            contact=contact,
-        ),
+    candidate_subject = _public_upload_rate_subject(
+        tenant_id,
+        position_id,
+        candidate_name=candidate_name,
+        email=email,
+        contact=contact,
     )
+    if candidate_subject is None:
+        enforce_rate_limit(request, "public_upload")
+    else:
+        enforce_rate_limit(request, "public_upload", candidate_subject)
     return upload_public_resume(
         db, file, position_id, background_tasks, candidate_name, email, contact
     )

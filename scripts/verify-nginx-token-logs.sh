@@ -2,6 +2,7 @@
 set -eu
 
 SENTINEL="token-log-sentinel-$$"
+SAFE_SENTINEL="safe-access-log-$$"
 NETWORK="ai-interview-token-log-$SENTINEL"
 BACKEND="ai-interview-token-backend-$SENTINEL"
 NGINX="ai-interview-token-nginx-$SENTINEL"
@@ -15,6 +16,30 @@ cleanup() {
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
+
+request_status() {
+  output="$(docker exec "$NGINX" wget -S -O /dev/null "http://127.0.0.1$1" 2>&1 || true)"
+  status="$(printf '%s\n' "$output" | awk '/^[[:space:]]*HTTP\/1\.[01] [0-9][0-9][0-9]/ { code=$2 } END { print code }')"
+  if [ -z "$status" ]; then
+    echo "无法读取 $1 的 HTTP 状态码" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+  printf '%s\n' "$status"
+}
+
+expect_status() {
+  path="$1"
+  expected="$2"
+  actual="$(request_status "$path")"
+  case " $expected " in
+    *" $actual "*) ;;
+    *)
+      echo "$path 预期 HTTP $expected，实际为 $actual" >&2
+      exit 1
+      ;;
+  esac
+}
 
 docker network create "$NETWORK" >/dev/null
 docker run -d --name "$BACKEND" --network "$NETWORK" \
@@ -35,21 +60,34 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 
+expect_status "/$SAFE_SENTINEL" "200"
+
 for path in \
   "/public/coding-tests/$SENTINEL-coding" \
   "/offer-confirm/$SENTINEL-offer" \
-  "/public/review/$SENTINEL-review" \
+  "/public/review/$SENTINEL-review"
+do
+  expect_status "$path" "200"
+done
+
+for path in \
   "/api/public/coding-tests/$SENTINEL-coding" \
   "/api/public/offers/confirm/$SENTINEL-offer" \
   "/api/public/review/$SENTINEL-review"
 do
-  docker exec "$NGINX" wget -q -O /dev/null "http://127.0.0.1$path" || true
+  expect_status "$path" "404"
 done
 
 # 制造真实上游失败，验证 error log 也不会携带 API token。
 docker rm -f "$BACKEND" >/dev/null
-docker exec "$NGINX" wget -q -O /dev/null \
-  "http://127.0.0.1/api/public/review/$SENTINEL-review-upstream-failure" || true
+expect_status \
+  "/api/public/review/$SENTINEL-review-upstream-failure" \
+  "502 504"
+
+if [ "$(docker inspect --format '{{.State.Running}}' "$NGINX")" != "true" ]; then
+  echo "Nginx 日志验证容器已意外退出" >&2
+  exit 1
+fi
 
 LOGS="$(docker logs "$NGINX" 2>&1 || true)"
 FILES="$(docker exec "$NGINX" sh -c \
@@ -58,6 +96,10 @@ FILES="$(docker exec "$NGINX" sh -c \
    done' 2>/dev/null || true)"
 if printf '%s\n%s\n' "$LOGS" "$FILES" | grep -F "$SENTINEL" >/dev/null; then
   echo "Nginx 日志泄漏了公开令牌哨兵" >&2
+  exit 1
+fi
+if ! printf '%s\n%s\n' "$LOGS" "$FILES" | grep -F "$SAFE_SENTINEL" >/dev/null; then
+  echo "Nginx 安全访问日志哨兵缺失，日志可能被全局关闭" >&2
   exit 1
 fi
 

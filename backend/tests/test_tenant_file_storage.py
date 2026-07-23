@@ -342,6 +342,120 @@ def _unassigned_interviewer(db, tenant_id):
     return user
 
 
+def test_scoring_authorization_matrix_preserves_authoritative_assignment(
+    db,
+    tenant_a,
+    test_interview,
+    test_interviewer,
+    test_admin,
+    test_user,
+):
+    """管理员、HR 和预分配面试官可评分，但评分记录不能改变分配关系。"""
+
+    from app.routes import interviews as interview_routes
+
+    primary = _unassigned_interviewer(db, tenant_a.id)
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    test_interview.interviewer_id = primary.id
+    test_interview.panel_members = [str(test_interviewer.id)]
+    db.commit()
+    before = (
+        test_interview.interviewer_id,
+        tuple(test_interview.panel_members or ()),
+    )
+    score = InterviewScore(scores={"0": 8}, comments={"0": "authorized"})
+
+    for actor in (test_admin, test_user, primary, test_interviewer):
+        result = interview_routes.submit_score_route(
+            test_interview.id,
+            score,
+            BackgroundTasks(),
+            db,
+            actor,
+        )
+        assert result.id == test_interview.id
+        db.refresh(test_interview)
+        assert (
+            test_interview.interviewer_id,
+            tuple(test_interview.panel_members or ()),
+        ) == before
+
+    with pytest.raises(HTTPException) as denied:
+        interview_routes.submit_score_route(
+            test_interview.id,
+            score,
+            BackgroundTasks(),
+            db,
+            intruder,
+        )
+    assert denied.value.status_code == 403
+    db.refresh(test_interview)
+    assert (
+        test_interview.interviewer_id,
+        tuple(test_interview.panel_members or ()),
+    ) == before
+    assert (
+        db.query(InterviewPanel)
+        .filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == intruder.id,
+        )
+        .first()
+        is None
+    )
+
+
+def test_interview_panel_response_row_does_not_grant_scoring_assignment(
+    db, tenant_a, test_interview
+):
+    """历史/状态行不能反向把未分配用户变成面试官。"""
+
+    from app.routes import interviews as interview_routes
+
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    db.add(
+        InterviewPanel(
+            tenant_id=tenant_a.id,
+            interview_id=test_interview.id,
+            interviewer_id=intruder.id,
+            scores={},
+            comments={},
+            is_submitted=False,
+        )
+    )
+    db.commit()
+    before = (
+        test_interview.interviewer_id,
+        tuple(test_interview.panel_members or ()),
+    )
+
+    with pytest.raises(HTTPException) as denied:
+        interview_routes.submit_score_route(
+            test_interview.id,
+            InterviewScore(scores={"0": 9}),
+            BackgroundTasks(),
+            db,
+            intruder,
+        )
+
+    assert denied.value.status_code == 403
+    db.refresh(test_interview)
+    assert (
+        test_interview.interviewer_id,
+        tuple(test_interview.panel_members or ()),
+    ) == before
+    row = (
+        db.query(InterviewPanel)
+        .filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == intruder.id,
+        )
+        .one()
+    )
+    assert row.is_submitted is False
+    assert row.scores == {}
+
+
 def test_unassigned_interviewer_cannot_self_join_panel_by_question_audio_upload(
     db, tenant_a, test_interview, tmp_path, monkeypatch
 ):

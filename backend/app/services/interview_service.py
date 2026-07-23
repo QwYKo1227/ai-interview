@@ -10,7 +10,7 @@ from app.config.tenant_session import tenant_session
 from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
 from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_resource_files, unlink_file_locations
-from app.services.interview_access import is_interviewer_assigned
+from app.services.interview_access import can_score_interview, is_interviewer_assigned
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,14 @@ def start_interview(db: Session, interview_id: UUID):
     print(f"Interview {interview_id} status changed to IN_PROGRESS, started_at: {db_interview.started_at}")
     return db_interview
 
-def submit_interview_panel_score(db: Session, interview_id: UUID, interviewer_id: UUID, score_data: InterviewScore):
+def submit_interview_panel_score(
+    db: Session,
+    interview_id: UUID,
+    interviewer_id: UUID,
+    score_data: InterviewScore,
+    *,
+    actor: User | None = None,
+):
     """
     Submit score for a specific interviewer (panel member).
     统一的评分提交入口，单面试官和多面试官都使用此函数。
@@ -57,7 +64,12 @@ def submit_interview_panel_score(db: Session, interview_id: UUID, interviewer_id
     if not db_interview:
         return None, False
 
-    if not is_interviewer_assigned(db, db_interview, interviewer_id):
+    authorized = (
+        can_score_interview(db, db_interview, actor)
+        if actor is not None and actor.id == interviewer_id
+        else is_interviewer_assigned(db, db_interview, interviewer_id)
+    )
+    if not authorized:
         raise HTTPException(status_code=403, detail="Interview assignment required")
 
     if db_interview.status == InterviewStatus.SCHEDULED:
@@ -806,7 +818,15 @@ def send_result_notification_background(tenant_id: UUID, interview_id: UUID):
         else:
             logger.warning(f"Failed to send result notification for interview {interview_id}: {result.get('error')}")
 
-def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID, score_data: InterviewScore, background_tasks: BackgroundTasks):
+def submit_interview_score(
+    db: Session,
+    interview_id: UUID,
+    interviewer_id: UUID,
+    score_data: InterviewScore,
+    background_tasks: BackgroundTasks,
+    *,
+    actor: User | None = None,
+):
     """
     统一的评分提交函数，单面试官和多面试官都使用此函数。
     """
@@ -814,7 +834,12 @@ def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID
     if not db_interview:
         return None
 
-    if not is_interviewer_assigned(db, db_interview, interviewer_id):
+    authorized = (
+        can_score_interview(db, db_interview, actor)
+        if actor is not None and actor.id == interviewer_id
+        else is_interviewer_assigned(db, db_interview, interviewer_id)
+    )
+    if not authorized:
         raise HTTPException(status_code=403, detail="Interview assignment required")
 
     if db_interview.status == InterviewStatus.SCHEDULED:

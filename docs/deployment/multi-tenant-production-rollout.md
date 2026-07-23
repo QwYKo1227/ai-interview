@@ -857,6 +857,19 @@ docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml ps
 docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm --no-deps caddy \
   caddy validate --config /etc/caddy/Caddyfile
 docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml up -d caddy
+CADDY_CA_READY=0
+for attempt in $(seq 1 30); do
+  if docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml exec -T caddy \
+    test -s /data/caddy/pki/authorities/local/root.crt; then
+    CADDY_CA_READY=1
+    break
+  fi
+  sleep 1
+done
+if [ "$CADDY_CA_READY" -ne 1 ]; then
+  echo 'Caddy内部CA根证书在30秒内未就绪' >&2
+  exit 1
+fi
 docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml cp \
   caddy:/data/caddy/pki/authorities/local/root.crt \
   "$RELEASE_DIR/ai-interview-caddy-root.crt"
@@ -921,6 +934,19 @@ if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm -
 fi
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml up -d caddy; then
   echo 'Caddy启动失败' >&2
+  exit 1
+fi
+CADDY_CA_READY=0
+for attempt in $(seq 1 30); do
+  if docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml exec -T caddy \
+    test -s /data/caddy/pki/authorities/local/root.crt; then
+    CADDY_CA_READY=1
+    break
+  fi
+  sleep 1
+done
+if [ "$CADDY_CA_READY" -ne 1 ]; then
+  echo 'Caddy内部CA根证书在30秒内未就绪' >&2
   exit 1
 fi
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml cp \

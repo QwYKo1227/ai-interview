@@ -15,6 +15,7 @@ interface TenantDetailDrawerProps {
 const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetailDrawerProps) => {
   const [domainForm] = Form.useForm<{ domain: string }>();
   const requestVersion = useRef(0);
+  const scopeVersion = useRef(0);
   const currentScope = useRef({ open, tenantId });
   const [tenant, setTenant] = useState<PlatformTenantDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -25,8 +26,18 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
   const [domainActionError, setDomainActionError] = useState<string | null>(null);
 
   useLayoutEffect(() => {
+    scopeVersion.current += 1;
     currentScope.current = { open, tenantId };
-  }, [open, tenantId]);
+    requestVersion.current += 1;
+    setTenant(null);
+    setHasError(false);
+    setLoading(Boolean(open && tenantId));
+    setDomainModalOpen(false);
+    setEditingDomain(null);
+    setDomainActionError(null);
+    setSavingDomain(false);
+    if (domainModalOpen) domainForm.resetFields();
+  }, [domainForm, open, tenantId]);
 
   const loadTenant = useCallback(async (requestedTenantId: string) => {
     if (!currentScope.current.open || currentScope.current.tenantId !== requestedTenantId) return;
@@ -52,12 +63,14 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
   }, []);
 
   useEffect(() => {
-    requestVersion.current += 1;
-    setTenant(null);
-    setHasError(false);
     if (open && tenantId) void loadTenant(tenantId);
-    return () => { requestVersion.current += 1; };
   }, [loadTenant, open, tenantId]);
+
+  useEffect(() => () => {
+    scopeVersion.current += 1;
+    requestVersion.current += 1;
+    currentScope.current = { open: false, tenantId: null };
+  }, []);
 
   const closeDomainModal = () => {
     setDomainModalOpen(false);
@@ -80,42 +93,52 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
     setDomainModalOpen(true);
   };
 
-  const handleDomainAction = async (operationTenantId: string, operation: () => Promise<unknown>) => {
+  const handleDomainAction = async (
+    operationTenantId: string,
+    operationScopeVersion: number,
+    operation: () => Promise<unknown>,
+  ) => {
     setDomainActionError(null);
+    const isOperationCurrent = () => (
+      scopeVersion.current === operationScopeVersion
+      && currentScope.current.open
+      && currentScope.current.tenantId === operationTenantId
+    );
     try {
       await operation();
-      if (currentScope.current.open && currentScope.current.tenantId === operationTenantId) {
+      if (isOperationCurrent()) {
         await loadTenant(operationTenantId);
       }
       onChanged();
-      return true;
+      return { succeeded: true, isCurrent: isOperationCurrent() };
     } catch {
-      setDomainActionError('域名操作失败，请稍后重试');
-      return false;
+      if (isOperationCurrent()) setDomainActionError('域名操作失败，请稍后重试');
+      return { succeeded: false, isCurrent: isOperationCurrent() };
     }
   };
 
   const handleSaveDomain = async ({ domain }: { domain: string }) => {
     const operationTenantId = tenantId;
     if (!operationTenantId) return;
+    const operationScopeVersion = scopeVersion.current;
     setSavingDomain(true);
     try {
-      const succeeded = await handleDomainAction(operationTenantId, () => {
+      const result = await handleDomainAction(operationTenantId, operationScopeVersion, () => {
         if (editingDomain) {
           return platformRequest.patch(`/platform/tenants/${operationTenantId}/domains/${editingDomain.id}`, { domain });
         }
         return platformRequest.post(`/platform/tenants/${operationTenantId}/domains`, { domain, is_primary: false });
       });
-      if (succeeded) closeDomainModal();
+      if (result.succeeded && result.isCurrent) closeDomainModal();
     } finally {
-      setSavingDomain(false);
+      if (scopeVersion.current === operationScopeVersion) setSavingDomain(false);
     }
   };
 
   const setPrimaryDomain = async (domain: PlatformDomain) => {
     const operationTenantId = tenantId;
     if (!operationTenantId) return;
-    await handleDomainAction(operationTenantId, () => (
+    await handleDomainAction(operationTenantId, scopeVersion.current, () => (
       platformRequest.patch(`/platform/tenants/${operationTenantId}/domains/${domain.id}`, { is_primary: true })
     ));
   };
@@ -123,7 +146,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
   const deleteDomain = async (domain: PlatformDomain) => {
     const operationTenantId = tenantId;
     if (!operationTenantId) return;
-    await handleDomainAction(operationTenantId, () => (
+    await handleDomainAction(operationTenantId, scopeVersion.current, () => (
       platformRequest.delete(`/platform/tenants/${operationTenantId}/domains/${domain.id}`)
     ));
   };

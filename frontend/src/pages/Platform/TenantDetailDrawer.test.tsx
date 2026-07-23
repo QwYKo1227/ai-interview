@@ -268,4 +268,71 @@ describe('TenantDetailDrawer', () => {
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
+
+  it('closes and resets an edited domain modal immediately when the tenant scope changes', async () => {
+    const nextTenant = { ...tenant, id: 'tenant-photonthix', name: '光子科技', code: 'photonthix', domains: [] };
+    mockGet.mockResolvedValueOnce(tenant).mockResolvedValueOnce(nextTenant);
+    const user = userEvent.setup();
+
+    const view = render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    expect(screen.getByLabelText('域名')).toHaveValue('careers.careray.com');
+
+    view.rerender(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
+
+    expect(await screen.findByText('光子科技')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '新增域名' }));
+    expect(screen.getByLabelText('域名')).toHaveValue('');
+  });
+
+  it('does not let a delayed A-domain save close a newly opened B-domain modal', async () => {
+    let resolveUpdate: (() => void) | undefined;
+    const updateRequest = new Promise<void>((resolve) => { resolveUpdate = resolve; });
+    const nextTenant = { ...tenant, id: 'tenant-photonthix', name: '光子科技', code: 'photonthix', domains: [] };
+    mockGet.mockResolvedValueOnce(tenant).mockResolvedValueOnce(nextTenant);
+    mockPatch.mockReturnValueOnce(updateRequest);
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+
+    const view = render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    view.rerender(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
+    await screen.findByText('光子科技');
+    await user.click(screen.getByRole('button', { name: '新增域名' }));
+    fireEvent.change(screen.getByLabelText('域名'), { target: { value: 'b.example.com' } });
+
+    resolveUpdate?.();
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText('域名')).toHaveValue('b.example.com');
+  });
+
+  it('does not let a delayed A-domain failure show an error in B-domain modal', async () => {
+    let rejectUpdate: ((reason?: unknown) => void) | undefined;
+    const updateRequest = new Promise<void>((_, reject) => { rejectUpdate = reject; });
+    const nextTenant = { ...tenant, id: 'tenant-photonthix', name: '光子科技', code: 'photonthix', domains: [] };
+    mockGet.mockResolvedValueOnce(tenant).mockResolvedValueOnce(nextTenant);
+    mockPatch.mockReturnValueOnce(updateRequest);
+    const user = userEvent.setup();
+
+    const view = render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    view.rerender(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
+    await screen.findByText('光子科技');
+    await user.click(screen.getByRole('button', { name: '新增域名' }));
+    fireEvent.change(screen.getByLabelText('域名'), { target: { value: 'b.example.com' } });
+
+    rejectUpdate?.(new Error('network unavailable'));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByLabelText('域名')).toHaveValue('b.example.com');
+    expect(screen.queryByText('域名操作失败，请稍后重试')).not.toBeInTheDocument();
+  });
 });

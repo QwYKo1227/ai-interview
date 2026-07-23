@@ -1,7 +1,7 @@
 import { Alert, Button, Form, Input } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { usePlatformAuth } from '../../contexts/PlatformAuthContext';
 import platformRequest from '../../utils/platformRequest';
 import './platform.css';
@@ -17,9 +17,7 @@ const PlatformLogin = () => {
   const [submitting, setSubmitting] = useState(false);
   const [hasError, setHasError] = useState(false);
 
-  useEffect(() => {
-    if (isAuthenticated) navigate('/platform/tenants', { replace: true });
-  }, [isAuthenticated, navigate]);
+  if (isAuthenticated) return <Navigate replace to="/platform/tenants" />;
 
   const handleSubmit = async (values: PlatformLoginPayload) => {
     setSubmitting(true);

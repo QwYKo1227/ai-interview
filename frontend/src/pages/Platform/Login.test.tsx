@@ -29,6 +29,9 @@ Object.defineProperty(window, 'matchMedia', {
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
+  Navigate: ({ to, replace }: { to: string; replace?: boolean }) => (
+    <div data-replace={String(replace)} data-testid="platform-login-redirect" data-to={to} />
+  ),
 }));
 
 vi.mock('../../contexts/PlatformAuthContext', () => ({
@@ -79,11 +82,14 @@ describe('PlatformLogin', () => {
     expect(await screen.findByText('登录失败，请检查邮箱和密码')).toBeInTheDocument();
   });
 
-  it('redirects an authenticated administrator to the tenant registry', async () => {
+  it('redirects an authenticated administrator without rendering the login form', () => {
     mockPlatformAuth.isAuthenticated = true;
 
     render(<PlatformLogin />);
 
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/platform/tenants', { replace: true }));
+    expect(screen.getByTestId('platform-login-redirect')).toHaveAttribute('data-to', '/platform/tenants');
+    expect(screen.getByTestId('platform-login-redirect')).toHaveAttribute('data-replace', 'true');
+    expect(screen.queryByLabelText('邮箱')).not.toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });

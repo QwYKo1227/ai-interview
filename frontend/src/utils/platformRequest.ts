@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { AxiosRequestHeaders } from 'axios';
 import { getBearerToken } from './request';
 
 const platformRequest = axios.create({
@@ -8,7 +9,7 @@ const platformRequest = axios.create({
 
 const platformLoginUrl = '/platform/auth/login';
 
-const removeAuthorization = (headers: any) => {
+const removeAuthorization = (headers?: AxiosRequestHeaders) => {
   if (!headers) return;
   if (typeof headers.delete === 'function') {
     headers.delete('Authorization');

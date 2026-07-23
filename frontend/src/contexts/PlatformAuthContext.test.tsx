@@ -13,6 +13,11 @@ const PlatformAuthProbe = () => {
   </>;
 };
 
+const MissingProviderProbe = () => {
+  usePlatformAuth();
+  return null;
+};
+
 describe('PlatformAuthContext', () => {
   afterEach(() => {
     cleanup();
@@ -25,6 +30,12 @@ describe('PlatformAuthContext', () => {
     render(<PlatformAuthProvider><PlatformAuthProbe /></PlatformAuthProvider>);
 
     expect(screen.getByTestId('platform-auth-state')).toHaveTextContent('anonymous');
+  });
+
+  it('reports a clear Chinese error when used outside the provider', () => {
+    expect(() => render(<MissingProviderProbe />)).toThrow(
+      'usePlatformAuth 必须在 PlatformAuthProvider 内使用',
+    );
   });
 
   it('starts authenticated when a platform token exists', () => {

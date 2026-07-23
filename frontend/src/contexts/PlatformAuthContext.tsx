@@ -33,6 +33,6 @@ export const PlatformAuthProvider = ({ children }: { children: ReactNode }) => {
 
 export const usePlatformAuth = () => {
   const context = useContext(PlatformAuthContext);
-  if (context === undefined) throw new Error('usePlatformAuth must be used within a PlatformAuthProvider');
+  if (context === undefined) throw new Error('usePlatformAuth 必须在 PlatformAuthProvider 内使用');
   return context;
 };

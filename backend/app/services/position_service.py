@@ -41,6 +41,16 @@ def get_positions(
         query = query.filter(Position.hiring_manager_id == hiring_manager_id)
     return query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
 
+
+def get_hiring_managers(db: Session) -> List[User]:
+    return (
+        db.query(User)
+        .join(Position, Position.hiring_manager_id == User.id)
+        .distinct()
+        .order_by(User.full_name.asc(), User.email.asc())
+        .all()
+    )
+
 def get_positions_with_stats(
     db: Session,
     skip: int = 0,

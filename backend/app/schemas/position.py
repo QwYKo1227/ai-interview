@@ -39,6 +39,13 @@ class PositionResponse(PositionBase):
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+
+class HiringManagerOption(BaseModel):
+    id: UUID
+    full_name: Optional[str] = None
+    email: str
+    model_config = ConfigDict(from_attributes=True)
+
 class PositionStats(BaseModel):
     total_resumes: int = 0
     pending_screening: int = 0

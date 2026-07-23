@@ -6,12 +6,13 @@ from app.schemas.position import (
     PositionCreate, PositionUpdate, PositionResponse,
     PositionWithStats, PositionStats, JDGenerateRequest,
     JDGenerateResponse, PositionDetailResponse, QuestionBankBrief,
-    JDChatRequest
+    JDChatRequest, HiringManagerOption
 )
 from app.services.position_service import (
     create_position, get_positions, get_positions_with_stats,
     get_position, update_position, delete_position,
-    get_position_stats, get_linked_question_banks, generate_position_jd
+    get_position_stats, get_linked_question_banks, generate_position_jd,
+    get_hiring_managers
 )
 from app.services.ai_service import generate_jd_stream, chat_jd_stream
 from app.models.models import User, UserRole
@@ -51,6 +52,14 @@ def get_positions_route(
         title=title,
         hiring_manager_id=hiring_manager_id,
     )
+
+
+@router.get("/hiring-managers", response_model=List[HiringManagerOption])
+def get_hiring_managers_route(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_hiring_managers(db)
 
 @router.get("/public", response_model=List[PositionResponse])
 def get_public_positions_route(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):

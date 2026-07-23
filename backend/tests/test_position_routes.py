@@ -83,3 +83,31 @@ class TestPositionHiringManagerFilter:
             "Senior Backend Engineer"
         ]
         assert response.json()[0]["hiring_manager_id"] == str(target.id)
+
+
+class TestHiringManagerOptions:
+    def test_returns_distinct_managers_with_positions(
+        self, client: TestClient, auth_headers: dict, db: Session
+    ):
+        assigned = create_manager(db, "assigned@example.com", "Assigned Manager")
+        create_manager(db, "unused@example.com", "Unused Manager")
+        create_position(db, "Backend Engineer", assigned)
+        create_position(db, "Frontend Engineer", assigned)
+
+        response = client.get(
+            "/api/positions/hiring-managers", headers=auth_headers
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == [
+            {
+                "id": str(assigned.id),
+                "full_name": "Assigned Manager",
+                "email": "assigned@example.com",
+            }
+        ]
+
+    def test_requires_authentication(self, client: TestClient):
+        response = client.get("/api/positions/hiring-managers")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED

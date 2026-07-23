@@ -67,6 +67,8 @@ describe('PlatformTenants', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    mockGet.mockReset();
+    mockPost.mockReset();
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });
@@ -172,6 +174,44 @@ describe('PlatformTenants', () => {
       admin_email: 'admin@photonthix.com',
       admin_password: boundaryPassword,
     }));
+  });
+
+  it('accepts a password with fewer than twelve characters when it reaches twelve UTF-8 bytes', async () => {
+    mockGet.mockResolvedValue([]);
+    mockPost.mockResolvedValueOnce({});
+    const user = userEvent.setup();
+    const multibytePassword = '测测测测A1';
+
+    render(<PlatformTenants />);
+
+    await user.click(screen.getByRole('button', { name: '新建公司' }));
+    fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
+    fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
+    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
+    fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
+    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: multibytePassword } });
+    await user.click(screen.getByRole('button', { name: '创建公司' }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/platform/tenants', expect.objectContaining({
+      admin_password: multibytePassword,
+    })));
+  });
+
+  it('rejects a password below twelve UTF-8 bytes even when it contains letters and digits', async () => {
+    mockGet.mockResolvedValue([]);
+    const user = userEvent.setup();
+
+    render(<PlatformTenants />);
+
+    await user.click(screen.getByRole('button', { name: '新建公司' }));
+    fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
+    fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
+    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
+    fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
+    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: '测A1' } });
+    await user.click(screen.getByRole('button', { name: '创建公司' }));
+
+    expect(mockPost).not.toHaveBeenCalled();
   });
 
   it('does not submit an administrator password without the required character classes or within 72 UTF-8 bytes', async () => {

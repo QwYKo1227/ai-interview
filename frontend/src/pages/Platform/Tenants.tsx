@@ -202,19 +202,19 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
             name="admin_password"
             rules={[
               { required: true, message: '请输入管理员初始密码' },
-              { min: 12, message: '密码至少需要 12 位' },
               { pattern: /[a-zA-Z]/, message: '密码需要包含字母' },
               { pattern: /\d/, message: '密码需要包含数字' },
               {
-                validator: (_, value) => (
-                  new TextEncoder().encode(value || '').length <= 72
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('密码最多支持 72 个 UTF-8 字节'))
-                ),
+                validator: (_, value) => {
+                  const byteLength = new TextEncoder().encode(value || '').length;
+                  if (byteLength < 12) return Promise.reject(new Error('密码至少需要 12 个 UTF-8 字节'));
+                  if (byteLength > 72) return Promise.reject(new Error('密码最多支持 72 个 UTF-8 字节'));
+                  return Promise.resolve();
+                },
               },
             ]}
           >
-            <Input.Password autoComplete="new-password" placeholder="至少 12 位，包含字母和数字，最多 72 个字节" />
+            <Input.Password autoComplete="new-password" placeholder="12 至 72 个字节，包含字母和数字" />
           </Form.Item>
           <div className="platform-tenants__form-actions">
             <Button onClick={closeOnboarding}>取消</Button>

@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import ResumeDetail from './Detail'
 import request from '../../utils/request'
 import resumeDetailCss from '../../index.css?inline'
@@ -28,6 +28,13 @@ const resume = {
 }
 
 describe('ResumeDetail laptop layout', () => {
+  let stylesheet: HTMLStyleElement | undefined
+
+  afterEach(() => {
+    cleanup()
+    stylesheet?.remove()
+  })
+
   it('keeps two shrinkable panes and wraps actions inside the analysis pane', async () => {
     vi.mocked(request.get).mockImplementation(async (url: string) => {
       if (url === '/resumes/resume-1') return resume
@@ -35,7 +42,7 @@ describe('ResumeDetail laptop layout', () => {
       return {}
     })
 
-    const stylesheet = document.createElement('style')
+    stylesheet = document.createElement('style')
     stylesheet.textContent = resumeDetailCss
     document.head.append(stylesheet)
 
@@ -61,12 +68,13 @@ describe('ResumeDetail laptop layout', () => {
     expect(actionRow).toBeInTheDocument()
     expect(analysisPane).toContainElement(actionRow)
     expect(actionRow).toHaveStyle({ flexWrap: 'wrap' })
+    const actions = within(actionRow!)
+    expect(actions.getByRole('button', { name: /重新解析/ })).toBeInTheDocument()
+    expect(actions.getByRole('button', { name: /编辑/ })).toBeInTheDocument()
+    expect(actions.getByRole('button', { name: /直接决策/ })).toBeInTheDocument()
 
     const previewHeader = container.querySelector<HTMLElement>('.resume-preview-header')
     expect(previewHeader).toHaveStyle({ minWidth: '0px', flexWrap: 'wrap' })
     expect(resumeDetailCss).toMatch(/\.resume-preview-header\s*{\s*min-width:\s*0;\s*flex-wrap:\s*wrap;/)
-    expect(screen.getByText('重新解析')).toBeInTheDocument()
-    expect(screen.getByText('编辑')).toBeInTheDocument()
-    expect(screen.getByText('直接决策')).toBeInTheDocument()
   })
 })

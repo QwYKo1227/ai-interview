@@ -48,3 +48,13 @@ Ant Design checks pseudo-elements during table layout, while JSDOM reports that 
 ## Preservation check
 
 The existing action render callback, status visibility conditions, request callbacks, filters, pagination, row key, and selection configuration remain unchanged.
+
+## Review follow-up: populated action cell
+
+The regression test now returns one representative, complete position from `/positions`. It explicitly verifies that the rendered table-body action cell has Ant Design 6's `ant-table-cell-fix-end` class, while retaining the header fixed-end and local `.ant-table-content` overflow assertions.
+
+RED evidence: after adding the body-cell assertion but before adding the fixture, the focused test exited 1 because the selector returned `null` (the previous response was an empty array). GREEN evidence: after adding the representative row, `npm test -- --run src/pages/Positions/List.test.tsx` passed 1/1 with clean output.
+
+## Staged browser-layout verification
+
+Proof that the document itself has no horizontal overflow at 1280px and 1366px requires a layout-capable browser, not JSDOM. That verification is intentionally deferred to Task 5's planned browser-based responsive check; this task does not claim that a JSDOM style assertion proves document-level viewport containment.

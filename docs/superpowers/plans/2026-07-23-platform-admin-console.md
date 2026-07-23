@@ -208,6 +208,8 @@ git commit -m "feat: isolate platform administrator session"
 - Create: `frontend/src/components/Platform/PlatformLayout.tsx`
 - Create: `frontend/src/pages/Platform/Login.tsx`
 - Create: `frontend/src/pages/Platform/Login.test.tsx`
+- Create: `frontend/src/pages/Platform/Tenants.tsx`
+- Create: `frontend/src/pages/Platform/Tenants.test.tsx`
 - Create: `frontend/src/pages/Platform/platform.css`
 - Modify: `frontend/src/router/index.tsx`
 
@@ -266,7 +268,7 @@ Expected: FAIL，提示 `Login.tsx` 不存在。
 },
 ```
 
-此步骤可暂时为 `PlatformTenants` 使用只显示“公司管理”的最小组件，Task 3 再补齐功能。
+先为 `PlatformTenants` 写一个断言“公司管理”标题可见的路由测试，确认测试因组件不存在而失败；再创建只显示该标题的最小组件。Task 3 在这组绿色测试基础上扩展完整列表行为。
 
 - [ ] **Step 7: 运行登录、路由和公司登录回归测试**
 
@@ -277,7 +279,7 @@ Expected: 全部通过。
 - [ ] **Step 8: 提交平台入口增量**
 
 ```bash
-git add frontend/src/components/Platform frontend/src/pages/Platform/Login.tsx frontend/src/pages/Platform/Login.test.tsx frontend/src/pages/Platform/platform.css frontend/src/router/index.tsx
+git add frontend/src/components/Platform frontend/src/pages/Platform/Login.tsx frontend/src/pages/Platform/Login.test.tsx frontend/src/pages/Platform/Tenants.tsx frontend/src/pages/Platform/Tenants.test.tsx frontend/src/pages/Platform/platform.css frontend/src/router/index.tsx
 git commit -m "feat: add platform administrator login"
 ```
 
@@ -286,8 +288,8 @@ git commit -m "feat: add platform administrator login"
 ### Task 3: 公司列表、统计与新建公司
 
 **Files:**
-- Create: `frontend/src/pages/Platform/Tenants.tsx`
-- Create: `frontend/src/pages/Platform/Tenants.test.tsx`
+- Modify: `frontend/src/pages/Platform/Tenants.tsx`
+- Modify: `frontend/src/pages/Platform/Tenants.test.tsx`
 - Modify: `frontend/src/pages/Platform/platform.css`
 
 **Interfaces:**

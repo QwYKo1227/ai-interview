@@ -61,7 +61,7 @@ from app.schemas.offer_template import OfferTemplateCreate
 from app.schemas.coding_test import CodingTestCreate, CodingTestUpdate
 from app.schemas.interview import InterviewCreate
 from app.schemas.offer import OfferCreate
-from app.schemas.position import PositionCreate, PositionUpdate
+from app.schemas.position import JDChatMessage, PositionCreate, PositionUpdate
 from app.schemas.resume import DepartmentReviewUpdate, HRDecisionCreate
 from app.services import (
     ai_service,
@@ -1270,7 +1270,7 @@ def test_jd_stream_factory_snapshots_tenant_ai_before_dependency_closes(
         assert calls == ["prompt", "config", "client"]
     else:
         stream = ai_service.chat_jd_stream(
-            [{"role": "user", "content": "Improve it"}], db=db
+            [JDChatMessage(role="user", content="Improve it")], db=db
         )
         assert calls == ["config", "client"]
 

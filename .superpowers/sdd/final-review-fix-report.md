@@ -1,8 +1,8 @@
 # 平台控制台最终审查修复报告
 
-日期：2026-07-23  
-分支：`codex/multi-tenant-saas`  
-审查基线：`e237cab`  
+日期：2026-07-23
+分支：`codex/multi-tenant-saas`
+审查基线：`e237cab`
 实现提交：`3669deb fix: harden platform tenant console flows`
 
 ## 范围与约束核对

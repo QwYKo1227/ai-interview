@@ -24,20 +24,38 @@ def create_position(db: Session, position: PositionCreate):
     db.refresh(db_position)
     return db_position
 
-def get_positions(db: Session, skip: int = 0, limit: int = 100, status: str = None, title: str = None):
+def get_positions(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    status: str = None,
+    title: str = None,
+    hiring_manager_id: Optional[UUID] = None,
+):
     query = db.query(Position)
     if status:
         query = query.filter(Position.status == status)
     if title:
         query = query.filter(Position.title.ilike(f"%{title}%"))
+    if hiring_manager_id:
+        query = query.filter(Position.hiring_manager_id == hiring_manager_id)
     return query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
 
-def get_positions_with_stats(db: Session, skip: int = 0, limit: int = 100, status: str = None, title: str = None) -> List[PositionWithStats]:
+def get_positions_with_stats(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    status: str = None,
+    title: str = None,
+    hiring_manager_id: Optional[UUID] = None,
+) -> List[PositionWithStats]:
     query = db.query(Position)
     if status:
         query = query.filter(Position.status == status)
     if title:
         query = query.filter(Position.title.ilike(f"%{title}%"))
+    if hiring_manager_id:
+        query = query.filter(Position.hiring_manager_id == hiring_manager_id)
     
     positions = query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
     

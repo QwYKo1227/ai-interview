@@ -39,10 +39,18 @@ def get_positions_route(
     limit: int = 100,
     status: str = None,
     title: str = None,
+    hiring_manager_id: UUID = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_positions_with_stats(db, skip=skip, limit=limit, status=status, title=title)
+    return get_positions_with_stats(
+        db,
+        skip=skip,
+        limit=limit,
+        status=status,
+        title=title,
+        hiring_manager_id=hiring_manager_id,
+    )
 
 @router.get("/public", response_model=List[PositionResponse])
 def get_public_positions_route(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):

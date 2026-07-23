@@ -5,6 +5,7 @@ from app.models.models import Interview, Resume, Position, InterviewStatus, Inte
 from app.schemas.interview import InterviewCreate, InterviewUpdate, InterviewScore
 from fastapi import BackgroundTasks
 import logging
+from app.core.observability import background_task_context
 from app.config.tenant_session import tenant_session
 from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
@@ -223,6 +224,7 @@ def _normalize_dt_utc(dt):
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
+@background_task_context
 def generate_questions_background(tenant_id: UUID, interview_id: UUID, question_bank_ids: list, question_count: int, interview_category: str = 'technical'):
     with tenant_session(tenant_id) as db:
         return _generate_questions_background(
@@ -367,6 +369,7 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     return db_interview
 
 
+@background_task_context
 def send_interview_invitation_background(tenant_id: UUID, interview_id: UUID):
     """
     后台任务：发送面试邀请邮件
@@ -613,6 +616,7 @@ def get_submission_status(db: Session, interview_id: UUID):
         "members": submission_status
     }
 
+@background_task_context
 def generate_evaluation_background(tenant_id: UUID, interview_id: UUID, score_data: dict):
     with tenant_session(tenant_id) as db:
         return _generate_evaluation_background(db, interview_id, score_data)
@@ -679,6 +683,7 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
         raise RuntimeError("interview background task failed") from None
 
 
+@background_task_context
 def generate_combined_evaluation(tenant_id: UUID, interview_id: UUID, transcript: str, interviewer_evaluation: str, interviewer_suggestion: str, interviewer_score: int):
     """
     后台任务：结合录音转写和面试官评价生成综合评价
@@ -777,6 +782,7 @@ def confirm_interview_result(db: Session, interview_id: UUID, result: str, backg
     return db_interview
 
 
+@background_task_context
 def send_result_notification_background(tenant_id: UUID, interview_id: UUID):
     """
     后台任务：发送面试结果通知邮件

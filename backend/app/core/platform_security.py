@@ -2,11 +2,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from app.core.security import ALGORITHM, SECRET_KEY
+from app.config.database import get_unscoped_db
+from app.core.host_policy import resolve_request_origin
+from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)
@@ -72,8 +75,11 @@ def _credentials_exception() -> HTTPException:
 
 
 def get_platform_access_token_claims(
+    request: Request,
     token: str = Depends(platform_oauth2_scheme),
+    db: Session = Depends(get_unscoped_db),
 ) -> PlatformAccessTokenClaims:
+    resolve_request_origin(db, request)
     try:
         return decode_platform_access_token(token)
     except JWTError as exc:

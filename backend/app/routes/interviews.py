@@ -18,6 +18,8 @@ from uuid import UUID
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import logging
+from app.core.observability import background_task_context
+from app.services.interview_access import require_interview_access
 
 logger = logging.getLogger(__name__)
 
@@ -343,28 +345,17 @@ def upload_audio_route(
     current_user: User = Depends(get_current_user)
 ):
     """Upload, transcribe and atomically replace one question recording."""
-    interview = db.query(Interview).filter(Interview.id == interview_id).first()
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
     from app.models.models import InterviewPanel
     panel = db.query(InterviewPanel).filter(
         InterviewPanel.interview_id == interview_id,
         InterviewPanel.interviewer_id == current_user.id
     ).first()
-    if not panel:
-        panel = InterviewPanel(
-            interview_id=interview_id,
-            interviewer_id=current_user.id,
-            scores={},
-            comments={},
-            audio_records={},
-            transcripts={}
-        )
-        db.add(panel)
+    record_owner = panel if panel is not None else interview
     tenant_id = get_tenant_id(db)
     old_files = tenant_files_from_urls(
         db, tenant_id, "interview", interview_id, "interview_audio",
-        [(panel.audio_records or {}).get(question_index)],
+        [(record_owner.audio_records or {}).get(question_index)],
     )
     stored = None
     try:
@@ -375,12 +366,12 @@ def upload_audio_route(
         db.add(stored)
         transcript_data = transcribe_audio(str(stored_file_path(stored)))
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
-        audio_records = dict(panel.audio_records or {})
-        transcripts = dict(panel.transcripts or {})
+        audio_records = dict(record_owner.audio_records or {})
+        transcripts = dict(record_owner.transcripts or {})
         audio_records[question_index] = f"/api/files/{stored.id}"
         transcripts[question_index] = transcript
-        panel.audio_records = audio_records
-        panel.transcripts = transcripts
+        record_owner.audio_records = audio_records
+        record_owner.transcripts = transcripts
         commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
     except Exception:
         if stored is not None:
@@ -389,7 +380,7 @@ def upload_audio_route(
             db.rollback()
         logger.warning("Interview audio upload failed", extra={"resource_id": str(interview_id)})
         raise HTTPException(status_code=500, detail="Audio upload failed") from None
-    db.refresh(panel)
+    db.refresh(record_owner)
     return {"transcript": transcript, "file_id": str(stored.id), "download_url": f"/api/files/{stored.id}"}
 
 @router.delete("/{interview_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -532,9 +523,7 @@ def upload_full_interview_audio(
     """上传整场面试录音并进行AI分析"""
     from app.services.audio_service import transcribe_audio, format_transcript_for_display
 
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
 
     tenant_id = get_tenant_id(db)
     old_files = tenant_files_from_urls(
@@ -715,9 +704,7 @@ def submit_direct_evaluation_with_audio(
     """同时上传录音和评价，AI综合分析生成最终评价"""
     from app.services.audio_service import transcribe_audio
 
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
 
     tenant_id = get_tenant_id(db)
     old_files = tenant_files_from_urls(
@@ -808,11 +795,13 @@ def submit_direct_evaluation_with_audio(
     return interview
 
 
+@background_task_context
 def generate_evaluation_from_transcript(tenant_id: UUID, interview_id: UUID, transcript: str):
     """根据转写内容生成评价（后台任务）"""
     generate_combined_evaluation(tenant_id, interview_id, transcript, None, None, None)
 
 
+@background_task_context
 def generate_combined_evaluation(
     tenant_id: UUID,
     interview_id: UUID,

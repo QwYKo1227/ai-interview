@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config.tenant_session import get_tenant_id, set_tenant_context
 from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, TenantStatus
+from app.core.host_policy import resolve_host
 
 
 PUBLIC_NOT_FOUND = "Public resource not found"
@@ -180,12 +181,9 @@ def enforce_public_request_tenant(
     tenant_id: UUID,
     tenant_code: str | None = None,
 ) -> None:
-    """Reject contradictory trusted tenant selectors; unknown hosts are gateways."""
+    """Reject contradictory trusted tenant selectors and unknown entry hosts."""
 
-    hostname = request_host.strip().lower().partition(":")[0]
-    domain = None
-    if hostname:
-        domain = db.query(TenantDomain).filter(TenantDomain.domain == hostname).first()
+    domain = resolve_host(db, request_host).domain
     if domain is not None and domain.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Public link tenant mismatch")
     if tenant_code is not None:
@@ -209,8 +207,7 @@ def resolve_public_tenant(
     tenant_code: str | None = None,
 ) -> UUID:
     """Resolve an active tenant from URL code and/or a registered host."""
-    hostname = request_host.strip().lower().partition(":")[0]
-    domain = db.query(TenantDomain).filter(TenantDomain.domain == hostname).first() if hostname else None
+    domain = resolve_host(db, request_host).domain
     coded_tenant = None
     if tenant_code:
         coded_tenant = db.query(Tenant).filter(

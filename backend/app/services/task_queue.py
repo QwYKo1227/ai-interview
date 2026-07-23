@@ -100,6 +100,7 @@ class TaskQueue:
             "total_failed": 0,
         }
         self._tenant_stats: Dict[UUID, Dict[str, int]] = {}
+        self.stats_lock = threading.RLock()
 
     def _stats_for(self, tenant_id: UUID) -> Dict[str, int]:
         if not hasattr(self, "_tenant_stats"):
@@ -108,6 +109,11 @@ class TaskQueue:
             tenant_id,
             {"total_submitted": 0, "total_completed": 0, "total_failed": 0},
         )
+
+    def _record_stat(self, tenant_id: UUID, name: str) -> None:
+        with self.stats_lock:
+            self._stats[name] += 1
+            self._stats_for(tenant_id)[name] += 1
 
     def start(self):
         if self.is_running:
@@ -146,8 +152,7 @@ class TaskQueue:
 
         with self.queue_lock:
             self.queue.append(task)
-            self._stats["total_submitted"] += 1
-            self._stats_for(tenant_id)["total_submitted"] += 1
+            self._record_stat(tenant_id, "total_submitted")
             queue_size = len(self.queue)
 
         with self.running_lock:
@@ -209,12 +214,15 @@ class TaskQueue:
                 1 for task in self.completed_tasks.values() if task.tenant_id == tenant_id
             )
 
+        with self.stats_lock:
+            cumulative = dict(self._stats_for(tenant_id))
+
         return {
             "queue_size": queue_size,
             "running_tasks": running_size,
             "completed_tasks": completed_size,
             "max_concurrent": self.max_concurrent,
-            **self._stats_for(tenant_id),
+            **cumulative,
         }
 
     def get_queue_position(self, task_id: str, tenant_id: UUID) -> Optional[int]:
@@ -272,8 +280,7 @@ class TaskQueue:
                 task.status = TaskStatus.FAILED
                 task.error = "TenantInactive"
                 task.completed_at = datetime.now()
-                self._stats["total_failed"] += 1
-                self._stats_for(task.tenant_id)["total_failed"] += 1
+                self._record_stat(task.tenant_id, "total_failed")
                 logger.warning(
                     "Background task rejected for inactive tenant",
                     extra={
@@ -299,8 +306,7 @@ class TaskQueue:
 
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.now()
-            self._stats["total_completed"] += 1
-            self._stats_for(task.tenant_id)["total_completed"] += 1
+            self._record_stat(task.tenant_id, "total_completed")
 
         except Exception as e:
             task.retry_count += 1
@@ -315,8 +321,7 @@ class TaskQueue:
             else:
                 task.status = TaskStatus.FAILED
                 task.completed_at = datetime.now()
-                self._stats["total_failed"] += 1
-                self._stats_for(task.tenant_id)["total_failed"] += 1
+                self._record_stat(task.tenant_id, "total_failed")
                 print(f"[TaskQueue] Task {task.id} failed permanently")
 
                 if task.on_failure:

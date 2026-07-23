@@ -11,6 +11,8 @@ from app.core.security import verify_password, create_access_token, check_roles,
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_context, get_tenant_db
 from app.core.tenant_context import TenantContext
 from app.core.rate_limit import enforce_rate_limit
+from app.core.host_policy import resolve_request_origin
+from sqlalchemy.exc import IntegrityError
 from datetime import timedelta
 from typing import List
 import re
@@ -112,20 +114,7 @@ def _token_for_user(tenant: Tenant, user: User) -> Token:
 
 def _enforce_login_host(db: Session, request: Request, tenant: Tenant) -> None:
     """A registered company host may authenticate only its mapped tenant."""
-
-    host = request.headers.get("host", "").strip().lower()
-    if host.startswith("["):
-        closing_bracket = host.find("]")
-        hostname = host[1:closing_bracket] if closing_bracket > 0 else ""
-    else:
-        hostname = host.partition(":")[0]
-    if not hostname:
-        return
-    domain = (
-        db.query(TenantDomain)
-        .filter(TenantDomain.domain == hostname)
-        .first()
-    )
+    domain = resolve_request_origin(db, request).domain
     if domain is not None and domain.tenant_id != tenant.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -134,7 +123,11 @@ def _enforce_login_host(db: Session, request: Request, tenant: Tenant) -> None:
 
 
 @router.get("/tenants", response_model=List[TenantSummary])
-def list_login_tenants(db: Session = Depends(get_unscoped_db)):
+def list_login_tenants(
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    resolve_request_origin(db, request)
     rows = (
         db.query(Tenant, TenantDomain.domain)
         .outerjoin(
@@ -275,22 +268,30 @@ def create_user(
     db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
-    db_user = db.query(User).filter(User.email == user.email).first()
+    normalized_email = str(user.email).strip().lower()
+    db_user = db.query(User).filter(User.email == normalized_email).first()
     if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     # 验证密码强度
     validate_password_strength(user.password)
 
     hashed_password = get_password_hash(user.password)
     new_user = User(
-        email=user.email,
+        email=normalized_email,
         hashed_password=hashed_password,
         full_name=user.full_name,
         role=user.role
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        ) from None
     db.refresh(new_user)
     return new_user
 

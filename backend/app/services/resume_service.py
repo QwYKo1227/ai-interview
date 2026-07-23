@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, and_, func, update
 import json
 import logging
+from app.core.observability import background_task_context
 
 from app.config.tenant_session import get_tenant_id, tenant_session
 from app.services.public_token_service import issue_public_token, revoke_public_tokens
@@ -79,6 +80,7 @@ def read_file_content(file_path: str) -> str:
 
 from fastapi import BackgroundTasks
 
+@background_task_context
 def process_resume_task(tenant_id: UUID, resume_id: UUID, payload: Dict[str, Any]):
     with tenant_session(tenant_id) as db:
         return _process_resume_task(db, tenant_id, resume_id, payload)
@@ -247,6 +249,7 @@ def _process_resume_task(
         raise RuntimeError("resume parsing failed") from None
 
 
+@background_task_context
 def on_resume_parse_failure(tenant_id: UUID, resume_id: UUID, error: str):
     with tenant_session(tenant_id) as db:
         return _on_resume_parse_failure(db, resume_id, error)
@@ -265,6 +268,7 @@ def _on_resume_parse_failure(db: Session, resume_id: UUID, error: str):
         print("[TaskQueue] Failed to update resume status")
 
 
+@background_task_context
 def process_resume_background(tenant_id: UUID, resume_id: UUID, position_id: UUID, use_user_info: bool = False):
     queue = get_task_queue()
     queue.submit(

@@ -131,6 +131,14 @@ def _run_alembic(url: str, *arguments: str) -> subprocess.CompletedProcess:
 
 
 def _run_role_script() -> subprocess.CompletedProcess:
+    if os.getenv("TEST_POSTGRES_ROLE_SCRIPT_DIRECT") == "1":
+        try:
+            _initialize_roles_directly()
+        except Exception as error:
+            return subprocess.CompletedProcess(
+                ["direct-role-initializer"], 1, "", type(error).__name__
+            )
+        return subprocess.CompletedProcess(["direct-role-initializer"], 0, "", "")
     return subprocess.run(
         [
             "docker",
@@ -143,6 +151,136 @@ def _run_role_script() -> subprocess.CompletedProcess:
         capture_output=True,
         timeout=60,
     )
+
+
+def _initialize_roles_directly() -> None:
+    """Portable equivalent used when pytest runs inside a Docker container."""
+
+    runtime_url = os.environ["TEST_DATABASE_URL"]
+    admin_url = _url_with_credentials(
+        runtime_url,
+        os.getenv("POSTGRES_USER", "postgres"),
+        os.environ["POSTGRES_PASSWORD"],
+    )
+    runtime_password = os.environ["APP_RUNTIME_PASSWORD"].replace("'", "''")
+    migration_password = os.environ["APP_MIGRATION_PASSWORD"].replace("'", "''")
+    database_name = os.getenv("POSTGRES_DB", "ai_interview_test")
+
+    def identifier(value: str) -> str:
+        return '"' + value.replace('"', '""') + '"'
+
+    engine = create_engine(admin_url, poolclass=NullPool)
+    try:
+        with engine.begin() as connection:
+            existing = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT rolname FROM pg_roles "
+                        "WHERE rolname IN ('app_runtime', 'app_migration')"
+                    )
+                )
+            }
+            if "app_migration" not in existing:
+                connection.exec_driver_sql(
+                    "CREATE ROLE app_migration LOGIN NOSUPERUSER NOCREATEDB "
+                    "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
+                )
+            if "app_runtime" not in existing:
+                connection.exec_driver_sql(
+                    "CREATE ROLE app_runtime LOGIN NOSUPERUSER NOCREATEDB "
+                    "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
+                )
+            connection.exec_driver_sql(
+                f"ALTER ROLE app_migration PASSWORD '{migration_password}' "
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+                "NOREPLICATION NOBYPASSRLS"
+            )
+            connection.exec_driver_sql(
+                f"ALTER ROLE app_runtime PASSWORD '{runtime_password}' "
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+                "NOREPLICATION NOBYPASSRLS"
+            )
+            memberships = connection.execute(
+                text(
+                    "SELECT parent.rolname, member.rolname "
+                    "FROM pg_auth_members membership "
+                    "JOIN pg_roles parent ON parent.oid = membership.roleid "
+                    "JOIN pg_roles member ON member.oid = membership.member "
+                    "WHERE member.rolname IN ('app_runtime', 'app_migration')"
+                )
+            ).all()
+            for parent, member in memberships:
+                connection.exec_driver_sql(
+                    f"REVOKE {identifier(parent)} FROM {identifier(member)}"
+                )
+
+            database = identifier(database_name)
+            connection.exec_driver_sql(f"REVOKE ALL ON DATABASE {database} FROM PUBLIC")
+            connection.exec_driver_sql(f"REVOKE ALL ON DATABASE {database} FROM app_migration")
+            connection.exec_driver_sql(f"REVOKE ALL ON DATABASE {database} FROM app_runtime")
+            connection.exec_driver_sql(f"GRANT CONNECT ON DATABASE {database} TO app_migration")
+            connection.exec_driver_sql(f"GRANT CONNECT ON DATABASE {database} TO app_runtime")
+            connection.exec_driver_sql("REVOKE ALL ON SCHEMA public FROM PUBLIC")
+            connection.exec_driver_sql("ALTER SCHEMA public OWNER TO app_migration")
+            connection.exec_driver_sql("GRANT USAGE, CREATE ON SCHEMA public TO app_migration")
+            connection.exec_driver_sql("REVOKE ALL ON SCHEMA public FROM app_runtime")
+            connection.exec_driver_sql("GRANT USAGE ON SCHEMA public TO app_runtime")
+
+            tables = connection.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            ).scalars().all()
+            for table_name in tables:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE public.{identifier(table_name)} OWNER TO app_migration"
+                )
+            sequences = connection.execute(
+                text(
+                    "SELECT sequence_name FROM information_schema.sequences "
+                    "WHERE sequence_schema = 'public'"
+                )
+            ).scalars().all()
+            for sequence_name in sequences:
+                connection.exec_driver_sql(
+                    f"ALTER SEQUENCE public.{identifier(sequence_name)} OWNER TO app_migration"
+                )
+            types = connection.execute(
+                text(
+                    "SELECT t.typname, t.typtype FROM pg_type t "
+                    "JOIN pg_namespace n ON n.oid = t.typnamespace "
+                    "WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd') "
+                    "AND t.typowner <> (SELECT oid FROM pg_roles WHERE rolname = 'app_migration')"
+                )
+            ).all()
+            for type_name, type_kind in types:
+                kind = "TYPE" if type_kind == "e" else "DOMAIN"
+                connection.exec_driver_sql(
+                    f"ALTER {kind} public.{identifier(type_name)} OWNER TO app_migration"
+                )
+
+            connection.exec_driver_sql(
+                "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM app_runtime"
+            )
+            application_tables = set(TENANT_TABLES) | GLOBAL_TABLES
+            for table_name in tables:
+                if table_name in application_tables:
+                    connection.exec_driver_sql(
+                        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "
+                        f"public.{identifier(table_name)} TO app_runtime"
+                    )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM app_runtime"
+            )
+            connection.exec_driver_sql(
+                "ALTER DEFAULT PRIVILEGES FOR ROLE app_migration IN SCHEMA public "
+                "REVOKE ALL ON TABLES FROM app_runtime"
+            )
+            connection.exec_driver_sql(
+                "ALTER DEFAULT PRIVILEGES FOR ROLE app_migration IN SCHEMA public "
+                "REVOKE ALL ON SEQUENCES FROM app_runtime"
+            )
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(scope="session")
@@ -1968,6 +2106,7 @@ def test_runtime_application_starts_without_ddl_and_seeds_inside_tenant_context(
     env["DATABASE_URL"] = runtime_database_url
     env.pop("MIGRATION_DATABASE_URL", None)
     env["APP_ENV"] = "production"
+    env["SECRET_KEY"] = "integration-test-only-secret-key-32-bytes"
     env["INITIAL_ADMIN_EMAIL"] = admin_email
     env["INITIAL_ADMIN_PASSWORD"] = "runtime-startup-test-password"
     result = subprocess.run(

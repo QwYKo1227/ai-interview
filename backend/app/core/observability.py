@@ -2,8 +2,11 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import wraps
 import logging
+import json
 import re
+import sys
 from typing import Iterator
 from uuid import uuid4
 
@@ -49,6 +52,24 @@ class SensitiveDataFilter(logging.Filter):
         return True
 
 
+class StructuredJsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "request_id": getattr(record, "request_id", None),
+            "tenant_id": getattr(record, "tenant_id", None),
+            "user_id": getattr(record, "user_id", None),
+            "task_id": getattr(record, "task_id", None),
+            "resource_id": getattr(record, "resource_id", None),
+        }
+        for name in ("route", "status"):
+            if hasattr(record, name):
+                payload[name] = getattr(record, name)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def configure_logging_redaction() -> None:
     root = logging.getLogger()
     for handler in root.handlers:
@@ -56,8 +77,40 @@ def configure_logging_redaction() -> None:
             handler.addFilter(SensitiveDataFilter())
 
 
+def configure_application_logging() -> None:
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(logging.INFO)
+    if not any(
+        getattr(handler, "_ai_interview_structured", False)
+        for handler in app_logger.handlers
+    ):
+        handler = logging.StreamHandler(sys.stdout)
+        handler._ai_interview_structured = True
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(StructuredJsonFormatter())
+        handler.addFilter(SensitiveDataFilter())
+        app_logger.addHandler(handler)
+
+
 def current_request_id() -> str | None:
     return _request_id.get()
+
+
+def background_task_context(callback):
+    """Bind the standard context for any tenant/resource background callable."""
+
+    @wraps(callback)
+    def wrapped(tenant_id, resource_id, *args, **kwargs):
+        task_id = f"{callback.__module__}.{callback.__name__}:{resource_id}"
+        with logging_context(
+            request_id=current_request_id(),
+            tenant_id=tenant_id,
+            task_id=task_id,
+            resource_id=resource_id,
+        ):
+            return callback(tenant_id, resource_id, *args, **kwargs)
+
+    return wrapped
 
 
 @contextmanager
@@ -110,6 +163,7 @@ def install_observability(app: FastAPI) -> None:
         return
     app.state.observability_installed = True
     configure_logging_redaction()
+    configure_application_logging()
 
     @app.middleware("http")
     async def request_observability(request: Request, call_next):

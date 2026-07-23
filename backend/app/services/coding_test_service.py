@@ -5,6 +5,7 @@ import random
 import os
 import json
 import logging
+from app.core.observability import background_task_context
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, BackgroundTasks
@@ -257,6 +258,7 @@ def submit_essay_answers(db: Session, background_tasks: BackgroundTasks, token: 
     return db_sub
 
 
+@background_task_context
 def evaluate_essay_answers_background(tenant_id: UUID, submission_id: UUID):
     with tenant_session(tenant_id) as db:
         submission = db.query(CodingSubmission).filter(CodingSubmission.id == submission_id).first()
@@ -589,6 +591,7 @@ def generate_questions_from_bank(db: Session, question_bank_id: UUID, test_type:
     return []
 
 
+@background_task_context
 def generate_questions_background(tenant_id: UUID, coding_test_id: UUID, question_bank_id: UUID, test_type: str, count: int = 10):
     with tenant_session(tenant_id) as db:
         db_test = db.query(CodingTest).filter(CodingTest.id == coding_test_id).first()

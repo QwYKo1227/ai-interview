@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import Interview, InterviewPanel, QuestionBank, Resume, User, UserRole
+from app.models.models import Interview, QuestionBank, Resume, User, UserRole
 from app.schemas.file import PublicFileTokenRequest, PublicFileTokenResponse
 from app.services.public_token_service import enforce_public_request_tenant, issue_public_token, resolve_public_token
 from app.utils.file_storage import UPLOAD_ROOT as DEFAULT_UPLOAD_ROOT, resolve_object_path, sanitize_content_type
+from app.core.proxy import resolve_request_host
+from app.services.interview_access import can_access_interview
 
 
 UPLOAD_ROOT = DEFAULT_UPLOAD_ROOT
@@ -71,23 +73,7 @@ def _can_access_file(db: Session, current_user: User, record: StoredFile) -> boo
             .filter(Interview.id == record.resource_id)
             .first()
         )
-        resource_exists = interview is not None
-        if resource_exists and role == UserRole.INTERVIEWER.value:
-            panel_access = (
-                db.query(InterviewPanel.id)
-                .filter(
-                    InterviewPanel.interview_id == interview.id,
-                    InterviewPanel.interviewer_id == current_user.id,
-                )
-                .first()
-                is not None
-            )
-            member_ids = {str(member) for member in (interview.panel_members or [])}
-            return (
-                interview.interviewer_id == current_user.id
-                or str(current_user.id) in member_ids
-                or panel_access
-            )
+        return interview is not None and can_access_interview(db, interview, current_user)
     if not resource_exists:
         return False
     return role in {UserRole.ADMIN.value, UserRole.HR.value}
@@ -137,7 +123,7 @@ def download_public_file(
 ):
     resolved = resolve_public_token(db, token, "stored_file")
     enforce_public_request_tenant(
-        db, request_host=request.headers.get("host", ""),
+        db, request_host=resolve_request_host(request),
         tenant_id=resolved.tenant_id, tenant_code=tenant_code,
     )
     return _response(resolved.resource)

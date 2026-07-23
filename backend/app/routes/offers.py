@@ -14,6 +14,7 @@ from app.services import offer_service
 from app.core.tenant_dependencies import get_current_user_dep
 from app.models.models import User
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
+from app.core.proxy import resolve_request_host
 
 router = APIRouter(
     prefix="/offers",
@@ -199,7 +200,7 @@ def get_offer_by_token(
 ):
     resolved = resolve_public_token(db, token, "offer")
     enforce_public_request_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_id=resolved.tenant_id
+        db, request_host=resolve_request_host(request), tenant_id=resolved.tenant_id
     )
     offer = offer_service.get_offer_by_token(db, token)
     if not offer:
@@ -215,7 +216,7 @@ def confirm_offer_by_token(
 ):
     resolved = resolve_public_token(db, token, "offer")
     enforce_public_request_tenant(
-        db, request_host=http_request.headers.get("host", ""), tenant_id=resolved.tenant_id
+        db, request_host=resolve_request_host(http_request), tenant_id=resolved.tenant_id
     )
     result = offer_service.confirm_offer_by_token(
         db, token, request.action, request.reason,

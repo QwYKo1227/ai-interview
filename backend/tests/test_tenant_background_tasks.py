@@ -1,6 +1,7 @@
 import ast
 import inspect
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from collections import deque
 from pathlib import Path
@@ -50,6 +51,7 @@ def _isolated_queue(*, tenant_is_active=lambda _tenant_id: True):
     queue.running_lock = threading.Lock()
     queue.completed_tasks = {}
     queue.completed_lock = threading.Lock()
+    queue.stats_lock = threading.RLock()
     queue._stats = {
         "total_submitted": 0,
         "total_completed": 0,
@@ -340,6 +342,24 @@ def test_task_status_and_queue_stats_are_isolated_by_tenant():
     assert queue.get_stats(tenant_a)["completed_tasks"] == 0
     assert queue.get_stats(tenant_b)["queue_size"] == 0
     assert queue.get_stats(tenant_b)["completed_tasks"] == 1
+
+
+def test_task_cumulative_stats_update_and_snapshot_share_one_lock():
+    queue = _isolated_queue()
+    tenant_id = uuid4()
+
+    assert hasattr(queue, "_record_stat"), "atomic stats update helper is missing"
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        list(
+            executor.map(
+                lambda _item: queue._record_stat(tenant_id, "total_completed"),
+                range(2000),
+            )
+        )
+
+    stats = queue.get_stats(tenant_id)
+    assert stats["total_completed"] == 2000
+    assert queue._stats["total_completed"] == 2000
 
 
 def test_task_status_http_endpoint_masks_another_tenants_known_task(

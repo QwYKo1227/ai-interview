@@ -83,10 +83,15 @@ services:
       RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-10}
       RATE_LIMIT_PUBLIC_UPLOAD: ${RATE_LIMIT_PUBLIC_UPLOAD:-10}
       RATE_LIMIT_PUBLIC_CODE_RUN: ${RATE_LIMIT_PUBLIC_CODE_RUN:-30}
+      RATE_LIMIT_PUBLIC_CODE_SUBMIT: ${RATE_LIMIT_PUBLIC_CODE_SUBMIT:-10}
+      RATE_LIMIT_PUBLIC_ESSAY_SUBMIT: ${RATE_LIMIT_PUBLIC_ESSAY_SUBMIT:-5}
+      RATE_LIMIT_MAX_BUCKETS: ${RATE_LIMIT_MAX_BUCKETS:-10000}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      UNIFIED_ENTRY_HOSTS: ${UNIFIED_ENTRY_HOSTS:-}
       APP_ENV: production
     volumes:
       - backend_uploads:/app/uploads
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     depends_on:
       postgres-finalize:
         condition: service_completed_successfully

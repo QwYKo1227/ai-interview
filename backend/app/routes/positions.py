@@ -19,6 +19,7 @@ from app.models.models import User, UserRole
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from app.services.public_token_service import resolve_public_tenant
+from app.core.proxy import resolve_request_host
 from typing import List
 from uuid import UUID
 
@@ -55,7 +56,7 @@ def get_public_positions_route(
     db: Session = Depends(get_unscoped_db),
 ):
     resolve_public_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+        db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
     return get_positions(db, skip=skip, limit=limit, status="published")
 
@@ -187,7 +188,7 @@ public_router = APIRouter(prefix="/public", tags=["public-positions"])
 
 def _public_positions(db: Session, request: Request, tenant_code: str | None, skip: int, limit: int):
     resolve_public_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+        db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
     return get_positions(db, skip=skip, limit=limit, status="published")
 
@@ -208,7 +209,7 @@ def get_domain_public_position(
     request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
-    resolve_public_tenant(db, request_host=request.headers.get("host", ""))
+    resolve_public_tenant(db, request_host=resolve_request_host(request))
     position = get_position(db, position_id)
     if position is None or getattr(position.status, "value", position.status) != "published":
         raise HTTPException(status_code=404, detail="Public resource not found")
@@ -234,7 +235,7 @@ def get_tenant_public_position(
     db: Session = Depends(get_unscoped_db),
 ):
     resolve_public_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+        db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
     position = get_position(db, position_id)
     if position is None or getattr(position.status, "value", position.status) != "published":

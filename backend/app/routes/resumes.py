@@ -22,6 +22,7 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID
 from app.services.public_token_service import resolve_public_tenant
 from app.core.rate_limit import enforce_rate_limit
+from app.core.proxy import resolve_request_host
 
 router = APIRouter(
     prefix="/resumes",
@@ -95,7 +96,7 @@ def create_resume_route(
 ):
     validate_pdf_file(file)
     tenant_id = resolve_public_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
+        db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
     enforce_rate_limit(request, "public_upload", tenant_id)
     return upload_public_resume(

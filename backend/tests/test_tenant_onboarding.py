@@ -646,6 +646,9 @@ def test_platform_domain_maintenance_is_audited(
         json={"is_primary": False},
     )
     assert demoted.status_code == 409
+    assert demoted.json() == {
+        "detail": "Primary domain must be replaced before removal"
+    }
     domains = platform_client.get(
         f"/api/platform/tenants/{tenant_id}", headers=headers
     ).json()["domains"]
@@ -669,3 +672,29 @@ def test_platform_domain_maintenance_is_audited(
         "tenant.domain_updated",
         "tenant.domain_deleted",
     ]
+
+
+def test_platform_duplicate_domain_has_distinct_stable_conflict(
+    platform_client, platform_admin
+):
+    headers = platform_login(platform_client, platform_admin)
+    created = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()
+
+    first = platform_client.post(
+        f"/api/platform/tenants/{created['id']}/domains",
+        headers=headers,
+        json={"domain": "jobs.careray-cloud.example", "is_primary": False},
+    )
+    duplicate = platform_client.post(
+        f"/api/platform/tenants/{created['id']}/domains",
+        headers=headers,
+        json={"domain": "JOBS.CARERAY-CLOUD.EXAMPLE:443", "is_primary": False},
+    )
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {"detail": "Domain already exists"}

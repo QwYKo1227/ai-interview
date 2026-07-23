@@ -43,6 +43,8 @@ mkdir -p "$RELEASE_DIR"
 - `SECRET_KEY` 已安全生成，且与旧环境的令牌处理策略一致。
 - `APP_ENV=production`。
 - `APP_DOMAINS=interview.careray.com, interview.photonthix.com`。逗号后的空格是 Caddyfile 多站点地址的必要分隔符；dotenv 只能由 Compose 的 `--env-file` 解析，不能由 shell 执行。
+- `UNIFIED_ENTRY_HOSTS` 只填写确实承担“选择公司”功能的统一登录域名；当前两个公司专属域名已由数据库映射时可留空，禁止使用通配符。
+- `TRUSTED_PROXY_CIDRS` 只包含生产 Caddy/Nginx 所在的受控容器网络 CIDR；不得填写 `0.0.0.0/0` 或 `::/0`。变更 Docker 网络后必须同步更新并重新验证客户端 IP。
 - `CORS_ORIGINS=https://interview.careray.com,https://interview.photonthix.com`。
 - LLM 和 SMTP 密钥通过受控密钥系统注入，未提交到仓库。
 - 后端镜像使用已验收且不可变的版本或摘要；记录摘要到发布工单。
@@ -884,7 +886,9 @@ DELETE /api/platform/tenants/{tenant_id}/domains/{domain_id}
 
 ## 6. 内部域名、HTTPS 与麦克风
 
-应用进程对登录、公开简历上传和公开代码运行分别执行分钟级限流，并可通过 `RATE_LIMIT_LOGIN`、`RATE_LIMIT_PUBLIC_UPLOAD`、`RATE_LIMIT_PUBLIC_CODE_RUN` 调整单进程阈值。该内存限流只承担应用最后一道防线，不是集群级防护。生产入口还必须在受信网关/WAF 按客户端 IP 与路径配置独立阈值和突发容量，并限制请求体大小；多副本部署时网关计数必须集中共享。只有受信代理可以覆盖真实客户端地址，禁止直接信任公网请求提供的 `X-Forwarded-For`。429 比例、拒绝路径和重试间隔必须纳入监控，但不得记录登录密码、JWT、公开令牌或代码正文。
+应用进程对登录、公开简历上传、公开代码试运行、代码正式提交和作文 AI 评估分别执行分钟级限流，并可通过 `RATE_LIMIT_LOGIN`、`RATE_LIMIT_PUBLIC_UPLOAD`、`RATE_LIMIT_PUBLIC_CODE_RUN`、`RATE_LIMIT_PUBLIC_CODE_SUBMIT`、`RATE_LIMIT_PUBLIC_ESSAY_SUBMIT` 调整单进程阈值。每次请求同时消耗客户端 IP 配额和账号/公开令牌配额，任一配额耗尽都会在业务执行前返回 429；内存桶由 `RATE_LIMIT_MAX_BUCKETS` 设定上限，并按 TTL/LRU 淘汰。该内存限流只承担应用最后一道防线，不是集群级防护。生产入口还必须在受信网关/WAF 按客户端 IP 与路径配置独立阈值和突发容量，并限制请求体大小；多副本部署时网关计数必须集中共享。后端只在直接对端属于 `TRUSTED_PROXY_CIDRS` 时从右向左验证 `X-Forwarded-For`，链中格式错误时退回直接对端；禁止直接信任公网请求提供的转发头。429 比例、拒绝路径和重试间隔必须纳入监控，但不得记录登录密码、JWT、公开令牌或代码正文。
+
+生产后端必须以 `uvicorn --no-access-log` 启动；Nginx 对 `/api/public/` 禁用原始 URI 访问日志，应用自身只记录路由模板和脱敏后的结构化字段。发布检查必须确认公开 token 不会出现在 Uvicorn、Nginx 或应用日志中，同时保留非公开请求的状态码、request ID、租户、任务和资源上下文。
 
 内部 DNS 必须把以下两个名称解析到同一台受控服务器：
 

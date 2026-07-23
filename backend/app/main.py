@@ -14,6 +14,7 @@ from app.models.tenant_models import Tenant, TenantStatus
 from app.core.security import get_password_hash
 from app.services.workflow_service import create_builtin_workflows
 from app.core.observability import install_observability
+from app.core.rate_limit import get_rate_limiter
 
 # Seed initial user if not exists
 def seed_db():
@@ -78,6 +79,7 @@ app = FastAPI(
     version="1.0.0"
 )
 install_observability(app)
+get_rate_limiter(app)
 
 origins = os.getenv("CORS_ORIGINS", "*").split(",")
 

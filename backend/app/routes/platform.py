@@ -11,6 +11,7 @@ from app.core.platform_security import (
 )
 from app.core.security import verify_password
 from app.core.rate_limit import enforce_rate_limit
+from app.core.host_policy import resolve_request_origin
 from app.models.tenant_models import PlatformUser
 from app.models.tenant_models import Tenant, TenantDomain
 from app.schemas.tenant import (
@@ -82,6 +83,7 @@ def platform_login(
     # invokes the route function directly; HTTP requests always receive a
     # Starlette Request from FastAPI and are rate limited.
     if request is not None:
+        resolve_request_origin(db, request)
         enforce_rate_limit(request, "login", "platform", str(payload.email))
     user = (
         db.query(PlatformUser)
@@ -114,8 +116,8 @@ def create_tenant(
 ):
     try:
         return create_tenant_with_admin(db, payload, actor_id=claims.user_id)
-    except TenantConflictError:
-        raise HTTPException(status_code=409, detail=TENANT_CONFLICT_MESSAGE) from None
+    except TenantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except TenantActorError:
         raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
     except TenantOnboardingError:
@@ -193,8 +195,8 @@ def create_tenant_domain(
         )
     except TenantNotFoundError:
         raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
-    except TenantConflictError:
-        raise HTTPException(status_code=409, detail=TENANT_CONFLICT_MESSAGE) from None
+    except TenantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except TenantActorError:
         raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
     except TenantOnboardingError:
@@ -222,8 +224,8 @@ def patch_tenant_domain(
         )
     except TenantNotFoundError:
         raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
-    except TenantConflictError:
-        raise HTTPException(status_code=409, detail=PRIMARY_DOMAIN_MESSAGE) from None
+    except TenantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except TenantActorError:
         raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
     except TenantOnboardingError:
@@ -250,8 +252,8 @@ def remove_tenant_domain(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except TenantNotFoundError:
         raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
-    except TenantConflictError:
-        raise HTTPException(status_code=409, detail=PRIMARY_DOMAIN_MESSAGE) from None
+    except TenantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except TenantActorError:
         raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
     except TenantOnboardingError:

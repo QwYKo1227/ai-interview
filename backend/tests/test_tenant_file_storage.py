@@ -14,7 +14,7 @@ from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import Resume, UserRole
+from app.models.models import InterviewPanel, Resume, User, UserRole
 from app.models.tenant_models import PublicAccessToken, TenantDomain
 from app.routes import files
 from app.services.public_token_service import hash_token
@@ -153,6 +153,14 @@ def test_public_download_requires_valid_token_and_matching_host(
     with TestClient(app) as client:
         ok = client.get(f"/api/public/files/{raw}", headers={"host": "a.example.test"})
         mismatch = client.get(f"/api/public/files/{raw}", headers={"host": "b.example.test"})
+        trailing_dot_mismatch = client.get(
+            f"/api/public/files/{raw}",
+            headers={"host": "B.EXAMPLE.TEST.:443"},
+        )
+        unknown = client.get(
+            f"/api/public/files/{raw}",
+            headers={"host": "unknown.example.test"},
+        )
         expired_raw = "b" * 43
         db.add(PublicAccessToken(
             token_hash=hash_token(expired_raw), tenant_id=tenant_a.id,
@@ -163,6 +171,8 @@ def test_public_download_requires_valid_token_and_matching_host(
         expired = client.get(f"/api/public/files/{expired_raw}")
     assert ok.status_code == 200 and ok.content == b"public"
     assert mismatch.status_code == 403
+    assert trailing_dot_mismatch.status_code == 403
+    assert unknown.status_code == 400
     assert expired.status_code == 410
 
 
@@ -316,6 +326,151 @@ def test_interviewer_cannot_download_or_publish_unassigned_resume_file(
     assert download.status_code == 404
     assert publish.status_code == 404
     assert db.query(PublicAccessToken).count() == 0
+
+
+def _unassigned_interviewer(db, tenant_id):
+    user = User(
+        tenant_id=tenant_id,
+        email=f"unassigned-{uuid4().hex}@example.com",
+        hashed_password="not-used",
+        role=UserRole.INTERVIEWER,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    return user
+
+
+def test_unassigned_interviewer_cannot_self_join_panel_by_question_audio_upload(
+    db, tenant_a, test_interview, tmp_path, monkeypatch
+):
+    from app.routes import interviews as interview_routes
+
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(interview_routes, "transcribe_audio", lambda _path: {"text": "ok"})
+
+    with pytest.raises(HTTPException) as exc:
+        interview_routes.upload_audio_route(
+            test_interview.id,
+            "0",
+            _upload("voice.webm", b"audio", "audio/webm"),
+            scoped,
+            intruder,
+        )
+
+    assert exc.value.status_code == 403
+    assert scoped.query(InterviewPanel).filter(
+        InterviewPanel.interview_id == test_interview.id,
+        InterviewPanel.interviewer_id == intruder.id,
+    ).first() is None
+    assert scoped.query(StoredFile).count() == 0
+    scoped.close()
+
+
+def test_unassigned_interviewer_cannot_upload_full_interview_audio(
+    db, tenant_a, test_interview, tmp_path, monkeypatch
+):
+    from app.routes import interviews as interview_routes
+    from app.services import audio_service
+
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path: {"text": "ok", "segments": []})
+    monkeypatch.setattr(audio_service, "format_transcript_for_display", lambda _data: "ok")
+
+    with pytest.raises(HTTPException) as exc:
+        interview_routes.upload_full_interview_audio(
+            test_interview.id,
+            _upload("voice.webm", b"audio", "audio/webm"),
+            BackgroundTasks(),
+            scoped,
+            intruder,
+        )
+
+    assert exc.value.status_code == 403
+    assert scoped.query(StoredFile).count() == 0
+    scoped.close()
+
+
+def test_unassigned_interviewer_cannot_upload_direct_evaluation_audio(
+    db, tenant_a, test_interview, tmp_path, monkeypatch
+):
+    from app.routes import interviews as interview_routes
+    from app.services import audio_service
+
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path: {"text": "ok"})
+
+    with pytest.raises(HTTPException) as exc:
+        interview_routes.submit_direct_evaluation_with_audio(
+            test_interview.id,
+            BackgroundTasks(),
+            _upload("voice.webm", b"audio", "audio/webm"),
+            "evaluation",
+            "suggestion",
+            5,
+            scoped,
+            intruder,
+        )
+
+    assert exc.value.status_code == 403
+    assert scoped.query(StoredFile).count() == 0
+    scoped.close()
+
+
+def test_unassigned_interviewer_cannot_issue_interview_audio_public_token(
+    db, tenant_a, test_interview, tmp_path
+):
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    stored = save_upload_file(
+        _upload("voice.webm", b"audio", "audio/webm"),
+        tenant_a.id,
+        "interview_audio",
+        root=tmp_path,
+        resource_type="interview",
+        resource_id=test_interview.id,
+    )
+    db.add(stored)
+    db.commit()
+
+    with TestClient(
+        _app(db, tenant_a, tmp_path, current_user=intruder)
+    ) as client:
+        response = client.post(
+            f"/api/files/{stored.id}/public-token",
+            json={"ttl_seconds": 120},
+        )
+
+    assert response.status_code == 404
+    assert db.query(PublicAccessToken).count() == 0
+
+
+def test_unassigned_interviewer_cannot_download_interview_audio(
+    db, tenant_a, test_interview, tmp_path
+):
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    stored = save_upload_file(
+        _upload("voice.webm", b"audio", "audio/webm"),
+        tenant_a.id,
+        "interview_audio",
+        root=tmp_path,
+        resource_type="interview",
+        resource_id=test_interview.id,
+    )
+    db.add(stored)
+    db.commit()
+
+    with TestClient(
+        _app(db, tenant_a, tmp_path, current_user=intruder)
+    ) as client:
+        response = client.get(f"/api/files/{stored.id}")
+
+    assert response.status_code == 404
 
 
 def test_replacement_commit_removes_old_metadata_and_file(db, tenant_a, tmp_path):

@@ -1,6 +1,7 @@
 from uuid import UUID
 from datetime import datetime
 import logging
+from app.core.observability import background_task_context
 
 from app.config.tenant_session import tenant_session
 from app.models.models import CodingSubmission, CodingSubmissionStatus, CodingTest
@@ -9,6 +10,7 @@ from app.services.ai_service import generate_coding_test_evaluation
 logger = logging.getLogger(__name__)
 
 
+@background_task_context
 def generate_coding_evaluation_background(tenant_id: UUID, submission_id: UUID):
     with tenant_session(tenant_id) as db:
         sub = db.query(CodingSubmission).filter(CodingSubmission.id == submission_id).first()

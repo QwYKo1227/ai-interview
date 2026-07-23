@@ -112,7 +112,10 @@ def test_dedicated_domain_rejects_login_for_another_tenant(
     assert response.status_code == 403
 
 
-def test_unified_entry_allows_explicit_tenant_login(client, db, tenant_b):
+def test_unified_entry_allows_explicit_tenant_login(
+    client, db, tenant_b, monkeypatch
+):
+    monkeypatch.setenv("UNIFIED_ENTRY_HOSTS", "testserver,gateway.example.test")
     create_user(db, tenant_b.id, "member@example.com", "Password123")
 
     response = client.post(
@@ -386,7 +389,7 @@ def test_token_tenant_must_match_mapped_domain(
     assert response.status_code == 403
 
 
-def test_unknown_host_is_unified_entry_and_untrusted_tenant_inputs_are_ignored(
+def test_unknown_host_is_rejected_even_with_untrusted_tenant_inputs(
     client, db, tenant_a, tenant_b
 ):
     user = create_user(db, tenant_a.id, "member@example.com", "Password123")
@@ -401,8 +404,64 @@ def test_unknown_host_is_unified_entry_and_untrusted_tenant_inputs_are_ignored(
         headers=headers,
     )
 
-    assert response.status_code == 200
-    assert response.json()["id"] == str(user.id)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Unknown request host"}
+
+
+def test_trailing_dot_host_still_enforces_dedicated_tenant(
+    client, db, tenant_a, tenant_b
+):
+    create_user(db, tenant_a.id, "same@example.com", "Password123")
+    create_user(db, tenant_b.id, "same@example.com", "OtherPass123")
+    db.add(
+        TenantDomain(
+            tenant_id=tenant_a.id,
+            domain="login.careray.example",
+            is_primary=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/auth/login",
+        headers={"Host": "LOGIN.CARERAY.EXAMPLE.:443"},
+        json={
+            "tenant_code": tenant_b.code,
+            "email": "same@example.com",
+            "password": "OtherPass123",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_untrusted_forwarded_host_cannot_override_unknown_direct_host(
+    client, db, tenant_a
+):
+    create_user(db, tenant_a.id, "member@example.com", "Password123")
+    db.add(
+        TenantDomain(
+            tenant_id=tenant_a.id,
+            domain="login.careray.example",
+            is_primary=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/auth/login",
+        headers={
+            "Host": "attacker.invalid",
+            "X-Forwarded-Host": "login.careray.example",
+        },
+        json={
+            "tenant_code": tenant_a.code,
+            "email": "member@example.com",
+            "password": "Password123",
+        },
+    )
+
+    assert response.status_code == 400
 
 
 def test_disabled_tenant_invalidates_an_existing_token(client, db, tenant_a):
@@ -648,3 +707,73 @@ def test_authenticated_user_management_is_tenant_scoped(
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == [str(admin.id)]
+
+
+def test_create_user_normalizes_email_before_duplicate_query(
+    client, db, tenant_a
+):
+    admin = create_user(
+        db,
+        tenant_a.id,
+        "admin@example.com",
+        "Password123",
+        role=UserRole.ADMIN,
+    )
+    create_user(db, tenant_a.id, "member@example.com", "Password123")
+
+    response = client.post(
+        "/api/auth/users",
+        headers=auth_header(admin),
+        json={
+            "email": "MEMBER@EXAMPLE.COM",
+            "password": "AnotherPassword123",
+            "role": "hr",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Email already registered"}
+
+
+def test_create_user_maps_database_unique_race_to_stable_conflict(
+    client, db, tenant_a, monkeypatch
+):
+    from sqlalchemy.exc import IntegrityError
+    from app.config.tenant_session import TenantSession
+
+    admin = create_user(
+        db,
+        tenant_a.id,
+        "admin@example.com",
+        "Password123",
+        role=UserRole.ADMIN,
+    )
+    rollbacks = []
+
+    def raise_unique_conflict(_session):
+        raise IntegrityError("INSERT users", {}, RuntimeError("unique conflict"))
+
+    real_rollback = TenantSession.rollback
+
+    def track_rollback(session):
+        rollbacks.append(True)
+        return real_rollback(session)
+
+    monkeypatch.setattr(TenantSession, "commit", raise_unique_conflict)
+    monkeypatch.setattr(TenantSession, "rollback", track_rollback)
+    try:
+        response = client.post(
+            "/api/auth/users",
+            headers=auth_header(admin),
+            json={
+                "email": "new-user@example.com",
+                "password": "AnotherPassword123",
+                "role": "hr",
+            },
+        )
+    except IntegrityError:
+        pytest.fail("database uniqueness conflict escaped the route as a 500")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Email already registered"}
+    assert rollbacks

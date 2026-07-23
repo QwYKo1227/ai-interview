@@ -95,6 +95,16 @@ def test_tenant_domain_is_normalized_before_uniqueness_check(db, tenant_a, tenan
         db.commit()
 
 
+def test_tenant_domain_normalizes_idna_trailing_dot_and_port(tenant_a):
+    domain = TenantDomain(
+        tenant_id=tenant_a.id,
+        domain="BÜCHER.Example.:443",
+        is_primary=True,
+    )
+
+    assert domain.domain == "xn--bcher-kva.example"
+
+
 @pytest.mark.parametrize(
     "invalid_domain",
     ["", "   ", "https://example.com", "example.com/path", "example..com", "bad_domain.example"],

@@ -46,6 +46,7 @@ from app.services.coding_test_service import (
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 from app.services.public_token_service import hash_token
 from app.core.rate_limit import enforce_rate_limit
+from app.core.proxy import resolve_request_host
 
 
 router = APIRouter(prefix="/coding-tests", tags=["coding-tests"])
@@ -222,7 +223,7 @@ public_router = APIRouter(prefix="/public/coding-tests", tags=["public-coding-te
 def _validate_public_request(db: Session, token: str, request: Request) -> None:
     resolved = resolve_public_token(db, token, "coding_test")
     enforce_public_request_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_id=resolved.tenant_id
+        db, request_host=resolve_request_host(request), tenant_id=resolved.tenant_id
     )
 
 
@@ -281,6 +282,7 @@ def submit_public_code_route(
     request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    enforce_rate_limit(request, "public_code_submit", hash_token(token))
     _validate_public_request(db, token, request)
     db_sub = submit_public_code(
         db,
@@ -340,6 +342,7 @@ def submit_essay_route(
     request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    enforce_rate_limit(request, "public_essay_submit", hash_token(token))
     _validate_public_request(db, token, request)
     answers = [a.dict() for a in payload.answers]
     db_sub = submit_essay_answers(

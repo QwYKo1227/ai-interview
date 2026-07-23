@@ -6,6 +6,7 @@ from app.models.models import DepartmentReview
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 from app.services.resume_service import get_public_review_payload, submit_public_department_review
 from app.schemas.resume import PublicDepartmentReviewSubmit
+from app.core.proxy import resolve_request_host
 
 
 router = APIRouter(prefix="/public/review", tags=["public-review"])
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/public/review", tags=["public-review"])
 def _resolve_review(db: Session, token: str, request: Request) -> DepartmentReview:
     resolved = resolve_public_token(db, token, "department_review")
     enforce_public_request_tenant(
-        db, request_host=request.headers.get("host", ""), tenant_id=resolved.tenant_id
+        db, request_host=resolve_request_host(request), tenant_id=resolved.tenant_id
     )
     return resolved.resource
 

@@ -9,8 +9,9 @@ from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession, tenant_session
 from app.core.security import AccessTokenClaims, decode_access_token
 from app.core.tenant_context import TenantContext
+from app.core.host_policy import resolve_request_origin
 from app.models.models import User
-from app.models.tenant_models import Tenant, TenantDomain, TenantStatus
+from app.models.tenant_models import Tenant, TenantStatus
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/token")
@@ -31,27 +32,12 @@ def get_access_token_claims(token: str = Depends(oauth2_scheme)) -> AccessTokenC
         raise _credentials_exception() from exc
 
 
-def _normalized_request_host(request: Request) -> str:
-    host = request.headers.get("host", "").strip().lower()
-    if host.startswith("["):
-        closing_bracket = host.find("]")
-        return host[1:closing_bracket] if closing_bracket > 0 else ""
-    return host.partition(":")[0]
-
-
 def get_tenant_context(
     request: Request,
     claims: AccessTokenClaims = Depends(get_access_token_claims),
     db: Session = Depends(get_unscoped_db),
 ) -> TenantContext:
-    hostname = _normalized_request_host(request)
-    domain = None
-    if hostname:
-        domain = (
-            db.query(TenantDomain)
-            .filter(TenantDomain.domain == hostname)
-            .first()
-        )
+    domain = resolve_request_origin(db, request).domain
     if domain is not None and domain.tenant_id != claims.tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

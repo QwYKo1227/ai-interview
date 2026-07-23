@@ -48,6 +48,7 @@ TENANT_ACTOR_MESSAGE = "Platform actor is not authorized"
 TENANT_ONBOARDING_MESSAGE = "Tenant onboarding failed"
 TENANT_NOT_FOUND_MESSAGE = "Tenant not found"
 PRIMARY_DOMAIN_MESSAGE = "Primary domain must be replaced before removal"
+DOMAIN_CONFLICT_MESSAGE = "Domain already exists"
 
 
 def _require_platform_actor(db, actor_id: UUID) -> PlatformUser:
@@ -236,7 +237,7 @@ def add_tenant_domain(
     except (TenantActorError, TenantNotFoundError):
         raise
     except IntegrityError:
-        raise TenantConflictError(TENANT_CONFLICT_MESSAGE) from None
+        raise TenantConflictError(DOMAIN_CONFLICT_MESSAGE) from None
     except Exception:
         raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
 
@@ -294,7 +295,7 @@ def update_tenant_domain(
     except (TenantActorError, TenantConflictError, TenantNotFoundError):
         raise
     except IntegrityError:
-        raise TenantConflictError(TENANT_CONFLICT_MESSAGE) from None
+        raise TenantConflictError(DOMAIN_CONFLICT_MESSAGE) from None
     except Exception:
         raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
 

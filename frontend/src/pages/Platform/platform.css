@@ -303,6 +303,16 @@
   font-size: 13px;
 }
 
+.platform-tenants__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.platform-tenants__actions .ant-btn-dangerous {
+  color: #B91C1C;
+}
+
 .platform-tenants__alert {
   margin-top: 24px;
   border-radius: 0 !important;
@@ -366,6 +376,131 @@
   margin-top: 28px;
 }
 
+.platform-tenant-detail .ant-drawer-content,
+.platform-tenant-detail__modal .ant-modal-content {
+  --platform-ink: #0B1220;
+  --platform-paper: #F8FAFC;
+  --platform-signal: #2563EB;
+  --platform-status: #0891B2;
+  --platform-line: #CBD5E1;
+  --platform-muted: #475569;
+  background: var(--platform-paper);
+}
+
+.platform-tenant-detail .ant-drawer-header {
+  border-bottom-color: var(--platform-line);
+}
+
+.platform-tenant-detail .ant-drawer-title,
+.platform-tenant-detail h2 {
+  color: var(--platform-ink);
+  font-weight: 700;
+}
+
+.platform-tenant-detail h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.platform-tenant-detail__summary {
+  margin-bottom: 32px;
+}
+
+.platform-tenant-detail__summary .ant-descriptions-view,
+.platform-tenant-detail__summary .ant-descriptions-item-label,
+.platform-tenant-detail__summary .ant-descriptions-item-content {
+  border-color: var(--platform-line) !important;
+}
+
+.platform-tenant-detail__summary .ant-descriptions-item-label {
+  width: 112px;
+  color: var(--platform-muted);
+  background: rgba(226, 232, 240, 0.48) !important;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.platform-tenant-detail__domains-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__domains-heading .platform-eyebrow {
+  margin-bottom: 6px;
+}
+
+.platform-tenant-detail__domains-heading .ant-btn,
+.platform-tenant-detail__form-actions .ant-btn {
+  min-height: 38px;
+  border-radius: 0;
+  font-weight: 600;
+}
+
+.platform-tenant-detail__domains {
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__domains .ant-list-item {
+  padding: 16px 4px;
+  border-block-end-color: var(--platform-line);
+}
+
+.platform-tenant-detail__domains .ant-list-item-meta-title {
+  color: var(--platform-ink);
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+}
+
+.platform-tenant-detail__domains .ant-list-item-meta-description {
+  color: var(--platform-muted);
+  font-size: 12px;
+}
+
+.platform-tenant-detail__domains .ant-btn-link {
+  padding-inline: 2px;
+}
+
+.platform-tenant-detail__dns-note {
+  margin-top: 24px;
+  border-radius: 0 !important;
+}
+
+.platform-tenant-detail__modal .ant-modal-content {
+  border-radius: 0;
+  box-shadow: 10px 10px 0 rgba(11, 18, 32, 0.08);
+}
+
+.platform-tenant-detail__modal .ant-modal-header {
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__modal .ant-modal-title {
+  color: var(--platform-ink);
+  font-weight: 700;
+}
+
+.platform-tenant-detail__modal .ant-form-item-label > label {
+  color: var(--platform-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.platform-tenant-detail__modal .ant-input {
+  min-height: 40px;
+  border-radius: 0 !important;
+}
+
+.platform-tenant-detail__modal .ant-input:focus {
+  border-color: var(--platform-signal) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14) !important;
+}
+
 .platform-login :focus-visible,
 .platform-shell :focus-visible {
   outline: 3px solid rgba(8, 145, 178, 0.42);
@@ -424,6 +559,19 @@
   .platform-tenants__modal {
     max-width: calc(100vw - 32px);
     margin: 0 auto;
+  }
+
+  .platform-tenants__actions {
+    gap: 8px;
+  }
+
+  .platform-tenant-detail__domains-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .platform-tenant-detail__domains-heading .ant-btn {
+    width: 100%;
   }
 }
 

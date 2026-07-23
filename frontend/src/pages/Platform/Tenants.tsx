@@ -1,16 +1,20 @@
-import { Alert, Button, Form, Input, Modal, Table, Tag } from 'antd';
+import { Alert, Button, Form, Input, Modal, Popconfirm, Table, Tag } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PlatformTenant, TenantOnboardingPayload } from '../../types/platform';
 import platformRequest from '../../utils/platformRequest';
+import TenantDetailDrawer from './TenantDetailDrawer';
 import './platform.css';
 
 interface PlatformTenantsProps {
   onOpenTenant?: (tenantId: string) => void;
 }
 
-const tenantColumns = (onOpenTenant: (tenantId: string) => void): TableColumnsType<PlatformTenant> => [
+const tenantColumns = (
+  onOpenTenant: (tenantId: string) => void,
+  onUpdateStatus: (tenant: PlatformTenant, status: PlatformTenant['status']) => void,
+): TableColumnsType<PlatformTenant> => [
   {
     dataIndex: 'name',
     key: 'name',
@@ -49,9 +53,24 @@ const tenantColumns = (onOpenTenant: (tenantId: string) => void): TableColumnsTy
   {
     key: 'actions',
     title: '操作',
-    width: 104,
+    width: 188,
     render: (_, tenant: PlatformTenant) => (
-      <Button onClick={() => onOpenTenant(tenant.id)} type="link">查看详情</Button>
+      <div className="platform-tenants__actions">
+        <Button onClick={() => onOpenTenant(tenant.id)} type="link">查看详情</Button>
+        {tenant.status === 'active' ? (
+          <Popconfirm
+            cancelText="取消"
+            description="停用后，该公司的用户将无法登录或访问业务接口。"
+            okText="确定"
+            onConfirm={() => onUpdateStatus(tenant, 'inactive')}
+            title="确认停用该公司吗？"
+          >
+            <Button danger type="link">停用</Button>
+          </Popconfirm>
+        ) : (
+          <Button onClick={() => onUpdateStatus(tenant, 'active')} type="link">启用</Button>
+        )}
+      </div>
     ),
   },
 ];
@@ -64,6 +83,8 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
 
   const loadTenants = useCallback(async () => {
     setLoading(true);
@@ -92,6 +113,21 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
   const closeOnboarding = () => {
     setIsOnboardingOpen(false);
     setOnboardingError(null);
+  };
+
+  const handleOpenTenant = (tenantId: string) => {
+    setSelectedTenantId(tenantId);
+    onOpenTenant(tenantId);
+  };
+
+  const handleUpdateStatus = async (tenant: PlatformTenant, status: PlatformTenant['status']) => {
+    setStatusError(null);
+    try {
+      await platformRequest.patch(`/platform/tenants/${tenant.id}/status`, { status });
+      await loadTenants();
+    } catch {
+      setStatusError('公司状态更新失败，请稍后重试');
+    }
   };
 
   const handleOnboard = async (values: TenantOnboardingPayload) => {
@@ -130,6 +166,8 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
         <span>已停用 {stats.inactive}</span>
       </div>
 
+      {statusError && <Alert className="platform-tenants__alert" showIcon title={statusError} type="error" />}
+
       {hasError ? (
         <Alert
           action={<Button icon={<ReloadOutlined />} onClick={() => void loadTenants()} type="primary">重新加载</Button>}
@@ -141,7 +179,7 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
       ) : (
         <Table<PlatformTenant>
           className="platform-tenants__table"
-          columns={tenantColumns(onOpenTenant)}
+          columns={tenantColumns(handleOpenTenant, handleUpdateStatus)}
           dataSource={tenants}
           locale={{ emptyText: '暂无已注册公司' }}
           loading={loading}
@@ -222,6 +260,12 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
           </div>
         </Form>
       </Modal>
+      <TenantDetailDrawer
+        onChanged={() => void loadTenants()}
+        onClose={() => setSelectedTenantId(null)}
+        open={selectedTenantId !== null}
+        tenantId={selectedTenantId}
+      />
     </section>
   );
 };

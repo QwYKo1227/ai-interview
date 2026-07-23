@@ -1,6 +1,6 @@
 import { Alert, Button, Descriptions, Drawer, Form, Input, List, Modal, Popconfirm, Tag } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PlatformDomain, PlatformTenantDetail } from '../../types/platform';
 import platformRequest from '../../utils/platformRequest';
 import './platform.css';
@@ -15,89 +15,124 @@ interface TenantDetailDrawerProps {
 const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetailDrawerProps) => {
   const [domainForm] = Form.useForm<{ domain: string }>();
   const requestVersion = useRef(0);
+  const currentScope = useRef({ open, tenantId });
   const [tenant, setTenant] = useState<PlatformTenantDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [domainModalOpen, setDomainModalOpen] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
   const [editingDomain, setEditingDomain] = useState<PlatformDomain | null>(null);
+  const [domainActionError, setDomainActionError] = useState<string | null>(null);
 
-  const loadTenant = useCallback(async () => {
-    if (!tenantId || !open) return;
+  useLayoutEffect(() => {
+    currentScope.current = { open, tenantId };
+  }, [open, tenantId]);
+
+  const loadTenant = useCallback(async (requestedTenantId: string) => {
+    if (!currentScope.current.open || currentScope.current.tenantId !== requestedTenantId) return;
     const version = requestVersion.current + 1;
     requestVersion.current = version;
     setLoading(true);
     setHasError(false);
 
     try {
-      const response = await platformRequest.get(`/platform/tenants/${tenantId}`) as PlatformTenantDetail;
-      if (requestVersion.current === version) setTenant(response);
+      const response = await platformRequest.get(`/platform/tenants/${requestedTenantId}`) as PlatformTenantDetail;
+      if (requestVersion.current === version && currentScope.current.open && currentScope.current.tenantId === requestedTenantId) {
+        setTenant(response);
+      }
     } catch {
-      if (requestVersion.current === version) setHasError(true);
+      if (requestVersion.current === version && currentScope.current.open && currentScope.current.tenantId === requestedTenantId) {
+        setHasError(true);
+      }
     } finally {
-      if (requestVersion.current === version) setLoading(false);
+      if (requestVersion.current === version && currentScope.current.open && currentScope.current.tenantId === requestedTenantId) {
+        setLoading(false);
+      }
     }
-  }, [open, tenantId]);
+  }, []);
 
   useEffect(() => {
-    void loadTenant();
+    requestVersion.current += 1;
+    setTenant(null);
+    setHasError(false);
+    if (open && tenantId) void loadTenant(tenantId);
     return () => { requestVersion.current += 1; };
-  }, [loadTenant]);
+  }, [loadTenant, open, tenantId]);
 
   const closeDomainModal = () => {
     setDomainModalOpen(false);
     setEditingDomain(null);
+    setDomainActionError(null);
     domainForm.resetFields();
   };
 
   const openCreateDomain = () => {
     setEditingDomain(null);
+    setDomainActionError(null);
     domainForm.resetFields();
     setDomainModalOpen(true);
   };
 
   const openEditDomain = (domain: PlatformDomain) => {
     setEditingDomain(domain);
+    setDomainActionError(null);
     domainForm.setFieldsValue({ domain: domain.domain });
     setDomainModalOpen(true);
   };
 
+  const handleDomainAction = async (operationTenantId: string, operation: () => Promise<unknown>) => {
+    setDomainActionError(null);
+    try {
+      await operation();
+      if (currentScope.current.open && currentScope.current.tenantId === operationTenantId) {
+        await loadTenant(operationTenantId);
+      }
+      onChanged();
+      return true;
+    } catch {
+      setDomainActionError('域名操作失败，请稍后重试');
+      return false;
+    }
+  };
+
   const handleSaveDomain = async ({ domain }: { domain: string }) => {
-    if (!tenantId) return;
+    const operationTenantId = tenantId;
+    if (!operationTenantId) return;
     setSavingDomain(true);
     try {
-      if (editingDomain) {
-        await platformRequest.patch(`/platform/tenants/${tenantId}/domains/${editingDomain.id}`, { domain });
-      } else {
-        await platformRequest.post(`/platform/tenants/${tenantId}/domains`, { domain, is_primary: false });
-      }
-      closeDomainModal();
-      await loadTenant();
-      onChanged();
+      const succeeded = await handleDomainAction(operationTenantId, () => {
+        if (editingDomain) {
+          return platformRequest.patch(`/platform/tenants/${operationTenantId}/domains/${editingDomain.id}`, { domain });
+        }
+        return platformRequest.post(`/platform/tenants/${operationTenantId}/domains`, { domain, is_primary: false });
+      });
+      if (succeeded) closeDomainModal();
     } finally {
       setSavingDomain(false);
     }
   };
 
   const setPrimaryDomain = async (domain: PlatformDomain) => {
-    if (!tenantId) return;
-    await platformRequest.patch(`/platform/tenants/${tenantId}/domains/${domain.id}`, { is_primary: true });
-    await loadTenant();
-    onChanged();
+    const operationTenantId = tenantId;
+    if (!operationTenantId) return;
+    await handleDomainAction(operationTenantId, () => (
+      platformRequest.patch(`/platform/tenants/${operationTenantId}/domains/${domain.id}`, { is_primary: true })
+    ));
   };
 
   const deleteDomain = async (domain: PlatformDomain) => {
-    if (!tenantId) return;
-    await platformRequest.delete(`/platform/tenants/${tenantId}/domains/${domain.id}`);
-    await loadTenant();
-    onChanged();
+    const operationTenantId = tenantId;
+    if (!operationTenantId) return;
+    await handleDomainAction(operationTenantId, () => (
+      platformRequest.delete(`/platform/tenants/${operationTenantId}/domains/${domain.id}`)
+    ));
   };
 
   return (
     <Drawer className="platform-tenant-detail" destroyOnHidden onClose={onClose} open={open} size="large" title="公司详情">
       {hasError ? (
         <Alert
-          action={<Button icon={<ReloadOutlined />} onClick={() => void loadTenant()} type="primary">重新加载</Button>}
+          action={tenantId && <Button icon={<ReloadOutlined />} onClick={() => void loadTenant(tenantId)} type="primary">重新加载</Button>}
           showIcon
           title="公司详情暂时无法加载"
           type="error"
@@ -116,6 +151,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
             </div>
             <Button onClick={openCreateDomain} type="primary">新增域名</Button>
           </div>
+          {domainActionError && <Alert className="platform-tenant-detail__domain-alert" showIcon title={domainActionError} type="error" />}
           <List
             className="platform-tenant-detail__domains"
             dataSource={tenant.domains}

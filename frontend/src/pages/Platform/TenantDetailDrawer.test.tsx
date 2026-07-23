@@ -164,4 +164,108 @@ describe('TenantDetailDrawer', () => {
     await Promise.resolve();
     expect(screen.queryByText('凯锐招聘')).not.toBeInTheDocument();
   });
+
+  it('clears the previous company immediately while the next company detail is loading', async () => {
+    let resolveNext: ((value: typeof tenant) => void) | undefined;
+    const nextRequest = new Promise<typeof tenant>((resolve) => { resolveNext = resolve; });
+    const nextTenant = { ...tenant, id: 'tenant-photonthix', name: '光子科技', code: 'photonthix', domains: [] };
+    mockGet.mockResolvedValueOnce(tenant).mockReturnValueOnce(nextRequest);
+
+    const view = render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    expect(await screen.findByText('凯锐招聘')).toBeInTheDocument();
+
+    view.rerender(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
+    expect(screen.queryByText('凯锐招聘')).not.toBeInTheDocument();
+
+    resolveNext?.(nextTenant);
+    expect(await screen.findByText('光子科技')).toBeInTheDocument();
+  });
+
+  it('does not reload a switched-away tenant after its delayed domain update succeeds', async () => {
+    let resolveUpdate: (() => void) | undefined;
+    const updateRequest = new Promise<void>((resolve) => { resolveUpdate = resolve; });
+    const nextTenant = { ...tenant, id: 'tenant-photonthix', name: '光子科技', code: 'photonthix', domains: [] };
+    mockGet.mockResolvedValueOnce(tenant).mockResolvedValueOnce(nextTenant);
+    mockPatch.mockReturnValueOnce(updateRequest);
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+
+    const view = render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '设为主域名' }));
+    const callsBeforeSwitch = mockGet.mock.calls.length;
+
+    view.rerender(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
+    expect(await screen.findByText('光子科技')).toBeInTheDocument();
+    resolveUpdate?.();
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(mockGet.mock.calls.slice(callsBeforeSwitch)).not.toContainEqual(['/platform/tenants/tenant-careray']);
+    expect(screen.queryByText('凯锐招聘')).not.toBeInTheDocument();
+  });
+
+  it('does not reload a closed tenant after its delayed domain update succeeds', async () => {
+    let resolveUpdate: (() => void) | undefined;
+    const updateRequest = new Promise<void>((resolve) => { resolveUpdate = resolve; });
+    mockGet.mockResolvedValueOnce(tenant);
+    mockPatch.mockReturnValueOnce(updateRequest);
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+
+    const view = render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '设为主域名' }));
+    const callsBeforeClose = mockGet.mock.calls.length;
+
+    view.rerender(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open={false} tenantId="tenant-careray" />);
+    resolveUpdate?.();
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(mockGet.mock.calls.slice(callsBeforeClose)).not.toContainEqual(['/platform/tenants/tenant-careray']);
+  });
+
+  it('shows a Chinese error and keeps domain controls usable when a write fails', async () => {
+    mockGet.mockResolvedValue(tenant);
+    mockPost.mockRejectedValueOnce(new Error('network unavailable'));
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('interview.careray.com');
+    await user.click(screen.getByRole('button', { name: '新增域名' }));
+    fireEvent.change(screen.getByLabelText('域名'), { target: { value: 'jobs.careray.com' } });
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    expect(await screen.findByText('域名操作失败，请稍后重试')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /取\s*消/ })).toBeEnabled();
+  });
+
+  it('refreshes detail and parent list after editing a domain', async () => {
+    mockGet.mockResolvedValue(tenant);
+    mockPatch.mockResolvedValueOnce({});
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes detail and parent list after deleting a domain', async () => {
+    mockGet.mockResolvedValue(tenant);
+    mockDelete.mockResolvedValueOnce({});
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('careers.careray.com');
+    await user.click(screen.getByRole('button', { name: '删除' }));
+    await user.click(screen.getByRole('button', { name: /确\s*定/ }));
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
 });

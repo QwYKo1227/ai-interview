@@ -1,8 +1,9 @@
 from openai import OpenAI
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 import json
 from dotenv import load_dotenv
+from app.schemas.position import JDChatMessage
 from app.utils.prompt_manager import prompt_manager
 from app.config.database import SessionLocal
 from app.services.system_config_service import get_system_config
@@ -393,7 +394,7 @@ def generate_jd_stream(
         yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
 
 def chat_jd_stream(
-    messages: list,
+    messages: List[JDChatMessage],
     current_description: str = "",
     current_requirements: str = ""
 ):
@@ -427,7 +428,7 @@ def chat_jd_stream(
         
         formatted_messages = [{"role": "system", "content": system_prompt}]
         for msg in messages:
-            formatted_messages.append({"role": msg["role"], "content": msg["content"]})
+            formatted_messages.append({"role": msg.role, "content": msg.content})
         
         stream = _get_client().chat.completions.create(
             model=cfg["llm_model"],

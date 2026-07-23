@@ -57,6 +57,54 @@ code {
   min-width: 0;
 }
 
+.resume-detail-split,
+.resume-detail-pane {
+  min-width: 0;
+}
+
+.resume-detail-pane {
+  flex: 1 1 0;
+}
+
+.resume-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  margin-bottom: 16px;
+}
+
+.resume-detail-candidate {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.resume-detail-summary {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.resume-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.resume-preview-header {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.resume-preview-header .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .positions-page-header,
 .positions-filter-bar {
   min-width: 0;
@@ -85,6 +133,18 @@ code {
 @media (max-width: 1599px) {
   .app-content {
     margin: 20px !important;
+  }
+
+  .resume-detail-split {
+    gap: 16px !important;
+  }
+
+  .resume-detail-heading {
+    flex-wrap: wrap;
+  }
+
+  .resume-detail-actions {
+    justify-content: flex-start;
   }
 }
 

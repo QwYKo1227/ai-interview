@@ -502,10 +502,10 @@ const ResumeDetail: React.FC = () => {
       <div style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/resumes')}>返回列表</Button>
       </div>
-      <div style={{ flex: 1, display: 'flex', gap: '24px', overflow: 'hidden' }}>
+      <div className="resume-detail-split" style={{ flex: 1, display: 'flex', flexDirection: 'row', gap: 24, overflow: 'hidden' }}>
       {/* Left: File Preview */}
-      <div style={{ flex: 1, background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '16px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC' }}>
+      <div className="resume-detail-pane resume-preview-pane" style={{ flex: '1 1 0px', background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div className="resume-preview-header" style={{ padding: '16px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC' }}>
           <Title level={5} style={{ margin: 0 }}>简历原件预览</Title>
           <Button type="primary" icon={<DownloadOutlined />} href={fileUrl} target="_blank" download>
             下载原件
@@ -535,14 +535,14 @@ const ResumeDetail: React.FC = () => {
       </div>
 
       {/* Right: AI Analysis & Details */}
-      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
+      <div className="resume-detail-pane resume-analysis-pane" style={{ flex: '1 1 0px', overflowY: 'auto', paddingRight: '4px' }}>
         <Card
           bordered={false}
           style={{ borderRadius: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', border: '1px solid #E2E8F0' }}
         >
           <Form form={form} component={false}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-            <div style={{ flex: 1 }}>
+          <div className="resume-detail-heading">
+            <div className="resume-detail-candidate">
               {isEditing ? (
                   <Form.Item name="candidate_name" style={{ marginBottom: 0 }}>
                     <Input placeholder="姓名" style={{ fontSize: 24, fontWeight: 600, width: 150 }} />
@@ -576,7 +576,7 @@ const ResumeDetail: React.FC = () => {
               </div>
             </div>
 
-            <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div className="resume-detail-summary" style={{ textAlign: 'right' }}>
               <div style={{ textAlign: 'center' }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>匹配度</Text>
                 <div style={{ marginTop: 4 }}>
@@ -595,11 +595,12 @@ const ResumeDetail: React.FC = () => {
                 </Tag>
               </div>
 
-              <Space>
-                {renderActionButtons()}
-              </Space>
             </div>
           </div>
+
+          <Space className="resume-detail-actions" wrap>
+            {renderActionButtons()}
+          </Space>
 
           <Divider style={{ borderColor: '#E2E8F0' }}>简历信息提取</Divider>
           <Descriptions column={2} bordered size="small">

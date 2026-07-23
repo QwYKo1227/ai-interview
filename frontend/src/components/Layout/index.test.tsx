@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import appStyles from '../../index.css?inline'
 import AppLayout from './index'
 
 const screenState = vi.hoisted(() => ({ xxl: false }))
@@ -21,8 +22,19 @@ vi.mock('../../contexts/AuthContext', () => ({
 }))
 
 describe('AppLayout responsiveness', () => {
-  beforeEach(() => { screenState.xxl = false })
-  afterEach(cleanup)
+  let stylesheet: HTMLStyleElement
+
+  beforeEach(() => {
+    screenState.xxl = false
+    stylesheet = document.createElement('style')
+    stylesheet.textContent = appStyles
+    document.head.append(stylesheet)
+  })
+
+  afterEach(() => {
+    cleanup()
+    stylesheet.remove()
+  })
 
   it('collapses the sidebar and synchronizes the content offset on laptop screens', () => {
     const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
@@ -33,6 +45,14 @@ describe('AppLayout responsiveness', () => {
   it('keeps full menu names available in collapsed mode', () => {
     render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
     expect(screen.getByLabelText('岗位管理')).toBeVisible()
+  })
+
+  it('uses compact header padding at laptop widths', () => {
+    const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
+    const header = container.querySelector('.app-header')
+
+    expect(getComputedStyle(header!).paddingLeft).toBe('20px')
+    expect(getComputedStyle(header!).paddingRight).toBe('20px')
   })
 
   it('uses the expanded sidebar on large screens', () => {

@@ -67,10 +67,6 @@ code {
 }
 
 @media (max-width: 1599px) {
-  .app-header {
-    padding-inline: 20px !important;
-  }
-
   .app-content {
     margin: 20px !important;
   }
@@ -130,6 +126,11 @@ code {
   position: sticky;
   top: 0;
   z-index: 100;
+}
+
+.app-header.app-header-compact.ant-layout-header {
+  padding-left: 20px !important;
+  padding-right: 20px !important;
 }
 
 /* Cards */

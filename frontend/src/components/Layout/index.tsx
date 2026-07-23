@@ -191,8 +191,7 @@ const AppLayout: React.FC = () => {
         />
       </Sider>
       <Layout className="app-main-layout" style={{ marginLeft: siderWidth }}>
-        <Header className="app-header" style={{
-          padding: '0 32px', 
+        <Header className={isLaptop ? 'app-header app-header-compact' : 'app-header'} style={{
           display: 'flex', 
           justifyContent: 'space-between', 
           alignItems: 'center',

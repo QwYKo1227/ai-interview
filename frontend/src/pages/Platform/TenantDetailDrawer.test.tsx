@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TenantDetailDrawer from './TenantDetailDrawer';
@@ -54,6 +54,12 @@ const tenant = {
   ],
 };
 
+const domainActions = (domain: string) => {
+  const item = screen.getByText(domain).closest('.ant-list-item');
+  if (!item) throw new Error(`找不到域名列表项：${domain}`);
+  return within(item as HTMLElement);
+};
+
 describe('TenantDetailDrawer', () => {
   afterEach(() => {
     cleanup();
@@ -98,6 +104,46 @@ describe('TenantDetailDrawer', () => {
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
+  it('adds a new domain as primary when selected', async () => {
+    mockGet.mockResolvedValue(tenant);
+    mockPost.mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('interview.careray.com');
+
+    await user.click(screen.getByRole('button', { name: '新增域名' }));
+    fireEvent.change(screen.getByLabelText('域名'), { target: { value: ' Primary.Careray.COM ' } });
+    await user.click(screen.getByRole('checkbox', { name: '设为主域名' }));
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/platform/tenants/tenant-careray/domains', {
+      domain: 'primary.careray.com',
+      is_primary: true,
+    }));
+  });
+
+  it('edits the primary domain without offering delete or set-primary actions', async () => {
+    mockGet.mockResolvedValue(tenant);
+    mockPatch.mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('interview.careray.com');
+    const primaryActions = domainActions('interview.careray.com');
+
+    expect(primaryActions.queryByRole('button', { name: '删除' })).not.toBeInTheDocument();
+    expect(primaryActions.queryByRole('button', { name: '设为主域名' })).not.toBeInTheDocument();
+    await user.click(primaryActions.getByRole('button', { name: '编辑' }));
+    fireEvent.change(screen.getByLabelText('域名'), { target: { value: ' Primary.Careray.COM ' } });
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
+      '/platform/tenants/tenant-careray/domains/domain-primary',
+      { domain: 'primary.careray.com' },
+    ));
+  });
+
   it('edits a secondary domain with the requested endpoint and payload', async () => {
     mockGet.mockResolvedValue(tenant);
     mockPatch.mockResolvedValueOnce({});
@@ -106,7 +152,7 @@ describe('TenantDetailDrawer', () => {
     render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
     await screen.findByText('careers.careray.com');
 
-    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(domainActions('careers.careray.com').getByRole('button', { name: '编辑' }));
     fireEvent.change(screen.getByLabelText('域名'), { target: { value: ' Jobs.Careray.COM ' } });
     await user.click(screen.getByRole('button', { name: /保\s*存/ }));
 
@@ -247,7 +293,7 @@ describe('TenantDetailDrawer', () => {
 
     render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
     await screen.findByText('careers.careray.com');
-    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(domainActions('careers.careray.com').getByRole('button', { name: '编辑' }));
     await user.click(screen.getByRole('button', { name: /保\s*存/ }));
 
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
@@ -276,7 +322,7 @@ describe('TenantDetailDrawer', () => {
 
     const view = render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
     await screen.findByText('careers.careray.com');
-    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(domainActions('careers.careray.com').getByRole('button', { name: '编辑' }));
     expect(screen.getByLabelText('域名')).toHaveValue('careers.careray.com');
 
     view.rerender(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
@@ -297,7 +343,7 @@ describe('TenantDetailDrawer', () => {
 
     const view = render(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-careray" />);
     await screen.findByText('careers.careray.com');
-    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(domainActions('careers.careray.com').getByRole('button', { name: '编辑' }));
     await user.click(screen.getByRole('button', { name: /保\s*存/ }));
 
     view.rerender(<TenantDetailDrawer onChanged={onChanged} onClose={vi.fn()} open tenantId="tenant-photonthix" />);
@@ -321,7 +367,7 @@ describe('TenantDetailDrawer', () => {
 
     const view = render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
     await screen.findByText('careers.careray.com');
-    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(domainActions('careers.careray.com').getByRole('button', { name: '编辑' }));
     await user.click(screen.getByRole('button', { name: /保\s*存/ }));
 
     view.rerender(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-photonthix" />);

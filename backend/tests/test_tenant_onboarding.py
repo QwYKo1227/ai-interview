@@ -132,6 +132,26 @@ def test_onboarding_rejects_invalid_identifiers(overrides):
         make_onboarding_request(**overrides)
 
 
+def test_onboarding_password_accepts_exactly_twelve_utf8_bytes():
+    password = "密A1abcdefg"
+
+    assert len(password) < 12
+    assert len(password.encode("utf-8")) == 12
+    assert make_onboarding_request(admin_password=password).admin_password == password
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        "A1abcdefg",
+        "A1" + "a" * 71,
+    ],
+)
+def test_onboarding_password_rejects_values_outside_utf8_byte_range(password):
+    with pytest.raises(ValidationError):
+        make_onboarding_request(admin_password=password)
+
+
 def test_duplicate_domain_returns_fixed_conflict_without_partial_rows(
     db, platform_admin
 ):
@@ -489,6 +509,46 @@ def test_platform_validation_error_does_not_echo_admin_password(
     assert response.status_code == 422
     assert response.json() == {"detail": "Invalid platform request"}
     assert secret not in response.text
+
+
+def test_platform_create_accepts_exactly_twelve_utf8_byte_password(
+    platform_client, platform_admin
+):
+    headers = platform_login(platform_client, platform_admin)
+    payload = make_onboarding_request().model_dump(mode="json")
+    payload["admin_password"] = "密A1abcdefg"
+
+    response = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 201
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        "A1abcdefg",
+        "A1" + "a" * 71,
+    ],
+)
+def test_platform_create_rejects_passwords_outside_utf8_byte_range(
+    platform_client, platform_admin, password
+):
+    headers = platform_login(platform_client, platform_admin)
+    payload = make_onboarding_request().model_dump(mode="json")
+    payload["admin_password"] = password
+
+    response = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid platform request"}
 
 
 def test_duplicate_platform_onboarding_returns_safe_fixed_409(

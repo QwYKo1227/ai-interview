@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RouterProvider } from 'react-router-dom';
@@ -42,6 +42,16 @@ vi.mock('../../utils/platformRequest', () => ({
 const mockGet = vi.mocked(platformRequest.get);
 const mockPost = vi.mocked(platformRequest.post);
 const mockPatch = vi.mocked(platformRequest.patch);
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+};
 
 const tenants = [
   {
@@ -179,6 +189,80 @@ describe('PlatformTenants', () => {
     expect(await screen.findByText('凯锐招聘')).toBeInTheDocument();
   });
 
+  it('keeps the newest registry data when an older load resolves last', async () => {
+    const olderLoad = deferred<typeof tenants>();
+    const newerLoad = deferred<typeof tenants>();
+    const staleTenant = { ...tenants[0], id: 'tenant-stale', name: '旧公司' };
+    const freshTenant = { ...tenants[1], id: 'tenant-fresh', name: '新公司' };
+    mockGet
+      .mockReturnValueOnce(olderLoad.promise)
+      .mockReturnValueOnce(newerLoad.promise);
+    mockPost.mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<PlatformTenants />);
+    await user.click(screen.getByRole('button', { name: '新建公司' }));
+    fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'fresh' } });
+    fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: '新公司' } });
+    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'fresh.example.com' } });
+    fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@fresh.example.com' } });
+    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
+    await user.click(screen.getByRole('button', { name: '创建公司' }));
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+
+    await act(async () => newerLoad.resolve([freshTenant]));
+    expect(await screen.findByText('新公司')).toBeInTheDocument();
+    await act(async () => olderLoad.resolve([staleTenant]));
+
+    await waitFor(() => {
+      expect(screen.getByText('新公司')).toBeInTheDocument();
+      expect(screen.queryByText('旧公司')).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the newest successful registry when an older load rejects last', async () => {
+    const olderLoad = deferred<typeof tenants>();
+    const newerLoad = deferred<typeof tenants>();
+    const freshTenant = { ...tenants[1], id: 'tenant-fresh', name: '新公司' };
+    mockGet
+      .mockReturnValueOnce(olderLoad.promise)
+      .mockReturnValueOnce(newerLoad.promise);
+    mockPost.mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<PlatformTenants />);
+    await user.click(screen.getByRole('button', { name: '新建公司' }));
+    fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'fresh' } });
+    fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: '新公司' } });
+    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'fresh.example.com' } });
+    fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@fresh.example.com' } });
+    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
+    await user.click(screen.getByRole('button', { name: '创建公司' }));
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+
+    await act(async () => newerLoad.resolve([freshTenant]));
+    expect(await screen.findByText('新公司')).toBeInTheDocument();
+    await act(async () => olderLoad.reject(new Error('旧请求失败')));
+
+    await waitFor(() => {
+      expect(screen.getByText('新公司')).toBeInTheDocument();
+      expect(screen.queryByText('公司注册表暂时无法加载')).not.toBeInTheDocument();
+    });
+  });
+
+  it('ignores a registry load that settles after unmount', async () => {
+    const pendingLoad = deferred<typeof tenants>();
+    mockGet.mockReturnValueOnce(pendingLoad.promise);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(<PlatformTenants />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    await act(async () => pendingLoad.resolve(tenants));
+
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
   it('shows the company management heading', () => {
     mockGet.mockResolvedValueOnce([]);
 
@@ -234,6 +318,32 @@ describe('PlatformTenants', () => {
       admin_email: 'admin@photonthix.com',
       admin_password: boundaryPassword,
     }));
+  });
+
+  it('shows success feedback then closes, resets, and refreshes after onboarding', async () => {
+    mockGet.mockResolvedValue([]);
+    mockPost.mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<PlatformTenants />);
+    await user.click(screen.getByRole('button', { name: '新建公司' }));
+    fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
+    fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
+    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
+    fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
+    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
+    await user.click(screen.getByRole('button', { name: '创建公司' }));
+
+    expect(await screen.findByText('公司创建成功')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '新建公司' })).toHaveClass('ant-zoom-leave'));
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole('button', { name: '新建公司' }));
+    expect(screen.getByLabelText('公司代码')).toHaveValue('');
+    expect(screen.getByLabelText('公司名称')).toHaveValue('');
+    expect(screen.getByLabelText('主域名')).toHaveValue('');
+    expect(screen.getByLabelText('管理员邮箱')).toHaveValue('');
+    expect(screen.getByLabelText('管理员初始密码')).toHaveValue('');
   });
 
   it('accepts a password with fewer than twelve characters when it reaches twelve UTF-8 bytes', async () => {

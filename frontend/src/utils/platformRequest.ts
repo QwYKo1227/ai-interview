@@ -36,10 +36,11 @@ platformRequest.interceptors.request.use(
 platformRequest.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    const sessionIsInvalid = error.response?.status === 401 || error.response?.status === 403;
     const failedRequestToken = getBearerToken(error.config?.headers);
     const currentToken = localStorage.getItem('platform_token');
 
-    if (error.response?.status === 401 && failedRequestToken && failedRequestToken === currentToken) {
+    if (sessionIsInvalid && failedRequestToken && failedRequestToken === currentToken) {
       localStorage.removeItem('platform_token');
       if (window.location.pathname !== '/platform/login') window.location.href = '/platform/login';
     }

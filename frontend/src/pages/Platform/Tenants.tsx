@@ -1,7 +1,7 @@
 import { Alert, Button, Form, Input, Modal, Popconfirm, Table, Tag } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PlatformTenant, TenantOnboardingPayload } from '../../types/platform';
 import platformRequest from '../../utils/platformRequest';
 import TenantDetailDrawer from './TenantDetailDrawer';
@@ -83,25 +83,31 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [onboardingSuccess, setOnboardingSuccess] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const loadTenants = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setHasError(false);
 
     try {
       const response = await platformRequest.get('/platform/tenants') as PlatformTenant[];
-      setTenants(response);
+      if (loadGenerationRef.current === generation) setTenants(response);
     } catch {
-      setHasError(true);
+      if (loadGenerationRef.current === generation) setHasError(true);
     } finally {
-      setLoading(false);
+      if (loadGenerationRef.current === generation) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadTenants();
+    return () => {
+      loadGenerationRef.current += 1;
+    };
   }, [loadTenants]);
 
   const stats = useMemo(() => ({
@@ -113,6 +119,11 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
   const closeOnboarding = () => {
     setIsOnboardingOpen(false);
     setOnboardingError(null);
+  };
+
+  const openOnboarding = () => {
+    setOnboardingSuccess(null);
+    setIsOnboardingOpen(true);
   };
 
   const handleOpenTenant = (tenantId: string) => {
@@ -133,9 +144,11 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
   const handleOnboard = async (values: TenantOnboardingPayload) => {
     setSubmitting(true);
     setOnboardingError(null);
+    setOnboardingSuccess(null);
 
     try {
       await platformRequest.post('/platform/tenants', values);
+      setOnboardingSuccess('公司创建成功');
       form.resetFields();
       closeOnboarding();
       await loadTenants();
@@ -155,7 +168,7 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
           <h1 id="platform-tenants-title">公司管理</h1>
           <p className="platform-tenants__description">查看平台内公司的注册状态和主域名。</p>
         </div>
-        <Button className="platform-tenants__onboard" onClick={() => setIsOnboardingOpen(true)} type="primary">
+        <Button className="platform-tenants__onboard" onClick={openOnboarding} type="primary">
           新建公司
         </Button>
       </div>
@@ -167,6 +180,7 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
       </div>
 
       {statusError && <Alert className="platform-tenants__alert" showIcon title={statusError} type="error" />}
+      {onboardingSuccess && <Alert className="platform-tenants__alert" showIcon title={onboardingSuccess} type="success" />}
 
       {hasError ? (
         <Alert

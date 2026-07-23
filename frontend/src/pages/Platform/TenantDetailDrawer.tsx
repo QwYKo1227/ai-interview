@@ -1,4 +1,4 @@
-import { Alert, Button, Descriptions, Drawer, Form, Input, List, Modal, Popconfirm, Tag } from 'antd';
+import { Alert, Button, Checkbox, Descriptions, Drawer, Form, Input, List, Modal, Popconfirm, Tag } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PlatformDomain, PlatformTenantDetail } from '../../types/platform';
@@ -13,7 +13,7 @@ interface TenantDetailDrawerProps {
 }
 
 const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetailDrawerProps) => {
-  const [domainForm] = Form.useForm<{ domain: string }>();
+  const [domainForm] = Form.useForm<{ domain: string; is_primary: boolean }>();
   const requestVersion = useRef(0);
   const scopeVersion = useRef(0);
   const currentScope = useRef({ open, tenantId });
@@ -83,6 +83,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
     setEditingDomain(null);
     setDomainActionError(null);
     domainForm.resetFields();
+    domainForm.setFieldsValue({ is_primary: false });
     setDomainModalOpen(true);
   };
 
@@ -117,7 +118,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
     }
   };
 
-  const handleSaveDomain = async ({ domain }: { domain: string }) => {
+  const handleSaveDomain = async ({ domain, is_primary = false }: { domain: string; is_primary?: boolean }) => {
     const operationTenantId = tenantId;
     if (!operationTenantId) return;
     const operationScopeVersion = scopeVersion.current;
@@ -127,7 +128,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
         if (editingDomain) {
           return platformRequest.patch(`/platform/tenants/${operationTenantId}/domains/${editingDomain.id}`, { domain });
         }
-        return platformRequest.post(`/platform/tenants/${operationTenantId}/domains`, { domain, is_primary: false });
+        return platformRequest.post(`/platform/tenants/${operationTenantId}/domains`, { domain, is_primary });
       });
       if (result.succeeded && result.isCurrent) closeDomainModal();
     } finally {
@@ -181,12 +182,14 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
             loading={loading}
             locale={{ emptyText: '暂无已登记域名' }}
             renderItem={(domain) => (
-              <List.Item actions={domain.is_primary ? undefined : [
+              <List.Item actions={[
                 <Button key="edit" onClick={() => openEditDomain(domain)} type="link">编辑</Button>,
-                <Button key="primary" onClick={() => void setPrimaryDomain(domain)} type="link">设为主域名</Button>,
-                <Popconfirm cancelText="取消" description="删除后无法恢复。" key="delete" okText="确定" onConfirm={() => void deleteDomain(domain)} title="确认删除此备用域名吗？">
-                  <Button danger type="link">删除</Button>
-                </Popconfirm>,
+                ...(!domain.is_primary ? [
+                  <Button key="primary" onClick={() => void setPrimaryDomain(domain)} type="link">设为主域名</Button>,
+                  <Popconfirm cancelText="取消" description="删除后无法恢复。" key="delete" okText="确定" onConfirm={() => void deleteDomain(domain)} title="确认删除此备用域名吗？">
+                    <Button danger type="link">删除</Button>
+                  </Popconfirm>,
+                ] : []),
               ]}>
                 <List.Item.Meta
                   description={domain.is_primary ? <Tag color="blue">主域名</Tag> : '备用域名'}
@@ -199,10 +202,15 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
         </>
       )}
       <Modal className="platform-tenant-detail__modal" footer={null} onCancel={closeDomainModal} open={domainModalOpen} title={editingDomain ? '编辑域名' : '新增域名'}>
-        <Form<{ domain: string }> form={domainForm} layout="vertical" onFinish={handleSaveDomain} requiredMark={false}>
+        <Form<{ domain: string; is_primary: boolean }> form={domainForm} layout="vertical" onFinish={handleSaveDomain} requiredMark={false}>
           <Form.Item label="域名" name="domain" normalize={(value) => value.trim().toLowerCase()} rules={[{ required: true, message: '请输入域名' }]}>
             <Input autoComplete="url" placeholder="例如：careers.example.com" />
           </Form.Item>
+          {!editingDomain && (
+            <Form.Item name="is_primary" valuePropName="checked">
+              <Checkbox>设为主域名</Checkbox>
+            </Form.Item>
+          )}
           <div className="platform-tenant-detail__form-actions">
             <Button onClick={closeDomainModal}>取消</Button>
             <Button htmlType="submit" loading={savingDomain} type="primary">保存</Button>

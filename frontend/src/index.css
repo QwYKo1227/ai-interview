@@ -48,6 +48,34 @@ code {
   min-height: 100vh;
 }
 
+.app-main-layout {
+  min-width: 0;
+  transition: margin-left 0.2s ease;
+}
+
+.app-content {
+  min-width: 0;
+}
+
+.app-user-name {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+@media (max-width: 1599px) {
+  .app-header {
+    padding-inline: 20px !important;
+  }
+
+  .app-content {
+    margin: 20px !important;
+  }
+}
+
 /* Ant Design Overrides */
 
 /* Layout */

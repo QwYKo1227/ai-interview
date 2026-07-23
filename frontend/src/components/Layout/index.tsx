@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Menu, Button, Avatar, Space, Dropdown, theme, Badge } from 'antd';
+import { Layout, Menu, Button, Avatar, Space, Dropdown, Grid, theme, Tooltip } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -23,6 +23,9 @@ const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { logout, user } = useAuth();
+  const screens = Grid.useBreakpoint();
+  const isLaptop = !screens.xxl;
+  const siderWidth = isLaptop ? 80 : 240;
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
@@ -33,7 +36,7 @@ const AppLayout: React.FC = () => {
     navigate('/login');
   };
 
-  const menuItems = [
+  const rawMenuItems = [
     {
       key: '/dashboard',
       icon: <DashboardOutlined />,
@@ -92,6 +95,17 @@ const AppLayout: React.FC = () => {
     },
   ];
 
+  const menuItems = rawMenuItems.map((item) => ({
+    ...item,
+    icon: isLaptop ? (
+      <Tooltip title={item.label} placement="right">
+        <span className="collapsed-menu-icon" aria-label={item.label} tabIndex={0}>
+          {item.icon}
+        </span>
+      </Tooltip>
+    ) : item.icon,
+  }));
+
   const filteredMenuItems = menuItems.filter(item => {
     if (!item.roles) return true;
     return item.roles.includes(role);
@@ -139,7 +153,10 @@ const AppLayout: React.FC = () => {
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider 
-        collapsible 
+        className="app-sider"
+        collapsed={isLaptop}
+        collapsedWidth={80}
+        trigger={null}
         width={240}
         theme="light"
         style={{
@@ -173,8 +190,8 @@ const AppLayout: React.FC = () => {
           style={{ padding: '16px 8px', borderRight: 0 }}
         />
       </Sider>
-      <Layout style={{ marginLeft: 240 }}>
-        <Header style={{ 
+      <Layout className="app-main-layout" style={{ marginLeft: siderWidth }}>
+        <Header className="app-header" style={{
           padding: '0 32px', 
           display: 'flex', 
           justifyContent: 'space-between', 
@@ -190,12 +207,12 @@ const AppLayout: React.FC = () => {
             <Dropdown menu={userMenu}>
               <Space style={{ cursor: 'pointer' }}>
                 <Avatar style={{ backgroundColor: '#3B82F6' }} icon={<UserOutlined />} />
-                <span style={{ fontWeight: 500, color: '#0F172A' }}>{user?.full_name || user?.email}</span>
+                <span className="app-user-name" style={{ fontWeight: 500, color: '#0F172A' }}>{user?.full_name || user?.email}</span>
               </Space>
             </Dropdown>
           </Space>
         </Header>
-        <Content style={{ margin: '32px', minHeight: 280 }}>
+        <Content className="app-content" style={{ margin: '32px', minHeight: 280 }}>
           <div className="page-container">
             <Outlet />
           </div>

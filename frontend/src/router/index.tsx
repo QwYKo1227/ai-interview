@@ -25,6 +25,10 @@ import SystemSettingsPage from '../pages/Settings/System';
 import PublicReview from '../pages/Public/Review';
 import WorkflowsList from '../pages/Workflows/List';
 import WorkflowEditor from '../pages/Workflows/Editor';
+import PlatformLogin from '../pages/Platform/Login';
+import PlatformTenants from '../pages/Platform/Tenants';
+import PlatformProtectedRoute from '../components/Platform/PlatformProtectedRoute';
+import PlatformLayout from '../components/Platform/PlatformLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { Spin } from 'antd';
 
@@ -43,6 +47,22 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 };
 
 const router = createBrowserRouter([
+  {
+    path: '/platform/login',
+    element: <PlatformLogin />,
+  },
+  {
+    path: '/platform',
+    element: (
+      <PlatformProtectedRoute>
+        <PlatformLayout />
+      </PlatformProtectedRoute>
+    ),
+    children: [
+      { index: true, element: <Navigate replace to="/platform/tenants" /> },
+      { path: 'tenants', element: <PlatformTenants /> },
+    ],
+  },
   {
     path: '/login',
     element: <Login />,

@@ -166,19 +166,204 @@
 
 .platform-tenants {
   position: relative;
-  max-width: 760px;
-  padding: 0 0 28px 28px;
-  border-bottom: 1px solid var(--platform-line);
+  padding-left: 28px;
 }
 
 .platform-tenants::before {
   position: absolute;
   top: 0;
-  bottom: 0;
+  bottom: 28px;
   left: 0;
   width: 5px;
   background: var(--platform-signal);
   content: '';
+}
+
+.platform-tenants__heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenants__description,
+.platform-tenants__modal-description {
+  margin: 12px 0 0;
+  color: var(--platform-muted);
+  font-size: 14px;
+}
+
+.platform-tenants__onboard,
+.platform-tenants__form-actions .ant-btn {
+  min-height: 40px;
+  border-radius: 0 !important;
+  font-weight: 600;
+}
+
+.platform-tenants__stats {
+  display: flex;
+  margin: 0;
+  border-bottom: 1px solid var(--platform-line);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.platform-tenants__stats span {
+  position: relative;
+  flex: 1;
+  padding: 14px 18px;
+  color: var(--platform-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  letter-spacing: 0.015em;
+}
+
+.platform-tenants__stats span + span {
+  border-left: 1px solid var(--platform-line);
+}
+
+.platform-tenants__stats span::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 9px 1px 0;
+  background: var(--platform-status);
+  content: '';
+}
+
+.platform-tenants__stats span:first-child::before {
+  background: var(--platform-signal);
+}
+
+.platform-tenants__stats span:last-child::before {
+  background: #64748B;
+}
+
+.platform-tenants__table {
+  border: 1px solid var(--platform-line);
+  border-top: 0;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.platform-tenants__table .ant-table {
+  border-radius: 0 !important;
+  background: transparent;
+}
+
+.platform-tenants__table .ant-table-thead > tr > th {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  color: var(--platform-muted);
+  background: rgba(226, 232, 240, 0.48);
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+.platform-tenants__table .ant-table-tbody > tr > td {
+  padding-top: 16px;
+  padding-bottom: 16px;
+  border-bottom-color: rgba(203, 213, 225, 0.76);
+  color: var(--platform-ink);
+  font-size: 14px;
+}
+
+.platform-tenants__table .ant-table-tbody > tr:hover > td {
+  background: rgba(37, 99, 235, 0.045) !important;
+}
+
+.platform-tenants__company {
+  display: grid;
+  gap: 5px;
+}
+
+.platform-tenants__company strong {
+  font-weight: 650;
+}
+
+.platform-tenants__company code {
+  color: var(--platform-signal);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+.platform-tenants__table .ant-tag {
+  min-width: 56px;
+  margin-inline-end: 0;
+  border-radius: 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.platform-tenants__table .ant-btn-link {
+  padding: 0;
+  color: var(--platform-signal);
+  font-size: 13px;
+}
+
+.platform-tenants__alert {
+  margin-top: 24px;
+  border-radius: 0 !important;
+}
+
+.platform-tenants__alert .ant-alert-actions .ant-btn {
+  border-radius: 0;
+}
+
+.platform-tenants__modal .ant-modal-content {
+  --platform-ink: #0B1220;
+  --platform-signal: #2563EB;
+  --platform-line: #CBD5E1;
+  --platform-muted: #475569;
+  border-radius: 0;
+  box-shadow: 10px 10px 0 rgba(11, 18, 32, 0.08);
+}
+
+.platform-tenants__modal .ant-modal-header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenants__modal .ant-modal-title {
+  color: var(--platform-ink);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.platform-tenants__form {
+  margin-top: 24px;
+}
+
+.platform-tenants__form .ant-form-item-label > label {
+  color: var(--platform-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.platform-tenants__form .ant-input,
+.platform-tenants__form .ant-input-affix-wrapper {
+  min-height: 40px;
+  border-radius: 0 !important;
+}
+
+.platform-tenants__form .ant-input:focus,
+.platform-tenants__form .ant-input-affix-wrapper:focus-within {
+  border-color: var(--platform-signal) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14) !important;
+}
+
+.platform-tenants__modal-alert {
+  margin-top: 20px;
+  border-radius: 0 !important;
+}
+
+.platform-tenants__form-actions {
+  display: flex;
+  justify-content: end;
+  gap: 10px;
+  margin-top: 28px;
 }
 
 .platform-login :focus-visible,
@@ -211,6 +396,34 @@
   .platform-shell__content {
     width: min(100% - 32px, 1200px);
     padding-top: 48px;
+  }
+
+  .platform-tenants {
+    padding-left: 20px;
+  }
+
+  .platform-tenants__heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .platform-tenants__onboard {
+    width: 100%;
+  }
+
+  .platform-tenants__stats {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .platform-tenants__stats span + span {
+    border-top: 1px solid var(--platform-line);
+    border-left: 0;
+  }
+
+  .platform-tenants__modal {
+    max-width: calc(100vw - 32px);
+    margin: 0 auto;
   }
 }
 

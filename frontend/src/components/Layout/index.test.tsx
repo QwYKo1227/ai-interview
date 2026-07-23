@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import appStyles from '../../index.css?inline'
@@ -42,9 +42,52 @@ describe('AppLayout responsiveness', () => {
     expect(container.querySelector('.app-main-layout')).toHaveStyle({ marginLeft: '80px' })
   })
 
-  it('keeps full menu names available in collapsed mode', () => {
-    render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
-    expect(screen.getByLabelText('岗位管理')).toBeVisible()
+  it('hides the complete title beside a direct menu icon in collapsed mode', () => {
+    const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
+    const menuItem = container.querySelector<HTMLElement>('.ant-menu-item-selected')!
+    const icon = menuItem.querySelector(':scope > .ant-menu-item-icon')
+    const title = within(menuItem).getByText('岗位管理')
+
+    expect(icon).toBeInTheDocument()
+    expect(title).toHaveClass('ant-menu-title-content')
+    expect(getComputedStyle(title).opacity).toBe('0')
+  })
+
+  it('shows one complete collapsed menu tooltip on pointer hover', async () => {
+    const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
+    const menuItem = container.querySelector<HTMLElement>('.ant-menu-item-selected')!
+    const icon = within(menuItem).getByLabelText('user')
+
+    fireEvent.mouseEnter(icon)
+
+    await waitFor(() => expect(screen.getAllByRole('tooltip')).toHaveLength(1))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(/^岗位管理$/)
+  })
+
+  it('shows one complete collapsed menu tooltip when the menuitem receives focus', async () => {
+    const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
+    const menuItem = container.querySelector<HTMLElement>('.ant-menu-item-selected')!
+
+    fireEvent.focus(menuItem)
+
+    await waitFor(() => expect(screen.getAllByRole('tooltip')).toHaveLength(1))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(/^岗位管理$/)
+  })
+
+  it('keeps the complete accessible name on the collapsed menuitem without an inner tab stop', () => {
+    const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
+    const menuItem = screen.getByRole('menuitem', { name: '岗位管理' })
+    const focusableDescendants = [...menuItem.querySelectorAll<HTMLElement>('*')]
+      .filter((element) => element.tabIndex >= 0)
+
+    expect(container.querySelector('.collapsed-menu-icon')).not.toBeInTheDocument()
+    expect(focusableDescendants).toHaveLength(0)
+  })
+
+  it('uses compact branding on laptop screens', () => {
+    const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
+
+    expect(container.querySelector('.app-brand')).toHaveTextContent(/^AI$/)
   })
 
   it('uses compact header padding at laptop widths', () => {
@@ -60,5 +103,6 @@ describe('AppLayout responsiveness', () => {
     const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
     expect(container.querySelector('.app-sider')).not.toHaveClass('ant-layout-sider-collapsed')
     expect(container.querySelector('.app-main-layout')).toHaveStyle({ marginLeft: '240px' })
+    expect(container.querySelector('.app-brand')).toHaveTextContent(/^AI Interview$/)
   })
 })

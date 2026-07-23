@@ -180,7 +180,9 @@ describe('PlatformTenants', () => {
     mockGet.mockResolvedValue([]);
     mockPost.mockResolvedValueOnce({});
     const user = userEvent.setup();
-    const multibytePassword = '测测测测A1';
+    const multibytePassword = '密A1abcdefg';
+
+    expect(new TextEncoder().encode(multibytePassword).length).toBe(12);
 
     render(<PlatformTenants />);
 

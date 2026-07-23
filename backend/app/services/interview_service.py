@@ -10,6 +10,7 @@ from app.config.tenant_session import tenant_session
 from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
 from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_resource_files, unlink_file_locations
+from app.services.interview_access import is_interviewer_assigned
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +57,12 @@ def submit_interview_panel_score(db: Session, interview_id: UUID, interviewer_id
     if not db_interview:
         return None, False
 
+    if not is_interviewer_assigned(db, db_interview, interviewer_id):
+        raise HTTPException(status_code=403, detail="Interview assignment required")
+
     if db_interview.status == InterviewStatus.SCHEDULED:
         db_interview.status = InterviewStatus.IN_PROGRESS
         print(f"Interview {interview_id} status auto-changed to IN_PROGRESS on first score submission")
-        db.commit()
-
-    if not db_interview.panel_members or len(db_interview.panel_members) == 0:
-        db_interview.panel_members = [str(interviewer_id)]
         db.commit()
 
     panel = db.query(InterviewPanel).filter(
@@ -814,12 +814,11 @@ def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID
     if not db_interview:
         return None
 
+    if not is_interviewer_assigned(db, db_interview, interviewer_id):
+        raise HTTPException(status_code=403, detail="Interview assignment required")
+
     if db_interview.status == InterviewStatus.SCHEDULED:
         db_interview.status = InterviewStatus.IN_PROGRESS
-        db.commit()
-
-    if not db_interview.panel_members or len(db_interview.panel_members) == 0:
-        db_interview.panel_members = [str(interviewer_id)]
         db.commit()
 
     avg_score = sum(score_data.scores.values()) // len(score_data.scores) if score_data.scores else 0

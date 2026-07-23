@@ -507,6 +507,50 @@ def test_duplicate_platform_onboarding_returns_safe_fixed_409(
     assert "admin_password" not in second.text
 
 
+def test_platform_write_on_registered_company_host_uses_isolated_host_session(
+    platform_client, db, tenant_a, platform_admin, monkeypatch
+):
+    """专属域名校验不得占用平台写事务所使用的 Session。"""
+
+    company_host = "platform-entry.careray.example"
+    db.add(
+        TenantDomain(
+            tenant_id=tenant_a.id,
+            domain=company_host,
+            is_primary=True,
+        )
+    )
+    db.commit()
+    monkeypatch.setenv("UNIFIED_ENTRY_HOSTS", "")
+
+    login = platform_client.post(
+        "/api/platform/auth/login",
+        headers={"Host": company_host},
+        json={
+            "email": platform_admin.email,
+            "password": "PlatformPassword123",
+        },
+    )
+    assert login.status_code == 200
+
+    payload = make_onboarding_request(
+        code="dedicated-host-created",
+        primary_domain="dedicated-host-created.example",
+        admin_email="admin@dedicated-host-created.example",
+    ).model_dump(mode="json")
+    created = platform_client.post(
+        "/api/platform/tenants",
+        headers={
+            "Host": company_host,
+            "Authorization": f"Bearer {login.json()['access_token']}",
+        },
+        json=payload,
+    )
+
+    assert created.status_code == 201
+    assert created.json()["code"] == "dedicated-host-created"
+
+
 def test_disabled_tenant_rejects_new_login_and_old_token_with_403_but_keeps_data(
     platform_client, db, platform_admin
 ):

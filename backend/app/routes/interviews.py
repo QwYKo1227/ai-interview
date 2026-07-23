@@ -19,7 +19,10 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import logging
 from app.core.observability import background_task_context
-from app.services.interview_access import require_interview_access
+from app.services.interview_access import (
+    require_interview_access,
+    require_interview_assignment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ def submit_panel_score_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
+    require_interview_assignment(db, interview_id, current_user)
     panel, all_submitted = submit_interview_panel_score(db, interview_id, current_user.id, score_data)
     
     if not panel:
@@ -321,6 +325,7 @@ def submit_score_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
+    require_interview_assignment(db, interview_id, current_user)
     db_interview = submit_interview_score(db, interview_id, current_user.id, score_data, background_tasks)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -579,9 +584,7 @@ def submit_direct_evaluation(
     current_user: User = Depends(get_current_user)
 ):
     """直接提交面试评价（无需面试题），支持结合录音转写内容"""
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_assignment(db, interview_id, current_user)
 
     transcripts = interview.transcripts or {}
     full_transcript_data = transcripts.get("full_interview", "")
@@ -704,7 +707,7 @@ def submit_direct_evaluation_with_audio(
     """同时上传录音和评价，AI综合分析生成最终评价"""
     from app.services.audio_service import transcribe_audio
 
-    interview = require_interview_access(db, interview_id, current_user)
+    interview = require_interview_assignment(db, interview_id, current_user)
 
     tenant_id = get_tenant_id(db)
     old_files = tenant_files_from_urls(

@@ -74,4 +74,21 @@ def resolve_request_origin(db: Session, request: Request) -> HostResolution:
         hostname = resolve_request_host(request)
     except ValueError as exc:
         raise _unknown_host() from exc
-    return resolve_host(db, hostname)
+    if hostname in configured_unified_hosts():
+        return HostResolution(hostname=hostname, domain=None)
+
+    # Host validation must not leave an implicit read transaction on the
+    # business Session used by a platform write immediately afterwards.
+    from app.config.database import SessionLocal
+
+    host_db = SessionLocal()
+    try:
+        resolution = resolve_host(host_db, hostname)
+        if resolution.domain is not None:
+            # Detach the fully loaded row before rollback so callers can read
+            # tenant_id without reopening the short-lived validation Session.
+            host_db.expunge(resolution.domain)
+        return resolution
+    finally:
+        host_db.rollback()
+        host_db.close()

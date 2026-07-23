@@ -23,6 +23,8 @@ from uuid import UUID
 from app.services.public_token_service import resolve_public_tenant
 from app.core.rate_limit import enforce_rate_limit
 from app.core.proxy import resolve_request_host
+import hashlib
+import re
 
 router = APIRouter(
     prefix="/resumes",
@@ -81,6 +83,31 @@ def validate_pdf_file(file: UploadFile):
         raise HTTPException(status_code=400, detail="只允许上传 PDF 格式的文件")
     return file
 
+
+def _public_upload_rate_subject(
+    tenant_id: UUID,
+    position_id: UUID,
+    *,
+    candidate_name: str | None,
+    email: str | None,
+    contact: str | None,
+) -> str:
+    """Build one stable, non-reversible candidate identity for rate limiting."""
+
+    normalized_name = " ".join((candidate_name or "").strip().casefold().split())
+    normalized_email = (email or "").strip().casefold()
+    normalized_contact = re.sub(r"\D+", "", contact or "")
+    payload = "\x1f".join(
+        (
+            str(tenant_id),
+            str(position_id),
+            normalized_name,
+            normalized_email,
+            normalized_contact,
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 # 注意：单简历上传保持公开，因为应聘者可能通过公开链接投递
 @router.post("", response_model=ResumeResponse)
 def create_resume_route(
@@ -98,7 +125,18 @@ def create_resume_route(
     tenant_id = resolve_public_tenant(
         db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
-    enforce_rate_limit(request, "public_upload", tenant_id)
+    enforce_rate_limit(request, "public_upload_tenant", tenant_id)
+    enforce_rate_limit(
+        request,
+        "public_upload",
+        _public_upload_rate_subject(
+            tenant_id,
+            position_id,
+            candidate_name=candidate_name,
+            email=email,
+            contact=contact,
+        ),
+    )
     return upload_public_resume(
         db, file, position_id, background_tasks, candidate_name, email, contact
     )

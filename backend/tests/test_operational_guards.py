@@ -2,7 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import inspect
 import logging
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -177,6 +179,21 @@ def test_request_host_accepts_forwarded_host_only_from_a_trusted_proxy(monkeypat
     assert resolve_request_host(forged) == "direct.example"
 
 
+def test_invalid_trusted_proxy_cidr_is_a_startup_configuration_error(monkeypatch):
+    from app.core.proxy import trusted_proxy_networks
+
+    monkeypatch.setenv(
+        "TRUSTED_PROXY_CIDRS",
+        "10.0.0.0/8,this-is-not-a-network",
+    )
+    with pytest.raises(RuntimeError, match="TRUSTED_PROXY_CIDRS"):
+        trusted_proxy_networks()
+
+    root = Path(__file__).parents[2]
+    main = (root / "backend" / "app" / "main.py").read_text(encoding="utf-8")
+    assert main.index("validate_proxy_configuration()") < main.index("seed_db()")
+
+
 def test_rate_limit_enforces_ip_and_subject_quotas_independently():
     from app.core.rate_limit import (
         ApplicationRateLimiter,
@@ -323,6 +340,59 @@ def test_public_upload_has_its_own_429_tier(
     assert limited.status_code == 429
 
 
+def test_public_upload_subject_is_stable_private_and_preserves_ip_quota():
+    from app.core.rate_limit import ApplicationRateLimiter, RateLimit, enforce_rate_limit
+    from app.routes.resumes import _public_upload_rate_subject
+
+    tenant_id, position_id = uuid4(), uuid4()
+    first = _public_upload_rate_subject(
+        tenant_id,
+        position_id,
+        candidate_name="  Candidate One ",
+        email=" PERSON@Example.COM ",
+        contact=" 138-0013-8000 ",
+    )
+    normalized = _public_upload_rate_subject(
+        tenant_id,
+        position_id,
+        candidate_name="candidate one",
+        email="person@example.com",
+        contact="13800138000",
+    )
+    second = _public_upload_rate_subject(
+        tenant_id,
+        position_id,
+        candidate_name="Candidate Two",
+        email="other@example.com",
+        contact=None,
+    )
+
+    assert first == normalized
+    assert first != second
+    assert len(first) == 64
+    assert "person@example.com" not in first
+
+    app = FastAPI()
+    app.state.rate_limiter = ApplicationRateLimiter(
+        policies={"public_upload": RateLimit(limit=1, window_seconds=60)}
+    )
+    enforce_rate_limit(_request(app, "198.51.100.10"), "public_upload", first)
+    enforce_rate_limit(_request(app, "198.51.100.11"), "public_upload", second)
+    with pytest.raises(HTTPException) as rotated_identity:
+        enforce_rate_limit(
+            _request(app, "198.51.100.10"),
+            "public_upload",
+            _public_upload_rate_subject(
+                tenant_id,
+                position_id,
+                candidate_name="Rotated",
+                email="rotated@example.com",
+                contact=None,
+            ),
+        )
+    assert rotated_identity.value.status_code == 429
+
+
 def test_public_code_run_has_its_own_429_tier(client, monkeypatch):
     from app.core.rate_limit import ApplicationRateLimiter, RateLimit
     from app.routes import coding_tests
@@ -416,9 +486,68 @@ def test_production_access_logs_cannot_record_public_token_urls():
     assert "--no-access-log" in compose
     assert "TRUSTED_PROXY_CIDRS" in compose
     assert "header_up X-Forwarded-For {remote_host}" in caddy
-    assert "map $uri $loggable_request" in nginx
-    assert "~^/api/public/ 0" in nginx
+    assert "map $request_uri $loggable_request" in nginx
+    assert "map $uri $loggable_request" not in nginx
     assert "access_log /var/log/nginx/access.log main if=$loggable_request;" in nginx
+    for prefix in (
+        "/api/public/",
+        "/public/coding-tests/",
+        "/public/review/",
+        "/offer-confirm/",
+    ):
+        assert prefix in nginx
+    assert nginx.count("access_log off;") >= 2
+    assert nginx.count("error_log /dev/null crit;") >= 2
+    verifier = (
+        root / "scripts" / "verify-nginx-token-logs.sh"
+    ).read_text(encoding="utf-8")
+    windows_verifier = (
+        root / "scripts" / "verify-nginx-token-logs.ps1"
+    ).read_text(encoding="utf-8")
+    for token_kind in ("coding", "offer", "review"):
+        assert token_kind in verifier
+        assert token_kind in windows_verifier
+    assert "docker logs" in verifier
+    assert "docker logs" in windows_verifier
+    assert "SENTINEL" in verifier
+    assert "sentinel" in windows_verifier
+
+
+def test_rollout_host_allowlist_and_https_order_match_production_policy():
+    root = Path(__file__).parents[2]
+    rollout = (
+        root / "docs" / "deployment" / "multi-tenant-production-rollout.md"
+    ).read_text(encoding="utf-8")
+
+    drill_start = rollout.index("export DRILL_API_PORT")
+    drill_end = rollout.index("数据库、文件、18 表对比", drill_start)
+    drill = rollout[drill_start:drill_end]
+    assert "-e UNIFIED_ENTRY_HOSTS=127.0.0.1" in drill
+
+    formal_start = rollout.index("## 5.")
+    formal_end = rollout.index("## 7.", formal_start)
+    formal = rollout[formal_start:formal_end]
+    assert formal.index("up -d caddy") < formal.index("PLATFORM_TOKEN=")
+    assert "--cacert" in formal
+    assert "https://interview.careray.com/api/platform/auth/login" in formal
+    assert "http://127.0.0.1/api/platform/auth/login" not in formal
+
+
+def test_postgres_integration_does_not_replace_the_production_role_script():
+    root = Path(__file__).parents[2]
+    integration = (
+        root / "backend" / "tests" / "integration" / "test_postgres_rls.py"
+    ).read_text(encoding="utf-8")
+    runner = (
+        root / "backend" / "tests" / "integration" / "run_postgres_suite.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "_initialize_roles_directly" not in integration
+    assert "/docker-entrypoint-initdb.d/01-app-roles.sh" in integration
+    assert "COPY (SELECT '') TO PROGRAM" in integration
+    assert "/docker-entrypoint-initdb.d/01-app-roles.sh" in runner
+    assert "TEST_POSTGRES_ROLE_SCRIPT_VIA_COPY_PROGRAM=1" in runner
+    assert runner.index("01-app-roles.sh") < runner.index("pytest")
 
 
 def test_local_startup_uses_roles_alembic_and_tenant_scoped_seed():

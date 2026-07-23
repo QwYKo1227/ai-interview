@@ -750,8 +750,15 @@ def test_create_user_maps_database_unique_race_to_stable_conflict(
     )
     rollbacks = []
 
+    class Diagnostic:
+        constraint_name = "uq_users_tenant_lower_email"
+
+    class UniqueEmailViolation(RuntimeError):
+        sqlstate = "23505"
+        diag = Diagnostic()
+
     def raise_unique_conflict(_session):
-        raise IntegrityError("INSERT users", {}, RuntimeError("unique conflict"))
+        raise IntegrityError("INSERT users", {}, UniqueEmailViolation("unique conflict"))
 
     real_rollback = TenantSession.rollback
 
@@ -777,3 +784,32 @@ def test_create_user_maps_database_unique_race_to_stable_conflict(
     assert response.status_code == 409
     assert response.json() == {"detail": "Email already registered"}
     assert rollbacks
+
+
+def test_email_unique_conflict_classifier_rejects_other_integrity_errors():
+    from sqlalchemy.exc import IntegrityError
+    from app.routes.auth import _is_email_unique_conflict
+
+    class Diagnostic:
+        constraint_name = None
+
+    class DatabaseViolation(RuntimeError):
+        sqlstate = None
+        diag = Diagnostic()
+
+    def error(sqlstate, constraint_name):
+        original = DatabaseViolation("database error")
+        original.sqlstate = sqlstate
+        original.diag.constraint_name = constraint_name
+        return IntegrityError("INSERT users", {}, original)
+
+    assert _is_email_unique_conflict(
+        error("23505", "uq_users_tenant_lower_email")
+    )
+    assert not _is_email_unique_conflict(error("23505", "uq_users_tenant_id_id"))
+    assert not _is_email_unique_conflict(
+        error("23503", "fk_users_tenant_id_tenants")
+    )
+    assert not _is_email_unique_conflict(
+        IntegrityError("INSERT users", {}, RuntimeError("generic integrity error"))
+    )

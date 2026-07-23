@@ -262,6 +262,17 @@ def get_users(
 ):
     return db.query(User).offset(skip).limit(limit).all()
 
+def _is_email_unique_conflict(error: IntegrityError) -> bool:
+    original = error.orig
+    sqlstate = getattr(original, "sqlstate", getattr(original, "pgcode", None))
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    return (
+        sqlstate == "23505"
+        and constraint_name == "uq_users_tenant_lower_email"
+    )
+
+
 @router.post("/users", response_model=UserResponse)
 def create_user(
     user: UserCreate,
@@ -286,12 +297,14 @@ def create_user(
     db.add(new_user)
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as error:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
-        ) from None
+        if _is_email_unique_conflict(error):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            ) from None
+        raise
     db.refresh(new_user)
     return new_user
 

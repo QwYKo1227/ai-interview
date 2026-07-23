@@ -14,9 +14,10 @@ from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import InterviewPanel, Resume, User, UserRole
+from app.models.models import Interview, InterviewPanel, Resume, User, UserRole
 from app.models.tenant_models import PublicAccessToken, TenantDomain
 from app.routes import files
+from app.schemas.interview import InterviewScore
 from app.services.public_token_service import hash_token
 from app.utils.file_storage import (
     MAX_UPLOAD_SIZE,
@@ -420,6 +421,102 @@ def test_unassigned_interviewer_cannot_upload_direct_evaluation_audio(
 
     assert exc.value.status_code == 403
     assert scoped.query(StoredFile).count() == 0
+    scoped.close()
+
+
+def test_unassigned_interviewer_cannot_score_then_reuse_created_panel_for_audio(
+    db, tenant_a, test_interview, tmp_path, monkeypatch
+):
+    """评分、直接评价和音频能力必须共享同一份预先分配授权。"""
+
+    from app.routes import interviews as interview_routes
+
+    intruder = _unassigned_interviewer(db, tenant_a.id)
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    score = InterviewScore(scores={"0": 9}, comments={"0": "unauthorized"})
+    direct = interview_routes.DirectEvaluationRequest(
+        evaluation="unauthorized",
+        suggestion="hire",
+        score=9,
+    )
+
+    scoring_actions = (
+        lambda: interview_routes.submit_panel_score_route(
+            test_interview.id,
+            score,
+            BackgroundTasks(),
+            scoped,
+            intruder,
+        ),
+        lambda: interview_routes.submit_score_route(
+            test_interview.id,
+            score,
+            BackgroundTasks(),
+            scoped,
+            intruder,
+        ),
+        lambda: interview_routes.submit_direct_evaluation(
+            test_interview.id,
+            direct,
+            BackgroundTasks(),
+            scoped,
+            intruder,
+        ),
+    )
+    for action in scoring_actions:
+        with pytest.raises(HTTPException) as exc:
+            action()
+        assert exc.value.status_code == 403
+
+    persisted = scoped.query(Interview).filter(Interview.id == test_interview.id).one()
+    assert persisted.panel_members == test_interview.panel_members
+    assert persisted.scores is None
+    assert persisted.evaluation is None
+    assert (
+        scoped.query(InterviewPanel)
+        .filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == intruder.id,
+        )
+        .first()
+        is None
+    )
+
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(
+        interview_routes, "transcribe_audio", lambda _path: {"text": "should-not-run"}
+    )
+    with pytest.raises(HTTPException) as audio_error:
+        interview_routes.upload_audio_route(
+            test_interview.id,
+            "0",
+            _upload("voice.webm", b"audio", "audio/webm"),
+            scoped,
+            intruder,
+        )
+    assert audio_error.value.status_code == 403
+
+    stored = save_upload_file(
+        _upload("existing.webm", b"audio", "audio/webm"),
+        tenant_a.id,
+        "interview_audio",
+        root=tmp_path,
+        resource_type="interview",
+        resource_id=test_interview.id,
+    )
+    scoped.add(stored)
+    scoped.commit()
+    with TestClient(
+        _app(db, tenant_a, tmp_path, current_user=intruder)
+    ) as client:
+        download = client.get(f"/api/files/{stored.id}")
+        publish = client.post(
+            f"/api/files/{stored.id}/public-token",
+            json={"ttl_seconds": 120},
+        )
+    assert download.status_code == 404
+    assert publish.status_code == 404
+    assert db.query(PublicAccessToken).count() == 0
     scoped.close()
 
 

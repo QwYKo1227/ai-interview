@@ -15,6 +15,9 @@ from app.core.security import get_password_hash
 from app.services.workflow_service import create_builtin_workflows
 from app.core.observability import install_observability
 from app.core.rate_limit import get_rate_limiter
+from app.core.proxy import validate_proxy_configuration
+
+validate_proxy_configuration()
 
 # Seed initial user if not exists
 def seed_db():

@@ -1528,6 +1528,7 @@ def test_audio_transcription_exception_is_redacted_from_response_and_database(
     business_client,
     auth_headers,
     db,
+    test_user,
     test_interview,
     monkeypatch,
     capsys,
@@ -1567,6 +1568,12 @@ def test_audio_transcription_exception_is_redacted_from_response_and_database(
     monkeypatch.setattr(
         interview_routes, "generate_combined_evaluation", lambda *_args: None
     )
+    if endpoint == "direct-evaluation-with-audio":
+        test_interview.panel_members = [
+            *(test_interview.panel_members or []),
+            str(test_user.id),
+        ]
+        db.commit()
 
     with caplog.at_level("WARNING"):
         response = business_client.post(

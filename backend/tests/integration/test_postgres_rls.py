@@ -1,13 +1,16 @@
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import sys
 import time
+from threading import Barrier
 from urllib.parse import quote, urlsplit, urlunsplit
 import uuid
 
@@ -15,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -131,14 +134,62 @@ def _run_alembic(url: str, *arguments: str) -> subprocess.CompletedProcess:
 
 
 def _run_role_script() -> subprocess.CompletedProcess:
-    if os.getenv("TEST_POSTGRES_ROLE_SCRIPT_DIRECT") == "1":
+    if os.getenv("TEST_POSTGRES_ROLE_SCRIPT_VIA_COPY_PROGRAM") == "1":
+        runtime_url = os.environ["TEST_DATABASE_URL"]
+        admin_url = _url_with_credentials(
+            runtime_url,
+            os.getenv("TEST_POSTGRES_ADMIN_USER", "postgres"),
+            os.getenv("TEST_POSTGRES_ADMIN_PASSWORD", "postgres_test_password"),
+        )
+        engine = create_engine(admin_url, poolclass=NullPool)
+        command = [
+            "COPY",
+            "PROGRAM",
+            "/docker-entrypoint-initdb.d/01-app-roles.sh",
+        ]
+        role_environment = {
+            "POSTGRES_USER": os.getenv("TEST_POSTGRES_ADMIN_USER", "postgres"),
+            "POSTGRES_DB": os.getenv(
+                "TEST_POSTGRES_DB", "ai_interview_test"
+            ),
+            "POSTGRES_PASSWORD": os.getenv(
+                "TEST_POSTGRES_ADMIN_PASSWORD", "postgres_test_password"
+            ),
+            "APP_RUNTIME_PASSWORD": os.getenv(
+                "TEST_APP_RUNTIME_PASSWORD", "runtime_test_password"
+            ),
+            "APP_MIGRATION_PASSWORD": os.getenv(
+                "TEST_APP_MIGRATION_PASSWORD", "migration_test_password"
+            ),
+        }
+        program = "env " + " ".join(
+            f"{name}={shlex.quote(value)}"
+            for name, value in role_environment.items()
+        )
+        program += (
+            " sh /docker-entrypoint-initdb.d/01-app-roles.sh "
+            ">/tmp/ai-interview-role-script.log 2>&1"
+        )
+        program_sql_literal = program.replace("'", "''")
         try:
-            _initialize_roles_directly()
+            with engine.connect().execution_options(
+                isolation_level="AUTOCOMMIT"
+            ) as connection:
+                connection.exec_driver_sql(
+                    "COPY (SELECT '') TO PROGRAM "
+                    f"'{program_sql_literal}'"
+                )
         except Exception as error:
             return subprocess.CompletedProcess(
-                ["direct-role-initializer"], 1, "", type(error).__name__
+                command,
+                1,
+                "",
+                type(error).__name__,
             )
-        return subprocess.CompletedProcess(["direct-role-initializer"], 0, "", "")
+        finally:
+            engine.dispose()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
     return subprocess.run(
         [
             "docker",
@@ -151,136 +202,6 @@ def _run_role_script() -> subprocess.CompletedProcess:
         capture_output=True,
         timeout=60,
     )
-
-
-def _initialize_roles_directly() -> None:
-    """Portable equivalent used when pytest runs inside a Docker container."""
-
-    runtime_url = os.environ["TEST_DATABASE_URL"]
-    admin_url = _url_with_credentials(
-        runtime_url,
-        os.getenv("POSTGRES_USER", "postgres"),
-        os.environ["POSTGRES_PASSWORD"],
-    )
-    runtime_password = os.environ["APP_RUNTIME_PASSWORD"].replace("'", "''")
-    migration_password = os.environ["APP_MIGRATION_PASSWORD"].replace("'", "''")
-    database_name = os.getenv("POSTGRES_DB", "ai_interview_test")
-
-    def identifier(value: str) -> str:
-        return '"' + value.replace('"', '""') + '"'
-
-    engine = create_engine(admin_url, poolclass=NullPool)
-    try:
-        with engine.begin() as connection:
-            existing = {
-                row[0]
-                for row in connection.execute(
-                    text(
-                        "SELECT rolname FROM pg_roles "
-                        "WHERE rolname IN ('app_runtime', 'app_migration')"
-                    )
-                )
-            }
-            if "app_migration" not in existing:
-                connection.exec_driver_sql(
-                    "CREATE ROLE app_migration LOGIN NOSUPERUSER NOCREATEDB "
-                    "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
-                )
-            if "app_runtime" not in existing:
-                connection.exec_driver_sql(
-                    "CREATE ROLE app_runtime LOGIN NOSUPERUSER NOCREATEDB "
-                    "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
-                )
-            connection.exec_driver_sql(
-                f"ALTER ROLE app_migration PASSWORD '{migration_password}' "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
-                "NOREPLICATION NOBYPASSRLS"
-            )
-            connection.exec_driver_sql(
-                f"ALTER ROLE app_runtime PASSWORD '{runtime_password}' "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
-                "NOREPLICATION NOBYPASSRLS"
-            )
-            memberships = connection.execute(
-                text(
-                    "SELECT parent.rolname, member.rolname "
-                    "FROM pg_auth_members membership "
-                    "JOIN pg_roles parent ON parent.oid = membership.roleid "
-                    "JOIN pg_roles member ON member.oid = membership.member "
-                    "WHERE member.rolname IN ('app_runtime', 'app_migration')"
-                )
-            ).all()
-            for parent, member in memberships:
-                connection.exec_driver_sql(
-                    f"REVOKE {identifier(parent)} FROM {identifier(member)}"
-                )
-
-            database = identifier(database_name)
-            connection.exec_driver_sql(f"REVOKE ALL ON DATABASE {database} FROM PUBLIC")
-            connection.exec_driver_sql(f"REVOKE ALL ON DATABASE {database} FROM app_migration")
-            connection.exec_driver_sql(f"REVOKE ALL ON DATABASE {database} FROM app_runtime")
-            connection.exec_driver_sql(f"GRANT CONNECT ON DATABASE {database} TO app_migration")
-            connection.exec_driver_sql(f"GRANT CONNECT ON DATABASE {database} TO app_runtime")
-            connection.exec_driver_sql("REVOKE ALL ON SCHEMA public FROM PUBLIC")
-            connection.exec_driver_sql("ALTER SCHEMA public OWNER TO app_migration")
-            connection.exec_driver_sql("GRANT USAGE, CREATE ON SCHEMA public TO app_migration")
-            connection.exec_driver_sql("REVOKE ALL ON SCHEMA public FROM app_runtime")
-            connection.exec_driver_sql("GRANT USAGE ON SCHEMA public TO app_runtime")
-
-            tables = connection.execute(
-                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-            ).scalars().all()
-            for table_name in tables:
-                connection.exec_driver_sql(
-                    f"ALTER TABLE public.{identifier(table_name)} OWNER TO app_migration"
-                )
-            sequences = connection.execute(
-                text(
-                    "SELECT sequence_name FROM information_schema.sequences "
-                    "WHERE sequence_schema = 'public'"
-                )
-            ).scalars().all()
-            for sequence_name in sequences:
-                connection.exec_driver_sql(
-                    f"ALTER SEQUENCE public.{identifier(sequence_name)} OWNER TO app_migration"
-                )
-            types = connection.execute(
-                text(
-                    "SELECT t.typname, t.typtype FROM pg_type t "
-                    "JOIN pg_namespace n ON n.oid = t.typnamespace "
-                    "WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd') "
-                    "AND t.typowner <> (SELECT oid FROM pg_roles WHERE rolname = 'app_migration')"
-                )
-            ).all()
-            for type_name, type_kind in types:
-                kind = "TYPE" if type_kind == "e" else "DOMAIN"
-                connection.exec_driver_sql(
-                    f"ALTER {kind} public.{identifier(type_name)} OWNER TO app_migration"
-                )
-
-            connection.exec_driver_sql(
-                "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM app_runtime"
-            )
-            application_tables = set(TENANT_TABLES) | GLOBAL_TABLES
-            for table_name in tables:
-                if table_name in application_tables:
-                    connection.exec_driver_sql(
-                        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "
-                        f"public.{identifier(table_name)} TO app_runtime"
-                    )
-            connection.exec_driver_sql(
-                "REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM app_runtime"
-            )
-            connection.exec_driver_sql(
-                "ALTER DEFAULT PRIVILEGES FOR ROLE app_migration IN SCHEMA public "
-                "REVOKE ALL ON TABLES FROM app_runtime"
-            )
-            connection.exec_driver_sql(
-                "ALTER DEFAULT PRIVILEGES FOR ROLE app_migration IN SCHEMA public "
-                "REVOKE ALL ON SEQUENCES FROM app_runtime"
-            )
-    finally:
-        engine.dispose()
 
 
 @pytest.fixture(scope="session")
@@ -760,6 +681,17 @@ def test_real_two_tenant_business_login_isolation_and_disable_flow(
             }
 
     login_engine = create_engine(runtime_database_url, poolclass=NullPool)
+    from app.config import database as database_config
+
+    monkeypatch.setattr(
+        database_config,
+        "SessionLocal",
+        lambda **kwargs: TenantCapableSession(
+            bind=login_engine,
+            autoflush=False,
+            **kwargs,
+        ),
+    )
 
     @contextmanager
     def login_tenant_session(tenant_id):
@@ -2518,3 +2450,62 @@ def test_casefold_email_migration_rejects_existing_tenant_conflicts(
         role_result = _run_role_script()
         assert role_result.returncode == 0, role_result.stdout + role_result.stderr
         engine.dispose()
+
+
+def test_casefold_email_constraint_handles_concurrent_mixed_case_inserts(
+    runtime_database_url, tenant_pair
+):
+    from app.routes.auth import _is_email_unique_conflict
+
+    tenant_id, _ = tenant_pair
+    suffix = uuid.uuid4().hex
+    emails = (
+        f"Concurrent-{suffix}@Example.COM",
+        f"concurrent-{suffix}@example.com",
+    )
+    barrier = Barrier(2)
+    engine = create_engine(runtime_database_url, poolclass=NullPool)
+
+    def insert_user(email):
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "SELECT set_config('app.current_tenant_id', "
+                        "CAST(:tenant_id AS text), true)"
+                    ),
+                    {"tenant_id": tenant_id},
+                )
+                barrier.wait(timeout=10)
+                connection.execute(
+                    text(
+                        "INSERT INTO users "
+                        "(id, tenant_id, email, hashed_password, role, is_active, "
+                        "created_at, updated_at) VALUES "
+                        "(:id, :tenant_id, :email, 'x', 'HR', true, now(), now())"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "tenant_id": tenant_id,
+                        "email": email,
+                    },
+                )
+            return ("created", None, None, None)
+        except IntegrityError as error:
+            original = error.orig
+            return (
+                "conflict",
+                getattr(original, "sqlstate", getattr(original, "pgcode", None)),
+                getattr(getattr(original, "diag", None), "constraint_name", None),
+                _is_email_unique_conflict(error),
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(insert_user, emails))
+    finally:
+        engine.dispose()
+
+    assert sorted(outcome[0] for outcome in outcomes) == ["conflict", "created"]
+    conflict = next(outcome for outcome in outcomes if outcome[0] == "conflict")
+    assert conflict[1:] == ("23505", "uq_users_tenant_lower_email", True)

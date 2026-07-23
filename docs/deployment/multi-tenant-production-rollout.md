@@ -429,6 +429,7 @@ fi
 if ! docker run -d --name "$DRILL_BACKEND_CONTAINER" \
   --network "$DRILL_NETWORK" -p "127.0.0.1:${DRILL_API_PORT}:8000" \
   -e DATABASE_URL="$DRILL_RUNTIME_URL" -e APP_ENV=production \
+  -e UNIFIED_ENTRY_HOSTS=127.0.0.1 \
   -e SECRET_KEY="$DRILL_SECRET_KEY" \
   -e APP_DOMAINS="careray.example.invalid, $DRILL_PHOTON_DOMAIN" \
   -e UPLOAD_ROOT=/app/uploads \
@@ -850,23 +851,38 @@ docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml up -d backend f
 docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml ps
 ```
 
-使用平台 API 登录并入驻 Photonthix。令牌和管理员密码仅存在当前 shell 变量中：
+平台控制面也必须经过正式 Caddy HTTPS 入口。先校验并启动 Caddy，等待内部 CA 根证书可导出；不得为了初始化而临时绕过 Host 策略或改走回环 HTTP：
+
+```bash
+docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm --no-deps caddy \
+  caddy validate --config /etc/caddy/Caddyfile
+docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml up -d caddy
+docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml cp \
+  caddy:/data/caddy/pki/authorities/local/root.crt \
+  "$RELEASE_DIR/ai-interview-caddy-root.crt"
+```
+
+使用受信 CA 和正式域名登录平台 API 并入驻 Photonthix。令牌和管理员密码仅存在当前 shell 变量中：
 
 ```bash
 read -r -p '平台管理员邮箱: ' PLATFORM_ADMIN_EMAIL
 read -r -s -p '平台管理员密码: ' PLATFORM_ADMIN_PASSWORD; echo
 PLATFORM_TOKEN="$(curl --fail --silent --show-error \
+  --cacert "$RELEASE_DIR/ai-interview-caddy-root.crt" \
+  --resolve "interview.careray.com:443:$SERVER_IP" \
   -H 'Content-Type: application/json' \
   --data "$(jq -n --arg e "$PLATFORM_ADMIN_EMAIL" --arg p "$PLATFORM_ADMIN_PASSWORD" '{email:$e,password:$p}')" \
-  http://127.0.0.1/api/platform/auth/login | jq -r '.access_token')"
+  https://interview.careray.com/api/platform/auth/login | jq -r '.access_token')"
 unset PLATFORM_ADMIN_PASSWORD
 
 read -r -s -p 'Photonthix 初始管理员密码: ' PHOTONTHIX_ADMIN_PASSWORD; echo
 curl --fail --silent --show-error \
+  --cacert "$RELEASE_DIR/ai-interview-caddy-root.crt" \
+  --resolve "interview.careray.com:443:$SERVER_IP" \
   -H "Authorization: Bearer $PLATFORM_TOKEN" \
   -H 'Content-Type: application/json' \
   --data "$(jq -n --arg p "$PHOTONTHIX_ADMIN_PASSWORD" '{code:"photonthix",name:"Photonthix",primary_domain:"interview.photonthix.com",admin_email:"<photonthix-admin-email>",admin_password:$p}')" \
-  http://127.0.0.1/api/platform/tenants
+  https://interview.careray.com/api/platform/tenants
 unset PHOTONTHIX_ADMIN_PASSWORD
 ```
 
@@ -886,9 +902,9 @@ DELETE /api/platform/tenants/{tenant_id}/domains/{domain_id}
 
 ## 6. 内部域名、HTTPS 与麦克风
 
-应用进程对登录、公开简历上传、公开代码试运行、代码正式提交和作文 AI 评估分别执行分钟级限流，并可通过 `RATE_LIMIT_LOGIN`、`RATE_LIMIT_PUBLIC_UPLOAD`、`RATE_LIMIT_PUBLIC_CODE_RUN`、`RATE_LIMIT_PUBLIC_CODE_SUBMIT`、`RATE_LIMIT_PUBLIC_ESSAY_SUBMIT` 调整单进程阈值。每次请求同时消耗客户端 IP 配额和账号/公开令牌配额，任一配额耗尽都会在业务执行前返回 429；内存桶由 `RATE_LIMIT_MAX_BUCKETS` 设定上限，并按 TTL/LRU 淘汰。该内存限流只承担应用最后一道防线，不是集群级防护。生产入口还必须在受信网关/WAF 按客户端 IP 与路径配置独立阈值和突发容量，并限制请求体大小；多副本部署时网关计数必须集中共享。后端只在直接对端属于 `TRUSTED_PROXY_CIDRS` 时从右向左验证 `X-Forwarded-For`，链中格式错误时退回直接对端；禁止直接信任公网请求提供的转发头。429 比例、拒绝路径和重试间隔必须纳入监控，但不得记录登录密码、JWT、公开令牌或代码正文。
+应用进程对登录、公开简历上传、公开代码试运行、代码正式提交和作文 AI 评估分别执行分钟级限流，并可通过 `RATE_LIMIT_LOGIN`、`RATE_LIMIT_PUBLIC_UPLOAD`、`RATE_LIMIT_PUBLIC_CODE_RUN`、`RATE_LIMIT_PUBLIC_CODE_SUBMIT`、`RATE_LIMIT_PUBLIC_ESSAY_SUBMIT` 调整单进程阈值。公开简历上传的主体桶使用“租户+职位+规范化候选人信息”的不可逆哈希，并同时保留客户端 IP 桶；`RATE_LIMIT_PUBLIC_UPLOAD_TENANT` 是独立的租户分钟总成本上限，默认值应显著高于单候选人阈值。每次请求同时消耗客户端 IP 配额和账号/公开令牌配额，任一配额耗尽都会在业务执行前返回 429；内存桶由 `RATE_LIMIT_MAX_BUCKETS` 设定上限，并按 TTL/LRU 淘汰。该内存限流只承担应用最后一道防线，不是集群级防护。生产入口还必须在受信网关/WAF 按客户端 IP 与路径配置独立阈值和突发容量，并限制请求体大小；多副本部署时网关计数必须集中共享。后端只在直接对端属于 `TRUSTED_PROXY_CIDRS` 时从右向左验证 `X-Forwarded-For`，链中格式错误时退回直接对端；禁止直接信任公网请求提供的转发头。`TRUSTED_PROXY_CIDRS` 中任何无效 CIDR 都会阻止应用启动，必须先修正配置，禁止静默忽略。429 比例、拒绝路径和重试间隔必须纳入监控，但不得记录登录密码、JWT、公开令牌或代码正文。
 
-生产后端必须以 `uvicorn --no-access-log` 启动；Nginx 对 `/api/public/` 禁用原始 URI 访问日志，应用自身只记录路由模板和脱敏后的结构化字段。发布检查必须确认公开 token 不会出现在 Uvicorn、Nginx 或应用日志中，同时保留非公开请求的状态码、request ID、租户、任务和资源上下文。
+生产后端必须以 `uvicorn --no-access-log` 启动；Nginx 对 `/api/public/` 以及三类公开 SPA 入口禁用访问日志，并把这些 location 的上游错误日志丢弃，应用自身只记录不含参数的路由模板和脱敏后的结构化字段。发布前必须运行 `scripts/verify-nginx-token-logs.sh`，用真实 Nginx 请求覆盖 coding-test、offer、review 的 SPA/API 路径和上游失败，确认哨兵 token 不会出现在 Uvicorn、Nginx 或应用日志中，同时保留非公开请求的状态码、request ID、租户、任务和资源上下文。
 
 内部 DNS 必须把以下两个名称解析到同一台受控服务器：
 

@@ -71,13 +71,21 @@ def _parse_proxy_cidrs(raw_value: str) -> tuple[ipaddress._BaseNetwork, ...]:
             continue
         try:
             networks.append(ipaddress.ip_network(item, strict=False))
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise RuntimeError(
+                "TRUSTED_PROXY_CIDRS contains an invalid network"
+            ) from exc
     return tuple(networks)
 
 
 def trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
     return _parse_proxy_cidrs(os.getenv("TRUSTED_PROXY_CIDRS", ""))
+
+
+def validate_proxy_configuration() -> None:
+    """Fail startup before database work when proxy trust is malformed."""
+
+    trusted_proxy_networks()
 
 
 def is_trusted_proxy(value: str | None) -> bool:

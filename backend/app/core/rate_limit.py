@@ -30,6 +30,10 @@ def _default_policies():
         "public_upload": RateLimit(
             limit=int(os.getenv("RATE_LIMIT_PUBLIC_UPLOAD", "10")), window_seconds=60
         ),
+        "public_upload_tenant": RateLimit(
+            limit=int(os.getenv("RATE_LIMIT_PUBLIC_UPLOAD_TENANT", "1000")),
+            window_seconds=60,
+        ),
         "public_code_run": RateLimit(
             limit=int(os.getenv("RATE_LIMIT_PUBLIC_CODE_RUN", "30")), window_seconds=60
         ),

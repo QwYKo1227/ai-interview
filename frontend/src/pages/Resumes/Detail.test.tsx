@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import ResumeDetail from './Detail'
 import request from '../../utils/request'
+import resumeDetailCss from '../../index.css?inline'
 
 vi.mock('../../utils/request', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
@@ -34,6 +35,10 @@ describe('ResumeDetail laptop layout', () => {
       return {}
     })
 
+    const stylesheet = document.createElement('style')
+    stylesheet.textContent = resumeDetailCss
+    document.head.append(stylesheet)
+
     const { container } = render(
       <MemoryRouter initialEntries={['/resumes/resume-1']}>
         <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
@@ -47,6 +52,21 @@ describe('ResumeDetail laptop layout', () => {
     const panes = container.querySelectorAll('.resume-detail-pane')
     expect(panes).toHaveLength(2)
     panes.forEach((pane) => expect(pane).toHaveStyle({ flex: '1 1 0px' }))
-    expect(container.querySelector('.resume-detail-actions')).toHaveStyle({ flexWrap: 'wrap' })
+    panes.forEach((pane) => expect(getComputedStyle(pane).minWidth).toBe('0px'))
+    expect(resumeDetailCss).toMatch(/\.resume-detail-split,\s*\.resume-detail-pane\s*{\s*min-width:\s*0;/)
+    expect(resumeDetailCss).toMatch(/\.resume-detail-pane\s*{\s*flex:\s*1\s+1\s+0;/)
+
+    const analysisPane = container.querySelector<HTMLElement>('.resume-analysis-pane')
+    const actionRow = container.querySelector<HTMLElement>('.resume-detail-actions')
+    expect(actionRow).toBeInTheDocument()
+    expect(analysisPane).toContainElement(actionRow)
+    expect(actionRow).toHaveStyle({ flexWrap: 'wrap' })
+
+    const previewHeader = container.querySelector<HTMLElement>('.resume-preview-header')
+    expect(previewHeader).toHaveStyle({ minWidth: '0px', flexWrap: 'wrap' })
+    expect(resumeDetailCss).toMatch(/\.resume-preview-header\s*{\s*min-width:\s*0;\s*flex-wrap:\s*wrap;/)
+    expect(screen.getByText('重新解析')).toBeInTheDocument()
+    expect(screen.getByText('编辑')).toBeInTheDocument()
+    expect(screen.getByText('直接决策')).toBeInTheDocument()
   })
 })

@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Spin, Popconfirm } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined, ThunderboltOutlined, DeleteFilled } from '@ant-design/icons';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { buildPositionListParams } from './filters';
 
 const { Title, Text } = Typography;
 
@@ -45,6 +46,12 @@ interface Position {
   linked_question_banks?: QuestionBankBrief[];
 }
 
+interface HiringManagerOption {
+  id: string;
+  full_name: string | null;
+  email: string;
+}
+
 const urgencyConfig: Record<string, { color: string; text: string }> = {
   low: { color: 'default', text: '低' },
   medium: { color: 'warning', text: '中' },
@@ -68,43 +75,59 @@ const PositionsList: React.FC = () => {
   const [viewingRecord, setViewingRecord] = useState<Position | null>(null);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<HiringManagerOption[]>([]);
+  const [hiringManagers, setHiringManagers] = useState<HiringManagerOption[]>([]);
   const [jdModalVisible, setJdModalVisible] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
   const [searchTitle, setSearchTitle] = useState<string>('');
   const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
+  const [searchHiringManagerId, setSearchHiringManagerId] = useState<string | undefined>();
 
-  const fetchPositions = async () => {
+  const fetchPositions = useCallback(async () => {
     setLoading(true);
     try {
       const res = await request.get('/positions', {
-          params: {
-              title: searchTitle,
-              status: searchStatus
-          }
+          params: buildPositionListParams({
+            title: searchTitle,
+            status: searchStatus,
+            hiringManagerId: searchHiringManagerId,
+          }),
       });
       setData(res);
-    } catch (error) {
+    } catch {
       message.error('获取岗位列表失败');
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchHiringManagerId, searchStatus, searchTitle]);
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       const res = await request.get('/auth/users');
       setUsers(res);
-    } catch (error) {
+    } catch {
       console.error('Failed to fetch users');
     }
-  };
+  }, []);
+
+  const fetchHiringManagers = useCallback(async () => {
+    try {
+      const res = await request.get('/positions/hiring-managers');
+      setHiringManagers(res);
+    } catch {
+      message.error('获取招聘负责人列表失败');
+    }
+  }, []);
 
   useEffect(() => {
-    fetchPositions();
-    fetchUsers();
-  }, [searchTitle, searchStatus]);
+    void fetchUsers();
+    void fetchHiringManagers();
+  }, [fetchHiringManagers, fetchUsers]);
+
+  useEffect(() => {
+    void fetchPositions();
+  }, [fetchPositions]);
 
   const handleAdd = () => {
     setEditingId(null);
@@ -119,7 +142,7 @@ const PositionsList: React.FC = () => {
       const res = await request.get(`/positions/${record.id}`);
       form.setFieldsValue(res);
       setIsModalVisible(true);
-    } catch (error) {
+    } catch {
       message.error('获取岗位详情失败');
     }
   };
@@ -129,7 +152,7 @@ const PositionsList: React.FC = () => {
       const res = await request.get(`/positions/${record.id}`);
       setViewingRecord(res);
       setIsDrawerVisible(true);
-    } catch (error) {
+    } catch {
       message.error('获取岗位详情失败');
     }
   };
@@ -146,7 +169,7 @@ const PositionsList: React.FC = () => {
           await request.delete(`/positions/${id}`);
           message.success('删除成功');
           fetchPositions();
-        } catch (error) {
+        } catch {
           message.error('删除失败');
         }
       },
@@ -170,7 +193,7 @@ const PositionsList: React.FC = () => {
           message.success(`成功删除 ${selectedRowKeys.length} 个岗位`);
           setSelectedRowKeys([]);
           fetchPositions();
-        } catch (error) {
+        } catch {
           message.error('批量删除失败');
         }
       },
@@ -193,7 +216,7 @@ const PositionsList: React.FC = () => {
           message.success(`成功${publish ? '发布' : '下架'} ${selectedRowKeys.length} 个岗位`);
           setSelectedRowKeys([]);
           fetchPositions();
-        } catch (error) {
+        } catch {
           message.error('操作失败');
         }
       },
@@ -205,7 +228,7 @@ const PositionsList: React.FC = () => {
       await request.put(`/positions/${id}`, { status: publish ? 'published' : 'closed' });
       message.success(publish ? '岗位已发布' : '岗位已下架');
       fetchPositions();
-    } catch (error) {
+    } catch {
       message.error('操作失败');
     }
   };
@@ -228,7 +251,7 @@ const PositionsList: React.FC = () => {
       try {
         document.execCommand('copy');
         message.success('岗位链接已复制');
-      } catch (err) {
+      } catch {
         message.error('复制失败');
       }
       document.body.removeChild(textArea);
@@ -268,7 +291,7 @@ const PositionsList: React.FC = () => {
       }
       setIsModalVisible(false);
       fetchPositions();
-    } catch (error) {
+    } catch {
       // Validation error
     } finally {
       setSubmitting(false);
@@ -351,7 +374,7 @@ const PositionsList: React.FC = () => {
     { 
       title: '招聘进度', 
       key: 'stats',
-      render: (_: any, record: Position) => renderStats(record.stats)
+      render: (_: unknown, record: Position) => renderStats(record.stats)
     },
     { 
       title: '创建时间', 
@@ -362,7 +385,7 @@ const PositionsList: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      render: (_: any, record: Position) => (
+      render: (_: unknown, record: Position) => (
         <Space size="small">
           <Tooltip title="查看详情">
             <Button type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => handleView(record)} />
@@ -409,6 +432,20 @@ const PositionsList: React.FC = () => {
               style={{ width: 300 }} 
               allowClear
               onChange={(e) => setSearchTitle(e.target.value)}
+          />
+          <Select
+              placeholder="招聘负责人"
+              style={{ width: 220 }}
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={hiringManagers.map((manager) => ({
+                value: manager.id,
+                label: manager.full_name
+                  ? `${manager.full_name} (${manager.email})`
+                  : manager.email,
+              }))}
+              onChange={setSearchHiringManagerId}
           />
           <Select
               placeholder="岗位状态"

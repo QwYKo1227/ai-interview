@@ -82,6 +82,9 @@ describe('PlatformTenants', () => {
     expect(screen.getByText('photonthix')).toBeInTheDocument();
     expect(screen.getByText('interview.careray.com')).toBeInTheDocument();
     expect(screen.getByText('interview.photonthix.com')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '创建时间' })).toBeInTheDocument();
+    expect(screen.getByText('2026-07-01T00:00:00Z')).toBeInTheDocument();
+    expect(screen.getByText('2026-07-02T00:00:00Z')).toBeInTheDocument();
     expect(screen.getByText('公司总数 2')).toBeInTheDocument();
     expect(screen.getByText('已启用 1')).toBeInTheDocument();
     expect(screen.getByText('已停用 1')).toBeInTheDocument();
@@ -150,6 +153,7 @@ describe('PlatformTenants', () => {
     mockGet.mockResolvedValue([]);
     mockPost.mockResolvedValueOnce({});
     const user = userEvent.setup();
+    const boundaryPassword = `${'a'.repeat(70)}A1`;
 
     render(<PlatformTenants />);
 
@@ -158,7 +162,7 @@ describe('PlatformTenants', () => {
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
     fireEvent.change(screen.getByLabelText('主域名'), { target: { value: ' Interview.Photonthix.COM ' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: ' Admin@Photonthix.COM ' } });
-    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
+    fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: boundaryPassword } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
 
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/platform/tenants', {
@@ -166,11 +170,11 @@ describe('PlatformTenants', () => {
       name: 'Photonthix',
       primary_domain: 'interview.photonthix.com',
       admin_email: 'admin@photonthix.com',
-      admin_password: 'Password1234',
+      admin_password: boundaryPassword,
     }));
   });
 
-  it('does not submit an administrator password without twelve characters, letters, and digits', async () => {
+  it('does not submit an administrator password without the required character classes or within 72 UTF-8 bytes', async () => {
     mockGet.mockResolvedValue([]);
     const user = userEvent.setup();
 
@@ -182,7 +186,7 @@ describe('PlatformTenants', () => {
     fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
 
-    for (const password of ['Password123', 'abcdefghijkl', '123456789012']) {
+    for (const password of ['Password123', 'abcdefghijkl', '123456789012', 'a'.repeat(73), `${'测'.repeat(24)}A1`]) {
       const passwordInput = screen.getByLabelText('管理员初始密码');
       fireEvent.change(passwordInput, { target: { value: password } });
       await user.click(screen.getByRole('button', { name: '创建公司' }));

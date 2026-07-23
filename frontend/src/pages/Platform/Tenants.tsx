@@ -40,6 +40,13 @@ const tenantColumns = (onOpenTenant: (tenantId: string) => void): TableColumnsTy
     ),
   },
   {
+    dataIndex: 'created_at',
+    key: 'created_at',
+    title: '创建时间',
+    width: 192,
+    render: (createdAt: string) => <time dateTime={createdAt}>{createdAt}</time>,
+  },
+  {
     key: 'actions',
     title: '操作',
     width: 104,
@@ -198,9 +205,16 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
               { min: 12, message: '密码至少需要 12 位' },
               { pattern: /[a-zA-Z]/, message: '密码需要包含字母' },
               { pattern: /\d/, message: '密码需要包含数字' },
+              {
+                validator: (_, value) => (
+                  new TextEncoder().encode(value || '').length <= 72
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('密码最多支持 72 个 UTF-8 字节'))
+                ),
+              },
             ]}
           >
-            <Input.Password autoComplete="new-password" placeholder="至少 12 位，包含字母和数字" />
+            <Input.Password autoComplete="new-password" placeholder="至少 12 位，包含字母和数字，最多 72 个字节" />
           </Form.Item>
           <div className="platform-tenants__form-actions">
             <Button onClick={closeOnboarding}>取消</Button>

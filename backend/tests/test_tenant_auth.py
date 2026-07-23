@@ -85,6 +85,49 @@ def test_login_selects_user_by_tenant(client, db, tenant_a, tenant_b):
     assert claims["role"] == UserRole.HR.value
 
 
+def test_dedicated_domain_rejects_login_for_another_tenant(
+    client, db, tenant_a, tenant_b
+):
+    create_user(db, tenant_a.id, "same@example.com", "Password123")
+    create_user(db, tenant_b.id, "same@example.com", "OtherPass123")
+    db.add(
+        TenantDomain(
+            tenant_id=tenant_a.id,
+            domain="login.careray.example",
+            is_primary=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/auth/login",
+        headers={"Host": "LOGIN.CARERAY.EXAMPLE:8443"},
+        json={
+            "tenant_code": tenant_b.code,
+            "email": "same@example.com",
+            "password": "OtherPass123",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_unified_entry_allows_explicit_tenant_login(client, db, tenant_b):
+    create_user(db, tenant_b.id, "member@example.com", "Password123")
+
+    response = client.post(
+        "/api/auth/login",
+        headers={"Host": "gateway.example.test"},
+        json={
+            "tenant_code": tenant_b.code,
+            "email": "member@example.com",
+            "password": "Password123",
+        },
+    )
+
+    assert response.status_code == 200
+
+
 def test_tenant_a_password_cannot_login_to_tenant_b(client, db, tenant_a, tenant_b):
     create_user(db, tenant_a.id, "same@example.com", "Password123")
     create_user(db, tenant_b.id, "same@example.com", "OtherPass123")
@@ -247,6 +290,7 @@ def raw_token(**overrides):
         "sub": str(uuid4()),
         "tenant_id": str(uuid4()),
         "role": UserRole.HR.value,
+        "token_type": "tenant",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
     claims.update(overrides)
@@ -477,6 +521,41 @@ def test_token_decoder_requires_strict_tenant_identity_claims():
     token = raw_token(role=123)
     with pytest.raises(Exception):
         security.decode_access_token(token)
+
+
+@pytest.mark.parametrize("token_type", [None, "platform", "bearer"])
+def test_tenant_token_decoder_rejects_missing_or_wrong_token_type(token_type):
+    from app.core import security
+
+    token = raw_token()
+    claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if token_type is None:
+        claims.pop("token_type")
+    else:
+        claims["token_type"] = token_type
+    invalid = jwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
+
+    with pytest.raises(Exception):
+        security.decode_access_token(invalid)
+
+
+def test_platform_decoder_accepts_only_platform_claim_shape():
+    from app.core.platform_security import (
+        create_platform_access_token,
+        decode_platform_access_token,
+    )
+
+    user_id = uuid4()
+    assert decode_platform_access_token(
+        create_platform_access_token(user_id=user_id)
+    ).user_id == user_id
+
+    tenant_claims = jwt.decode(
+        raw_token(sub=str(user_id)), SECRET_KEY, algorithms=[ALGORITHM]
+    )
+    wrong_type = jwt.encode(tenant_claims, SECRET_KEY, algorithm=ALGORITHM)
+    with pytest.raises(Exception):
+        decode_platform_access_token(wrong_type)
 
 
 def test_expired_or_invalid_signature_is_rejected(client):

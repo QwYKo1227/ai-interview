@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config.database import SessionLocal, engine
-from app.models.base import Base
+from app.config.database import SessionLocal
+from app.config.tenant_session import tenant_session
 from app.core.security import get_password_hash
 from app.models.models import (
     CodingSubmission,
@@ -46,6 +46,7 @@ from app.models.models import (
     UserRole,
 )
 from app.models.workflow_models import Workflow, WorkflowStatus
+from app.models.tenant_models import Tenant, TenantStatus
 
 
 DEMO_EMAIL_DOMAIN = "talent.example"
@@ -639,9 +640,22 @@ def seed_workflows_and_config(db) -> None:
 
 
 def main() -> None:
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
+    tenant_code = os.getenv("INITIAL_TENANT_CODE", "careray")
+    control_db = SessionLocal()
     try:
+        tenant = control_db.query(Tenant).filter(
+            Tenant.code == tenant_code,
+            Tenant.status == TenantStatus.ACTIVE,
+        ).first()
+        if tenant is None:
+            raise RuntimeError(
+                f"active demo tenant {tenant_code!r} does not exist; run Alembic first"
+            )
+        tenant_id = tenant.id
+    finally:
+        control_db.close()
+
+    with tenant_session(tenant_id) as db:
         cleanup_demo_data(db)
         admin = get_or_create_admin(db)
         users = seed_users(db)
@@ -654,8 +668,6 @@ def main() -> None:
         print("Seeded demo data for AI Interview screenshots.")
         print("Demo admin:", admin.email)
         print("Demo interviewers:", ", ".join(user.email for user in users.values()))
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":

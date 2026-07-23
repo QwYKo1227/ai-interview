@@ -22,6 +22,7 @@ from app.config.tenant_session import (
 )
 from app.core.tenant_context import TenantContext
 from app.models.models import Position, Resume
+from app.models.tenant_models import TenantStatus
 
 
 class OverridingTenantCapableSession(TenantCapableSession):
@@ -894,6 +895,26 @@ def test_tenant_session_normal_exit_rolls_back_uncommitted_work(
         tenant_db.flush()
 
     assert db.query(Position).filter(Position.title == "not committed").first() is None
+
+
+def test_tenant_session_rechecks_active_status_when_background_work_starts(
+    db, monkeypatch, tenant_a
+):
+    from app.config.tenant_session import TenantInactiveError
+
+    session_factory = sessionmaker(
+        bind=db.get_bind(),
+        class_=TenantSession,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr(database, "TenantSessionLocal", session_factory)
+    tenant_a.status = TenantStatus.DISABLED
+    db.commit()
+
+    with pytest.raises(TenantInactiveError):
+        with tenant_session(tenant_a.id):
+            pytest.fail("disabled tenant session must not be yielded")
 
 
 def test_unscoped_dependency_is_explicitly_documented_for_global_tables_only():

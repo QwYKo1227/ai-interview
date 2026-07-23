@@ -126,7 +126,7 @@ class NodeExecutor:
             return {"output": response_content}
             
         except Exception as e:
-            logger.error(f"LLM execution failed: {e}")
+            logger.error("LLM execution failed (%s)", type(e).__name__)
             raise
     
     def _execute_condition(self, config: Dict[str, Any], input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -561,7 +561,7 @@ class WorkflowEngine:
         try:
             self._run_execution(execution, workflow)
         except Exception as e:
-            logger.error(f"Workflow execution failed: {e}")
+            logger.error("Workflow execution failed (%s)", type(e).__name__)
             execution.status = ExecutionStatus.FAILED
             execution.completed_at = datetime.utcnow()
             self.db.commit()

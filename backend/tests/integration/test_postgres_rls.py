@@ -631,7 +631,9 @@ def test_real_two_tenant_business_login_isolation_and_disable_flow(
         finally:
             db.close()
 
-    monkeypatch.setattr(auth_routes, "tenant_session", login_tenant_session)
+    monkeypatch.setattr(
+        auth_routes, "tenant_authentication_session", login_tenant_session
+    )
     with TenantCapableSession(bind=login_engine) as unscoped:
         authenticated = {}
         for tenant_id, code in ((careray_id, "careray"), (photonthix_id, "photonthix")):
@@ -824,6 +826,10 @@ def test_real_http_file_routes_enforce_tenant_host_token_and_path_isolation(
                 role=UserRole.ADMIN,
                 is_active=True,
             )
+            resume = Resume(candidate_name=f"file-{tenant_id.hex}")
+            malicious_resume = Resume(candidate_name=f"malicious-{tenant_id.hex}")
+            db.add_all([user, resume, malicious_resume])
+            db.flush()
             stored = StoredFile(
                 object_key=f"{tenant_id}/resumes/{uuid.uuid4()}.txt",
                 original_filename="resume.txt",
@@ -831,6 +837,7 @@ def test_real_http_file_routes_enforce_tenant_host_token_and_path_isolation(
                 size=len(contents[tenant_id]),
                 category="resumes",
                 resource_type="resume",
+                resource_id=resume.id,
             )
             malicious = StoredFile(
                 object_key=(
@@ -841,8 +848,12 @@ def test_real_http_file_routes_enforce_tenant_host_token_and_path_isolation(
                 size=outside_secret.stat().st_size,
                 category="resumes",
                 resource_type="resume",
+                resource_id=malicious_resume.id,
             )
             db.add_all([user, stored, malicious])
+            db.flush()
+            resume.file_id = stored.id
+            malicious_resume.file_id = malicious.id
             db.commit()
             users[tenant_id] = user.id
             stored_files[tenant_id] = (stored.id, malicious.id)
@@ -1899,7 +1910,7 @@ def test_alembic_uses_migration_url_not_runtime_database_url(
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "q6r7s8t9u0v1" in result.stdout
+    assert "r7s8t9u0v1w2" in result.stdout
 
 
 def test_alembic_autogenerate_has_no_head_metadata_drift(migration_database_url):
@@ -2218,7 +2229,7 @@ def test_real_postgres_upgrade_downgrade_gates_and_data_preservation(
         with migration_engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "q6r7s8t9u0v1"
+            ).scalar_one() == "r7s8t9u0v1w2"
             assert connection.execute(
                 text(
                     "SELECT count(*) FROM pg_class c "
@@ -2268,3 +2279,103 @@ def test_real_postgres_upgrade_downgrade_gates_and_data_preservation(
 
     role_result = _run_role_script()
     assert role_result.returncode == 0, role_result.stdout + role_result.stderr
+
+
+def test_casefold_email_migration_rejects_existing_tenant_conflicts(
+    migration_database_url,
+):
+    tenant_id = uuid.uuid4()
+    email_suffix = uuid.uuid4().hex
+    mixed_email = f"CaseFold-{email_suffix}@example.com"
+    lower_email = mixed_email.lower()
+    engine = create_engine(migration_database_url, poolclass=NullPool)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tenants (id, code, name, status, created_at, updated_at) "
+                    "VALUES (:id, :code, 'Casefold migration tenant', "
+                    "'active', now(), now())"
+                ),
+                {"id": tenant_id, "code": f"casefold-{tenant_id.hex}"},
+            )
+
+        downgrade = _run_alembic(
+            migration_database_url, "downgrade", "q6r7s8t9u0v1"
+        )
+        assert downgrade.returncode == 0, downgrade.stdout + downgrade.stderr
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_tenant_id', "
+                    "CAST(:tenant_id AS text), true)"
+                ),
+                {"tenant_id": tenant_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, tenant_id, email, hashed_password, role, is_active, "
+                    "created_at, updated_at) VALUES "
+                    "(:first_id, :tenant_id, :mixed_email, 'x', 'HR', true, now(), now()), "
+                    "(:second_id, :tenant_id, :lower_email, 'x', 'HR', true, now(), now())"
+                ),
+                {
+                    "first_id": uuid.uuid4(),
+                    "second_id": uuid.uuid4(),
+                    "tenant_id": tenant_id,
+                    "mixed_email": mixed_email,
+                    "lower_email": lower_email,
+                },
+            )
+
+        rejected = _run_alembic(migration_database_url, "upgrade", "head")
+        output = rejected.stdout + rejected.stderr
+        assert rejected.returncode != 0
+        assert "case-insensitive user email conflicts must be resolved" in output
+        assert mixed_email not in output
+        assert lower_email not in output
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "q6r7s8t9u0v1"
+            assert connection.execute(
+                text(
+                    "SELECT relforcerowsecurity FROM pg_class "
+                    "WHERE relname = 'users'"
+                )
+            ).scalar_one() is True
+    finally:
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        if version == "r7s8t9u0v1w2":
+            cleanup_downgrade = _run_alembic(
+                migration_database_url, "downgrade", "q6r7s8t9u0v1"
+            )
+            assert cleanup_downgrade.returncode == 0, (
+                cleanup_downgrade.stdout + cleanup_downgrade.stderr
+            )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_tenant_id', "
+                    "CAST(:tenant_id AS text), true)"
+                ),
+                {"tenant_id": tenant_id},
+            )
+            connection.execute(
+                text("DELETE FROM users WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_id},
+            )
+            connection.execute(
+                text("DELETE FROM tenants WHERE id = :tenant_id"),
+                {"tenant_id": tenant_id},
+            )
+        restored = _run_alembic(migration_database_url, "upgrade", "head")
+        assert restored.returncode == 0, restored.stdout + restored.stderr
+        role_result = _run_role_script()
+        assert role_result.returncode == 0, role_result.stdout + role_result.stderr
+        engine.dispose()

@@ -44,6 +44,8 @@ from app.services.coding_test_service import (
     reissue_coding_test_public_token,
 )
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
+from app.services.public_token_service import hash_token
+from app.core.rate_limit import enforce_rate_limit
 
 
 router = APIRouter(prefix="/coding-tests", tags=["coding-tests"])
@@ -259,6 +261,7 @@ def run_public_code_route(
     request: Request,
     db: Session = Depends(get_unscoped_db),
 ):
+    enforce_rate_limit(request, "public_code_run", hash_token(token))
     _validate_public_request(db, token, request)
     run = run_public_code(db, token, payload.code, payload.language or "javascript")
     return CodingRunResponse(

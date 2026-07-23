@@ -18,6 +18,7 @@ from app.models.tenant_models import (
     TenantStatus,
 )
 from app.schemas.tenant import TenantCreate, TenantResponse, TenantSummary
+from app.models.models import User, UserRole
 
 
 def test_tenant_code_is_unique(db):
@@ -123,6 +124,66 @@ def test_platform_user_is_separate_from_tenant_user(db):
 
     assert user.id is not None
     assert "tenant_id" not in PlatformUser.__table__.columns
+
+
+def test_user_and_platform_email_writes_are_normalized(db, tenant_a):
+    tenant_user = User(
+        tenant_id=tenant_a.id,
+        email="  Mixed.Case@Example.COM  ",
+        hashed_password="hashed-password",
+        role=UserRole.HR,
+    )
+    platform_user = PlatformUser(
+        email="  PLATFORM.Admin@Example.COM  ",
+        hashed_password="hashed-password",
+    )
+    db.add_all([tenant_user, platform_user])
+    db.commit()
+
+    assert tenant_user.email == "mixed.case@example.com"
+    assert platform_user.email == "platform.admin@example.com"
+
+
+def test_tenant_user_email_is_unique_case_insensitively(db, tenant_a):
+    db.add(
+        User(
+            tenant_id=tenant_a.id,
+            email="Member@Example.com",
+            hashed_password="hashed-password",
+            role=UserRole.HR,
+        )
+    )
+    db.commit()
+    db.add(
+        User(
+            tenant_id=tenant_a.id,
+            email="member@example.COM",
+            hashed_password="hashed-password",
+            role=UserRole.HR,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db.commit()
+
+
+def test_casefold_email_migration_has_conflict_gate_and_reversible_index():
+    from pathlib import Path
+
+    revision = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "r7s8t9u0v1w2_enforce_casefold_user_email.py"
+    )
+    source = revision.read_text(encoding="utf-8")
+
+    assert "lower(email)" in source
+    assert "HAVING count(*) > 1" in source
+    assert "uq_users_tenant_lower_email" in source
+    assert "ALTER TABLE users NO FORCE ROW LEVEL SECURITY" in source
+    assert "ALTER TABLE users FORCE ROW LEVEL SECURITY" in source
+    assert "def downgrade()" in source
 
 
 def test_platform_audit_log_records_actor_and_target_tenant(db, tenant_a):

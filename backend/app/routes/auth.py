@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
-from app.config.tenant_session import tenant_session
+from app.config.tenant_session import tenant_authentication_session
 from app.models.models import User, UserRole
 from app.models.tenant_models import Tenant, TenantDomain, TenantStatus
 from app.schemas.tenant import TenantSummary
@@ -10,6 +10,7 @@ from app.schemas.user import Token, UserResponse, CurrentUserResponse, UserLogin
 from app.core.security import verify_password, create_access_token, check_roles, get_password_hash
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_context, get_tenant_db
 from app.core.tenant_context import TenantContext
+from app.core.rate_limit import enforce_rate_limit
 from datetime import timedelta
 from typing import List
 import re
@@ -70,7 +71,7 @@ def _authenticate_tenant_user(
     if tenant is None:
         verify_password(password, DUMMY_PASSWORD_HASH)
         raise _login_error()
-    with tenant_session(tenant.id) as tenant_db:
+    with tenant_authentication_session(tenant.id) as tenant_db:
         user = (
             tenant_db.query(User)
             .filter(User.tenant_id == tenant.id, User.email == email)
@@ -109,6 +110,29 @@ def _token_for_user(tenant: Tenant, user: User) -> Token:
     return Token(access_token=access_token, token_type="bearer")
 
 
+def _enforce_login_host(db: Session, request: Request, tenant: Tenant) -> None:
+    """A registered company host may authenticate only its mapped tenant."""
+
+    host = request.headers.get("host", "").strip().lower()
+    if host.startswith("["):
+        closing_bracket = host.find("]")
+        hostname = host[1:closing_bracket] if closing_bracket > 0 else ""
+    else:
+        hostname = host.partition(":")[0]
+    if not hostname:
+        return
+    domain = (
+        db.query(TenantDomain)
+        .filter(TenantDomain.domain == hostname)
+        .first()
+    )
+    if domain is not None and domain.tenant_id != tenant.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant does not match request domain",
+        )
+
+
 @router.get("/tenants", response_model=List[TenantSummary])
 def list_login_tenants(db: Session = Depends(get_unscoped_db)):
     rows = (
@@ -135,26 +159,45 @@ def list_login_tenants(db: Session = Depends(get_unscoped_db)):
 
 @router.post("/token", response_model=Token, deprecated=True)
 def login_for_access_token(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     tenant_code: str = Form(...),
     db: Session = Depends(get_unscoped_db),
 ):
+    enforce_rate_limit(
+        request,
+        "login",
+        tenant_code.strip().lower(),
+        form_data.username.strip().lower(),
+    )
     tenant, user = _authenticate_tenant_user(
         db,
         tenant_code=tenant_code,
         email=form_data.username,
         password=form_data.password,
     )
+    _enforce_login_host(db, request, tenant)
     return _token_for_user(tenant, user)
 
 @router.post("/login", response_model=Token)
-def login(login_data: UserLogin, db: Session = Depends(get_unscoped_db)):
+def login(
+    login_data: UserLogin,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    enforce_rate_limit(
+        request,
+        "login",
+        login_data.tenant_code.strip().lower(),
+        str(login_data.email).strip().lower(),
+    )
     tenant, user = _authenticate_tenant_user(
         db,
         tenant_code=login_data.tenant_code,
         email=str(login_data.email),
         password=login_data.password,
     )
+    _enforce_login_host(db, request, tenant)
     return _token_for_user(tenant, user)
 
 @router.get("/me", response_model=CurrentUserResponse)

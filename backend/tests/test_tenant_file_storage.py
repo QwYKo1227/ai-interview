@@ -14,6 +14,7 @@ from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
+from app.models.models import Resume, UserRole
 from app.models.tenant_models import PublicAccessToken, TenantDomain
 from app.routes import files
 from app.services.public_token_service import hash_token
@@ -31,17 +32,32 @@ def _upload(name="candidate.pdf", content=b"resume", content_type="application/p
     return UploadFile(filename=name, file=BytesIO(content), headers={"content-type": content_type})
 
 
-def _app(db, tenant, root):
+def _app(db, tenant, root, *, current_user=None):
     app = FastAPI()
     app.include_router(files.router, prefix="/api")
     app.include_router(files.public_router, prefix="/api")
     app.dependency_overrides[get_tenant_db] = lambda: db
     app.dependency_overrides[get_unscoped_db] = lambda: db
-    app.dependency_overrides[get_current_user_dep] = lambda: SimpleNamespace(
-        id=uuid4(), tenant_id=tenant.id
+    user = current_user or SimpleNamespace(
+        id=uuid4(), tenant_id=tenant.id, role=UserRole.HR
     )
+    app.dependency_overrides[get_current_user_dep] = lambda: user
     files.UPLOAD_ROOT = root
     return app
+
+
+def _bind_resume_file(db, tenant_id, stored):
+    resume_id = stored.resource_id or uuid4()
+    stored.resource_type = "resume"
+    stored.resource_id = resume_id
+    resume = Resume(
+        id=resume_id,
+        tenant_id=tenant_id,
+        candidate_name="Candidate",
+        file_id=stored.id,
+    )
+    db.add_all([stored, resume])
+    return resume
 
 
 def test_upload_uses_opaque_tenant_key_and_preserves_metadata(tmp_path, tenant_a):
@@ -97,7 +113,8 @@ def test_authenticated_download_is_tenant_scoped_and_has_safe_headers(
 ):
     own = save_upload_file(_upload("safe\r\nX-Evil: yes.pdf", b"own"), tenant_a.id, "resumes", root=tmp_path)
     foreign = save_upload_file(_upload("other.pdf", b"foreign"), tenant_b.id, "resumes", root=tmp_path)
-    db.add_all([own, foreign])
+    _bind_resume_file(db, tenant_a.id, own)
+    _bind_resume_file(db, tenant_b.id, foreign)
     db.commit()
     with TestClient(_app(db, tenant_a, tmp_path)) as client:
         response = client.get(f"/api/files/{own.id}")
@@ -231,7 +248,7 @@ def test_upload_uses_server_mime_allowlist(tmp_path, tenant_a, name, claimed, ex
 
 def test_authenticated_user_can_issue_short_lived_public_file_token(db, tenant_a, tmp_path):
     stored = save_upload_file(_upload(), tenant_a.id, "resumes", root=tmp_path)
-    db.add(stored)
+    _bind_resume_file(db, tenant_a.id, stored)
     db.commit()
     app = _app(db, tenant_a, tmp_path)
     with TestClient(app) as client:
@@ -247,7 +264,7 @@ def test_authenticated_user_can_issue_short_lived_public_file_token(db, tenant_a
 @pytest.mark.parametrize("ttl", [0, 86401])
 def test_public_file_token_ttl_is_bounded(db, tenant_a, tmp_path, ttl):
     stored = save_upload_file(_upload(), tenant_a.id, "resumes", root=tmp_path)
-    db.add(stored)
+    _bind_resume_file(db, tenant_a.id, stored)
     db.commit()
     with TestClient(_app(db, tenant_a, tmp_path)) as client:
         response = client.post(f"/api/files/{stored.id}/public-token", json={"ttl_seconds": ttl})
@@ -261,6 +278,44 @@ def test_public_file_token_issue_hides_other_tenant_file(db, tenant_a, tenant_b,
     with TestClient(_app(db, tenant_a, tmp_path)) as client:
         response = client.post(f"/api/files/{foreign.id}/public-token", json={})
     assert response.status_code == 404
+
+
+def test_interviewer_cannot_download_or_publish_unassigned_resume_file(
+    db, tenant_a, tmp_path
+):
+    resume_id = uuid4()
+    stored = save_upload_file(
+        _upload(),
+        tenant_a.id,
+        "resumes",
+        root=tmp_path,
+        resource_type="resume",
+        resource_id=resume_id,
+    )
+    resume = Resume(
+        id=resume_id,
+        tenant_id=tenant_a.id,
+        candidate_name="Private Candidate",
+        file_id=stored.id,
+    )
+    db.add_all([stored, resume])
+    db.commit()
+    interviewer = SimpleNamespace(
+        id=uuid4(), tenant_id=tenant_a.id, role=UserRole.INTERVIEWER
+    )
+
+    with TestClient(
+        _app(db, tenant_a, tmp_path, current_user=interviewer)
+    ) as client:
+        download = client.get(f"/api/files/{stored.id}")
+        publish = client.post(
+            f"/api/files/{stored.id}/public-token",
+            json={"ttl_seconds": 120},
+        )
+
+    assert download.status_code == 404
+    assert publish.status_code == 404
+    assert db.query(PublicAccessToken).count() == 0
 
 
 def test_replacement_commit_removes_old_metadata_and_file(db, tenant_a, tmp_path):

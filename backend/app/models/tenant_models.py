@@ -124,6 +124,12 @@ class PlatformUser(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
+    @validates("email")
+    def normalize_email(self, _key, value):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("email is required")
+        return value.strip().lower()
+
 
 class PlatformAuditLog(Base):
     __tablename__ = "platform_audit_logs"

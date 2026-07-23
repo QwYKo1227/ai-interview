@@ -21,6 +21,7 @@ from app.routes.auth import get_current_user
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 from app.services.public_token_service import resolve_public_tenant
+from app.core.rate_limit import enforce_rate_limit
 
 router = APIRouter(
     prefix="/resumes",
@@ -93,9 +94,10 @@ def create_resume_route(
     db: Session = Depends(get_unscoped_db)
 ):
     validate_pdf_file(file)
-    resolve_public_tenant(
+    tenant_id = resolve_public_tenant(
         db, request_host=request.headers.get("host", ""), tenant_code=tenant_code
     )
+    enforce_rate_limit(request, "public_upload", tenant_id)
     return upload_public_resume(
         db, file, position_id, background_tasks, candidate_name, email, contact
     )
@@ -282,7 +284,7 @@ def get_queue_status(
 ):
     from app.services.task_queue import get_task_queue
     queue = get_task_queue()
-    return queue.get_stats()
+    return queue.get_stats(current_user.tenant_id)
 
 
 @router.get("/queue/task/{task_id}")
@@ -292,7 +294,7 @@ def get_task_status(
 ):
     from app.services.task_queue import get_task_queue
     queue = get_task_queue()
-    status = queue.get_status(task_id)
+    status = queue.get_status(task_id, current_user.tenant_id)
     if not status:
         raise HTTPException(status_code=404, detail="Task not found")
     return status
@@ -307,7 +309,7 @@ def fix_stuck_resumes(
     from app.services.task_queue import get_task_queue
 
     queue = get_task_queue()
-    queue_stats = queue.get_stats()
+    queue_stats = queue.get_stats(current_user.tenant_id)
 
     stuck_resumes = db.query(Resume).filter(
         Resume.parse_status == "processing",
@@ -316,7 +318,7 @@ def fix_stuck_resumes(
 
     fixed_count = 0
     for resume in stuck_resumes:
-        task_status = queue.get_status(str(resume.id))
+        task_status = queue.get_status(str(resume.id), current_user.tenant_id)
 
         if task_status is None or task_status["status"] in ["completed", "failed"]:
             resume.parse_status = "failed"

@@ -119,6 +119,7 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     test_app.include_router(resumes.router, prefix="/api")
     test_app.include_router(interviews.router, prefix="/api")
     test_app.include_router(coding_tests.router, prefix="/api")
+    test_app.include_router(coding_tests.public_router, prefix="/api")
     test_app.include_router(settings.router, prefix="/api")
 
     # 正确覆盖 get_db 依赖

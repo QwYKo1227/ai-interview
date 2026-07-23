@@ -19,6 +19,8 @@ from app.services import (
 )
 from app.services.task_queue import QueueTask, TaskQueue, TaskStatus
 from app.services.public_token_service import hash_token, issue_public_token
+from app.core.security import create_access_token, get_password_hash
+from app.models.models import User, UserRole
 
 
 BACKGROUND_FUNCTIONS = [
@@ -36,6 +38,26 @@ BACKGROUND_FUNCTIONS = [
 ]
 
 ROUTE_BACKGROUND_FUNCTIONS = []
+
+
+def _isolated_queue(*, tenant_is_active=lambda _tenant_id: True):
+    queue = object.__new__(TaskQueue)
+    queue.semaphore = threading.Semaphore(1)
+    queue.retry_delay = 0
+    queue.queue = deque()
+    queue.queue_lock = threading.Lock()
+    queue.running_tasks = {}
+    queue.running_lock = threading.Lock()
+    queue.completed_tasks = {}
+    queue.completed_lock = threading.Lock()
+    queue._stats = {
+        "total_submitted": 0,
+        "total_completed": 0,
+        "total_failed": 0,
+    }
+    queue.max_concurrent = 3
+    queue.tenant_is_active = tenant_is_active
+    return queue
 
 
 def _route_background_functions():
@@ -271,16 +293,7 @@ def test_task_queue_retries_then_marks_failed_with_explicit_resource_arguments()
         on_failure=on_failure,
         max_retries=2,
     )
-    queue = object.__new__(TaskQueue)
-    queue.semaphore = threading.Semaphore(1)
-    queue.retry_delay = 0
-    queue.queue = deque()
-    queue.queue_lock = threading.Lock()
-    queue.running_tasks = {}
-    queue.running_lock = threading.Lock()
-    queue.completed_tasks = {}
-    queue.completed_lock = threading.Lock()
-    queue._stats = {"total_completed": 0, "total_failed": 0}
+    queue = _isolated_queue()
 
     queue._execute_task(task)
     assert task.status == TaskStatus.PENDING
@@ -293,6 +306,143 @@ def test_task_queue_retries_then_marks_failed_with_explicit_resource_arguments()
     ]
     assert failure_calls == [(tenant_id, resume_id, "RuntimeError")]
     assert "secret-token" not in task.error
+
+
+def test_task_status_and_queue_stats_are_isolated_by_tenant():
+    tenant_a, tenant_b = uuid4(), uuid4()
+    same_task_id = "shared-task-id"
+    queue = _isolated_queue()
+    queued_a = QueueTask(
+        tenant_id=tenant_a,
+        resource_id=uuid4(),
+        id=same_task_id,
+        task_type="resume_parse",
+        payload={},
+        callback=lambda *_args: None,
+    )
+    completed_b = QueueTask(
+        tenant_id=tenant_b,
+        resource_id=uuid4(),
+        id=same_task_id,
+        task_type="resume_parse",
+        payload={},
+        callback=lambda *_args: None,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(),
+    )
+    queue.queue.append(queued_a)
+    queue.completed_tasks[(tenant_b, same_task_id)] = completed_b
+
+    assert queue.get_status(same_task_id, tenant_a)["status"] == "pending"
+    assert queue.get_status(same_task_id, tenant_b)["status"] == "completed"
+    assert queue.get_status(same_task_id, uuid4()) is None
+    assert queue.get_stats(tenant_a)["queue_size"] == 1
+    assert queue.get_stats(tenant_a)["completed_tasks"] == 0
+    assert queue.get_stats(tenant_b)["queue_size"] == 0
+    assert queue.get_stats(tenant_b)["completed_tasks"] == 1
+
+
+def test_task_status_http_endpoint_masks_another_tenants_known_task(
+    client, db, tenant_a, tenant_b
+):
+    from app.services.task_queue import get_task_queue
+
+    users = []
+    for tenant in (tenant_a, tenant_b):
+        user = User(
+            tenant_id=tenant.id,
+            email=f"hr-{tenant.code}@example.com",
+            hashed_password=get_password_hash("Password123"),
+            role=UserRole.HR,
+            is_active=True,
+        )
+        db.add(user)
+        users.append(user)
+    db.commit()
+    queue = get_task_queue()
+    task = QueueTask(
+        tenant_id=tenant_a.id,
+        resource_id=uuid4(),
+        id="known-task",
+        task_type="resume_parse",
+        payload={},
+        callback=lambda *_args: None,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(),
+    )
+    with queue.completed_lock:
+        previous = dict(queue.completed_tasks)
+        queue.completed_tasks.clear()
+        queue.completed_tasks[(tenant_a.id, task.id)] = task
+
+    def headers(user):
+        token = create_access_token(
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            role=user.role.value,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    try:
+        own = client.get(
+            "/api/resumes/queue/task/known-task", headers=headers(users[0])
+        )
+        foreign = client.get(
+            "/api/resumes/queue/task/known-task", headers=headers(users[1])
+        )
+    finally:
+        with queue.completed_lock:
+            queue.completed_tasks.clear()
+            queue.completed_tasks.update(previous)
+
+    assert own.status_code == 200
+    assert own.json()["status"] == "completed"
+    assert foreign.status_code == 404
+
+
+def test_task_queued_before_tenant_disable_never_invokes_callback():
+    tenant_id = uuid4()
+    callback_calls = []
+    queue = _isolated_queue(tenant_is_active=lambda _tenant_id: False)
+    task = QueueTask(
+        tenant_id=tenant_id,
+        resource_id=uuid4(),
+        id="disabled-task",
+        task_type="resume_parse",
+        payload={"api_key": "must-not-be-logged"},
+        callback=lambda *_args: callback_calls.append(True),
+    )
+
+    queue._execute_task(task)
+
+    assert callback_calls == []
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "TenantInactive"
+
+
+def test_legacy_reminder_entry_requires_tenant_id_and_uses_tenant_session(monkeypatch):
+    from app.services import reminder_service
+
+    tenant_id = uuid4()
+    entered = []
+
+    @contextmanager
+    def scoped(actual_tenant_id):
+        entered.append(actual_tenant_id)
+        yield MagicMock()
+
+    monkeypatch.setattr(reminder_service, "tenant_session", scoped, raising=False)
+    monkeypatch.setattr(
+        reminder_service, "get_mail_service", lambda _db: MagicMock()
+    )
+    monkeypatch.setattr(
+        reminder_service.ReminderService,
+        "process_reminders",
+        lambda _self: {"total_processed": 0},
+    )
+
+    assert reminder_service.run_reminder_task(tenant_id) == {"total_processed": 0}
+    assert entered == [tenant_id]
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,10 @@ _SET_POSTGRES_TENANT = text(
 _TENANT_BINDINGS: WeakKeyDictionary[Session, UUID] = WeakKeyDictionary()
 
 
+class TenantInactiveError(RuntimeError):
+    """The tenant was removed or disabled before scoped work started."""
+
+
 def _require_uuid(tenant_id: UUID) -> UUID:
     if not isinstance(tenant_id, UUID):
         raise TypeError("tenant_id must be a UUID")
@@ -265,6 +269,37 @@ def _release_platform_onboarding_context(
 @contextmanager
 def tenant_session(tenant_id: UUID) -> Iterator[TenantSession]:
     """Open a tenant-bound Session and always release its transaction/connection."""
+
+    tenant_id = _require_uuid(tenant_id)
+    from app.config.database import TenantSessionLocal
+
+    db = TenantSessionLocal(tenant_id=tenant_id)
+    try:
+        from app.models.tenant_models import Tenant, TenantStatus
+
+        tenant = (
+            db.query(Tenant)
+            .filter(Tenant.id == tenant_id, Tenant.status == TenantStatus.ACTIVE)
+            .first()
+        )
+        if tenant is None:
+            raise TenantInactiveError("tenant is not active")
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@contextmanager
+def tenant_authentication_session(tenant_id: UUID) -> Iterator[TenantSession]:
+    """Open a scoped login session before credentials decide disabled-vs-401.
+
+    This narrow entry is only for the authentication service. Background and
+    ordinary business work must use ``tenant_session`` and pass the ACTIVE
+    gate before the caller receives the Session.
+    """
 
     tenant_id = _require_uuid(tenant_id)
     from app.config.database import TenantSessionLocal

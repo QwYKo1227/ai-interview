@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import event
@@ -527,6 +527,22 @@ def test_disabled_tenant_rejects_new_login_and_old_token_with_403_but_keeps_data
     assert login.status_code == 200
     tenant_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     assert platform_client.get("/api/auth/me", headers=tenant_headers).status_code == 200
+    original_user = db.query(User).one()
+    original_config = db.query(SystemConfig).one()
+    original_user_snapshot = {
+        "id": original_user.id,
+        "tenant_id": original_user.tenant_id,
+        "email": original_user.email,
+        "role": original_user.role,
+        "is_active": original_user.is_active,
+    }
+    original_config_snapshot = {
+        "id": original_config.id,
+        "tenant_id": original_config.tenant_id,
+        "mail_enabled": original_config.mail_enabled,
+        "smtp_host": original_config.smtp_host,
+    }
+    db.rollback()
 
     disabled = platform_client.patch(
         f"/api/platform/tenants/{tenant_id}/status",
@@ -537,9 +553,21 @@ def test_disabled_tenant_rejects_new_login_and_old_token_with_403_but_keeps_data
     assert disabled.status_code == 200
     assert platform_client.post("/api/auth/login", json=login_payload).status_code == 403
     assert platform_client.get("/api/auth/me", headers=tenant_headers).status_code == 403
-    assert db.query(User).filter(User.tenant_id == uuid4()).count() == 0
-    assert db.query(User).count() == 1
-    assert db.query(SystemConfig).count() == 1
+    retained_user = db.query(User).one()
+    retained_config = db.query(SystemConfig).one()
+    assert {
+        "id": retained_user.id,
+        "tenant_id": retained_user.tenant_id,
+        "email": retained_user.email,
+        "role": retained_user.role,
+        "is_active": retained_user.is_active,
+    } == original_user_snapshot
+    assert {
+        "id": retained_config.id,
+        "tenant_id": retained_config.tenant_id,
+        "mail_enabled": retained_config.mail_enabled,
+        "smtp_host": retained_config.smtp_host,
+    } == original_config_snapshot
 
 
 def test_status_change_for_missing_tenant_returns_fixed_404(
@@ -555,3 +583,89 @@ def test_status_change_for_missing_tenant_returns_fixed_404(
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Tenant not found"}
+
+
+def test_platform_can_list_and_inspect_tenants_with_domains(
+    platform_client, platform_admin
+):
+    headers = platform_login(platform_client, platform_admin)
+    created = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    )
+    tenant_id = created.json()["id"]
+
+    listing = platform_client.get("/api/platform/tenants", headers=headers)
+    detail = platform_client.get(
+        f"/api/platform/tenants/{tenant_id}", headers=headers
+    )
+
+    assert listing.status_code == 200
+    assert [item["id"] for item in listing.json()] == [tenant_id]
+    assert detail.status_code == 200
+    assert detail.json()["domains"] == [
+        {
+            "id": detail.json()["domains"][0]["id"],
+            "domain": "interview.careray-cloud.example",
+            "is_primary": True,
+            "created_at": detail.json()["domains"][0]["created_at"],
+        }
+    ]
+
+
+def test_platform_domain_maintenance_is_audited(
+    platform_client, db, platform_admin
+):
+    headers = platform_login(platform_client, platform_admin)
+    created = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()
+    tenant_id = created["id"]
+
+    added = platform_client.post(
+        f"/api/platform/tenants/{tenant_id}/domains",
+        headers=headers,
+        json={"domain": "jobs.careray-cloud.example", "is_primary": False},
+    )
+    assert added.status_code == 201
+    domain_id = added.json()["id"]
+    promoted = platform_client.patch(
+        f"/api/platform/tenants/{tenant_id}/domains/{domain_id}",
+        headers=headers,
+        json={"domain": "CAREERS.CARERAY-CLOUD.EXAMPLE:443", "is_primary": True},
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["domain"] == "careers.careray-cloud.example"
+    assert promoted.json()["is_primary"] is True
+    demoted = platform_client.patch(
+        f"/api/platform/tenants/{tenant_id}/domains/{domain_id}",
+        headers=headers,
+        json={"is_primary": False},
+    )
+    assert demoted.status_code == 409
+    domains = platform_client.get(
+        f"/api/platform/tenants/{tenant_id}", headers=headers
+    ).json()["domains"]
+    secondary_id = next(item["id"] for item in domains if not item["is_primary"])
+    deleted = platform_client.delete(
+        f"/api/platform/tenants/{tenant_id}/domains/{secondary_id}",
+        headers=headers,
+    )
+    assert deleted.status_code == 204
+
+    actions = [
+        row.action
+        for row in db.query(PlatformAuditLog)
+        .filter(PlatformAuditLog.target_tenant_id == UUID(created["id"]))
+        .order_by(PlatformAuditLog.created_at)
+        .all()
+    ]
+    assert actions == [
+        "tenant.created",
+        "tenant.domain_added",
+        "tenant.domain_updated",
+        "tenant.domain_deleted",
+    ]

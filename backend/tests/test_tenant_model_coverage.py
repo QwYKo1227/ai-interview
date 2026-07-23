@@ -110,8 +110,17 @@ def _unique_constraint_columns(model):
 
 def test_user_uniqueness_is_scoped_to_tenant():
     constraints = _unique_constraint_columns(User)
+    casefold_index = next(
+        index
+        for index in User.__table__.indexes
+        if index.name == "uq_users_tenant_lower_email"
+    )
+    expressions = tuple(str(expression) for expression in casefold_index.expressions)
 
-    assert ("uq_users_tenant_email", ("tenant_id", "email")) in constraints
+    assert casefold_index.unique is True
+    assert expressions[0] == "users.tenant_id"
+    assert expressions[1] == "lower(users.email)"
+    assert not any(name == "uq_users_tenant_email" for name, _ in constraints)
     assert ("uq_users_tenant_id_id", ("tenant_id", "id")) in constraints
     assert User.__table__.c.email.unique is not True
 

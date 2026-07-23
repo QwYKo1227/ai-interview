@@ -80,6 +80,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-10}
+      RATE_LIMIT_PUBLIC_UPLOAD: ${RATE_LIMIT_PUBLIC_UPLOAD:-10}
+      RATE_LIMIT_PUBLIC_CODE_RUN: ${RATE_LIMIT_PUBLIC_CODE_RUN:-30}
       APP_ENV: production
     volumes:
       - backend_uploads:/app/uploads

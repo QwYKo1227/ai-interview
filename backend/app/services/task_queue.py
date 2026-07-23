@@ -7,6 +7,31 @@ from uuid import UUID
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
 import time
+import logging
+from app.core.observability import current_request_id, logging_context
+
+
+logger = logging.getLogger(__name__)
+
+
+def _tenant_is_active(tenant_id: UUID) -> bool:
+    """Read current tenant state immediately before queued execution."""
+
+    from app.config.database import SessionLocal
+    from app.models.tenant_models import Tenant, TenantStatus
+
+    db = SessionLocal()
+    try:
+        return (
+            db.query(Tenant.id)
+            .filter(Tenant.id == tenant_id, Tenant.status == TenantStatus.ACTIVE)
+            .first()
+            is not None
+        )
+    except Exception:
+        return False
+    finally:
+        db.close()
 
 
 class TaskStatus(str, Enum):
@@ -32,6 +57,7 @@ class QueueTask:
     error: Optional[str] = None
     retry_count: int = 0
     max_retries: int = 3
+    request_id: Optional[str] = field(default_factory=current_request_id)
 
 
 class TaskQueue:
@@ -67,11 +93,21 @@ class TaskQueue:
         self.is_running = False
         self.worker_thread: Optional[threading.Thread] = None
         self._initialized = True
+        self.tenant_is_active = _tenant_is_active
         self._stats = {
             "total_submitted": 0,
             "total_completed": 0,
             "total_failed": 0,
         }
+        self._tenant_stats: Dict[UUID, Dict[str, int]] = {}
+
+    def _stats_for(self, tenant_id: UUID) -> Dict[str, int]:
+        if not hasattr(self, "_tenant_stats"):
+            self._tenant_stats = {}
+        return self._tenant_stats.setdefault(
+            tenant_id,
+            {"total_submitted": 0, "total_completed": 0, "total_failed": 0},
+        )
 
     def start(self):
         if self.is_running:
@@ -111,6 +147,7 @@ class TaskQueue:
         with self.queue_lock:
             self.queue.append(task)
             self._stats["total_submitted"] += 1
+            self._stats_for(tenant_id)["total_submitted"] += 1
             queue_size = len(self.queue)
 
         with self.running_lock:
@@ -123,10 +160,11 @@ class TaskQueue:
 
         return task
 
-    def get_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def get_status(self, task_id: str, tenant_id: UUID) -> Optional[Dict[str, Any]]:
+        key = (tenant_id, task_id)
         with self.running_lock:
-            if task_id in self.running_tasks:
-                task = self.running_tasks[task_id]
+            if key in self.running_tasks:
+                task = self.running_tasks[key]
                 return {
                     "status": task.status.value,
                     "created_at": task.created_at.isoformat(),
@@ -134,8 +172,8 @@ class TaskQueue:
                 }
 
         with self.completed_lock:
-            if task_id in self.completed_tasks:
-                task = self.completed_tasks[task_id]
+            if key in self.completed_tasks:
+                task = self.completed_tasks[key]
                 return {
                     "status": task.status.value,
                     "created_at": task.created_at.isoformat(),
@@ -146,36 +184,48 @@ class TaskQueue:
 
         with self.queue_lock:
             for i, task in enumerate(self.queue):
-                if task.id == task_id:
+                if task.id == task_id and task.tenant_id == tenant_id:
                     return {
                         "status": task.status.value,
                         "created_at": task.created_at.isoformat(),
-                        "queue_position": i + 1,
+                        "queue_position": 1 + sum(
+                            1
+                            for earlier in list(self.queue)[:i]
+                            if earlier.tenant_id == tenant_id
+                        ),
                     }
 
         return None
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self, tenant_id: UUID) -> Dict[str, Any]:
         with self.queue_lock:
-            queue_size = len(self.queue)
+            queue_size = sum(1 for task in self.queue if task.tenant_id == tenant_id)
         with self.running_lock:
-            running_size = len(self.running_tasks)
+            running_size = sum(
+                1 for task in self.running_tasks.values() if task.tenant_id == tenant_id
+            )
         with self.completed_lock:
-            completed_size = len(self.completed_tasks)
+            completed_size = sum(
+                1 for task in self.completed_tasks.values() if task.tenant_id == tenant_id
+            )
 
         return {
             "queue_size": queue_size,
             "running_tasks": running_size,
             "completed_tasks": completed_size,
             "max_concurrent": self.max_concurrent,
-            **self._stats,
+            **self._stats_for(tenant_id),
         }
 
-    def get_queue_position(self, task_id: str) -> Optional[int]:
+    def get_queue_position(self, task_id: str, tenant_id: UUID) -> Optional[int]:
         with self.queue_lock:
-            for i, task in enumerate(self.queue):
+            position = 0
+            for task in self.queue:
+                if task.tenant_id != tenant_id:
+                    continue
+                position += 1
                 if task.id == task_id:
-                    return i + 1
+                    return position
         return None
 
     def _worker(self):
@@ -196,6 +246,15 @@ class TaskQueue:
                 time.sleep(1)
 
     def _execute_task(self, task: QueueTask):
+        with logging_context(
+            request_id=task.request_id,
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            resource_id=task.resource_id,
+        ):
+            return self._execute_task_in_context(task)
+
+    def _execute_task_in_context(self, task: QueueTask):
         acquired = self.semaphore.acquire(blocking=True)
         if not acquired:
             with self.queue_lock:
@@ -207,9 +266,32 @@ class TaskQueue:
             task.started_at = datetime.now()
 
             with self.running_lock:
-                self.running_tasks[task.id] = task
+                self.running_tasks[(task.tenant_id, task.id)] = task
 
-            print(f"[TaskQueue] Executing task {task.id}")
+            if not self.tenant_is_active(task.tenant_id):
+                task.status = TaskStatus.FAILED
+                task.error = "TenantInactive"
+                task.completed_at = datetime.now()
+                self._stats["total_failed"] += 1
+                self._stats_for(task.tenant_id)["total_failed"] += 1
+                logger.warning(
+                    "Background task rejected for inactive tenant",
+                    extra={
+                        "tenant_id": str(task.tenant_id),
+                        "task_id": task.id,
+                        "resource_id": str(task.resource_id),
+                    },
+                )
+                return
+
+            logger.info(
+                "Background task started",
+                extra={
+                    "tenant_id": str(task.tenant_id),
+                    "task_id": task.id,
+                    "resource_id": str(task.resource_id),
+                },
+            )
 
             result = task.callback(
                 task.tenant_id, task.resource_id, task.payload
@@ -218,7 +300,7 @@ class TaskQueue:
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.now()
             self._stats["total_completed"] += 1
-            print(f"[TaskQueue] Task {task.id} completed")
+            self._stats_for(task.tenant_id)["total_completed"] += 1
 
         except Exception as e:
             task.retry_count += 1
@@ -234,6 +316,7 @@ class TaskQueue:
                 task.status = TaskStatus.FAILED
                 task.completed_at = datetime.now()
                 self._stats["total_failed"] += 1
+                self._stats_for(task.tenant_id)["total_failed"] += 1
                 print(f"[TaskQueue] Task {task.id} failed permanently")
 
                 if task.on_failure:
@@ -248,12 +331,11 @@ class TaskQueue:
             self.semaphore.release()
 
             with self.running_lock:
-                if task.id in self.running_tasks:
-                    del self.running_tasks[task.id]
+                self.running_tasks.pop((task.tenant_id, task.id), None)
 
             if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
                 with self.completed_lock:
-                    self.completed_tasks[task.id] = task
+                    self.completed_tasks[(task.tenant_id, task.id)] = task
                     if len(self.completed_tasks) > 100:
                         oldest_key = next(iter(self.completed_tasks))
                         del self.completed_tasks[oldest_key]

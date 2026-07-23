@@ -16,7 +16,11 @@ from app.models.tenant_models import (
     TenantDomain,
     TenantStatus,
 )
-from app.schemas.tenant import TenantOnboardingRequest
+from app.schemas.tenant import (
+    TenantDomainCreate,
+    TenantDomainUpdate,
+    TenantOnboardingRequest,
+)
 
 
 class TenantServiceError(Exception):
@@ -43,6 +47,18 @@ TENANT_CONFLICT_MESSAGE = "Tenant code or domain already exists"
 TENANT_ACTOR_MESSAGE = "Platform actor is not authorized"
 TENANT_ONBOARDING_MESSAGE = "Tenant onboarding failed"
 TENANT_NOT_FOUND_MESSAGE = "Tenant not found"
+PRIMARY_DOMAIN_MESSAGE = "Primary domain must be replaced before removal"
+
+
+def _require_platform_actor(db, actor_id: UUID) -> PlatformUser:
+    actor = (
+        db.query(PlatformUser)
+        .filter(PlatformUser.id == actor_id, PlatformUser.is_active.is_(True))
+        .first()
+    )
+    if actor is None:
+        raise TenantActorError(TENANT_ACTOR_MESSAGE)
+    return actor
 
 
 def create_tenant_with_admin(
@@ -177,6 +193,141 @@ def set_tenant_status(
             db.expunge(tenant)
         return tenant
     except (TenantActorError, TenantNotFoundError):
+        raise
+    except Exception:
+        raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
+
+
+def add_tenant_domain(
+    db: TenantCapableSession,
+    *,
+    tenant_id: UUID,
+    payload: TenantDomainCreate,
+    actor_id: UUID,
+) -> TenantDomain:
+    try:
+        with db.begin():
+            _require_platform_actor(db, actor_id)
+            tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+            if tenant is None:
+                raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
+            if payload.is_primary:
+                db.query(TenantDomain).filter(
+                    TenantDomain.tenant_id == tenant_id,
+                    TenantDomain.is_primary.is_(True),
+                ).update({TenantDomain.is_primary: False}, synchronize_session="fetch")
+            domain = TenantDomain(
+                tenant_id=tenant_id,
+                domain=payload.domain,
+                is_primary=payload.is_primary,
+            )
+            db.add(domain)
+            db.add(
+                PlatformAuditLog(
+                    actor_id=actor_id,
+                    action="tenant.domain_added",
+                    target_tenant_id=tenant_id,
+                    details={"domain": payload.domain, "is_primary": payload.is_primary},
+                )
+            )
+            db.flush()
+            db.expunge(domain)
+        return domain
+    except (TenantActorError, TenantNotFoundError):
+        raise
+    except IntegrityError:
+        raise TenantConflictError(TENANT_CONFLICT_MESSAGE) from None
+    except Exception:
+        raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
+
+
+def update_tenant_domain(
+    db: TenantCapableSession,
+    *,
+    tenant_id: UUID,
+    domain_id: UUID,
+    payload: TenantDomainUpdate,
+    actor_id: UUID,
+) -> TenantDomain:
+    try:
+        with db.begin():
+            _require_platform_actor(db, actor_id)
+            tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+            if tenant is None:
+                raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
+            domain = db.query(TenantDomain).filter(
+                TenantDomain.id == domain_id,
+                TenantDomain.tenant_id == tenant_id,
+            ).first()
+            if domain is None:
+                raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
+            if payload.is_primary is False and domain.is_primary:
+                raise TenantConflictError(PRIMARY_DOMAIN_MESSAGE)
+            previous = {"domain": domain.domain, "is_primary": domain.is_primary}
+            if payload.is_primary is True and not domain.is_primary:
+                db.query(TenantDomain).filter(
+                    TenantDomain.tenant_id == tenant_id,
+                    TenantDomain.id != domain.id,
+                    TenantDomain.is_primary.is_(True),
+                ).update({TenantDomain.is_primary: False}, synchronize_session="fetch")
+                db.flush()
+            if payload.domain is not None:
+                domain.domain = payload.domain
+            if payload.is_primary is not None:
+                domain.is_primary = payload.is_primary
+            db.add(
+                PlatformAuditLog(
+                    actor_id=actor_id,
+                    action="tenant.domain_updated",
+                    target_tenant_id=tenant_id,
+                    details={
+                        "domain_id": str(domain.id),
+                        "previous": previous,
+                        "domain": domain.domain,
+                        "is_primary": domain.is_primary,
+                    },
+                )
+            )
+            db.flush()
+            db.expunge(domain)
+        return domain
+    except (TenantActorError, TenantConflictError, TenantNotFoundError):
+        raise
+    except IntegrityError:
+        raise TenantConflictError(TENANT_CONFLICT_MESSAGE) from None
+    except Exception:
+        raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
+
+
+def delete_tenant_domain(
+    db: TenantCapableSession,
+    *,
+    tenant_id: UUID,
+    domain_id: UUID,
+    actor_id: UUID,
+) -> None:
+    try:
+        with db.begin():
+            _require_platform_actor(db, actor_id)
+            domain = db.query(TenantDomain).filter(
+                TenantDomain.id == domain_id,
+                TenantDomain.tenant_id == tenant_id,
+            ).first()
+            if domain is None:
+                raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
+            if domain.is_primary:
+                raise TenantConflictError(PRIMARY_DOMAIN_MESSAGE)
+            details = {"domain_id": str(domain.id), "domain": domain.domain}
+            db.delete(domain)
+            db.add(
+                PlatformAuditLog(
+                    actor_id=actor_id,
+                    action="tenant.domain_deleted",
+                    target_tenant_id=tenant_id,
+                    details=details,
+                )
+            )
+    except (TenantActorError, TenantConflictError, TenantNotFoundError):
         raise
     except Exception:
         raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None

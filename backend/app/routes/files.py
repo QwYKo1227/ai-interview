@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import User
+from app.models.models import Interview, InterviewPanel, QuestionBank, Resume, User, UserRole
 from app.schemas.file import PublicFileTokenRequest, PublicFileTokenResponse
 from app.services.public_token_service import enforce_public_request_tenant, issue_public_token, resolve_public_token
 from app.utils.file_storage import UPLOAD_ROOT as DEFAULT_UPLOAD_ROOT, resolve_object_path, sanitize_content_type
@@ -41,6 +41,58 @@ def _response(record: StoredFile) -> FileResponse:
     )
 
 
+def _can_access_file(db: Session, current_user: User, record: StoredFile) -> bool:
+    """Authorize the linked business resource, not merely a guessable file UUID."""
+
+    if record.resource_id is None or record.resource_type is None:
+        return False
+    role = getattr(current_user.role, "value", current_user.role)
+    resource_exists = False
+    if record.resource_type == "resume":
+        resource_exists = (
+            db.query(Resume.id)
+            .filter(Resume.id == record.resource_id, Resume.file_id == record.id)
+            .first()
+            is not None
+        )
+    elif record.resource_type == "question_bank":
+        resource_exists = (
+            db.query(QuestionBank.id)
+            .filter(
+                QuestionBank.id == record.resource_id,
+                QuestionBank.source_file_id == record.id,
+            )
+            .first()
+            is not None
+        )
+    elif record.resource_type == "interview":
+        interview = (
+            db.query(Interview)
+            .filter(Interview.id == record.resource_id)
+            .first()
+        )
+        resource_exists = interview is not None
+        if resource_exists and role == UserRole.INTERVIEWER.value:
+            panel_access = (
+                db.query(InterviewPanel.id)
+                .filter(
+                    InterviewPanel.interview_id == interview.id,
+                    InterviewPanel.interviewer_id == current_user.id,
+                )
+                .first()
+                is not None
+            )
+            member_ids = {str(member) for member in (interview.panel_members or [])}
+            return (
+                interview.interviewer_id == current_user.id
+                or str(current_user.id) in member_ids
+                or panel_access
+            )
+    if not resource_exists:
+        return False
+    return role in {UserRole.ADMIN.value, UserRole.HR.value}
+
+
 @router.get("/{file_id}")
 def download_file(
     file_id: UUID,
@@ -50,7 +102,7 @@ def download_file(
     record = db.query(StoredFile).filter(
         StoredFile.id == file_id, StoredFile.tenant_id == current_user.tenant_id
     ).first()
-    if record is None:
+    if record is None or not _can_access_file(db, current_user, record):
         raise _not_found()
     return _response(record)
 
@@ -65,7 +117,7 @@ def create_public_file_token(
     record = db.query(StoredFile).filter(
         StoredFile.id == file_id, StoredFile.tenant_id == current_user.tenant_id
     ).first()
-    if record is None:
+    if record is None or not _can_access_file(db, current_user, record):
         raise _not_found()
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=payload.ttl_seconds)
     raw_token = issue_public_token(db, current_user.tenant_id, "stored_file", record.id, expires_at)

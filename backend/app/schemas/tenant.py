@@ -29,6 +29,45 @@ class TenantResponse(TenantSummary):
     updated_at: datetime
 
 
+class TenantDomainCreate(BaseModel):
+    domain: str = Field(min_length=1, max_length=253)
+    is_primary: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("domain")
+    @classmethod
+    def normalize_domain(cls, value: str) -> str:
+        return TenantDomain(domain=value, tenant_id=UUID(int=0)).domain
+
+
+class TenantDomainUpdate(BaseModel):
+    domain: Optional[str] = Field(default=None, min_length=1, max_length=253)
+    is_primary: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("domain")
+    @classmethod
+    def normalize_domain(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return TenantDomain(domain=value, tenant_id=UUID(int=0)).domain
+
+
+class TenantDomainResponse(BaseModel):
+    id: UUID
+    domain: str
+    is_primary: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TenantDetailResponse(TenantResponse):
+    domains: list[TenantDomainResponse]
+
+
 class PlatformLoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=72)

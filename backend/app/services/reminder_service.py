@@ -14,6 +14,7 @@ from sqlalchemy import and_
 
 from app.models.models import Interview, InterviewStatus, Resume, Position, User
 from app.services.mail_service import MailService, get_mail_service
+from app.config.tenant_session import tenant_session
 
 logger = logging.getLogger(__name__)
 
@@ -243,15 +244,16 @@ class ReminderService:
         return result
 
 
-def run_reminder_task(db: Session) -> Dict[str, Any]:
+def run_reminder_task(tenant_id: UUID) -> Dict[str, Any]:
     """
     运行提醒任务（用于后台任务或定时任务）
 
     Args:
-        db: 数据库会话
+        tenant_id: 待处理租户 ID
 
     Returns:
         dict: 任务结果
     """
-    service = ReminderService(db)
-    return service.process_reminders()
+    with tenant_session(tenant_id) as db:
+        service = ReminderService(db)
+        return service.process_reminders()

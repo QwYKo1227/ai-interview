@@ -356,7 +356,7 @@ if ! docker run --rm --network "$DRILL_NETWORK" \
   echo '副本Alembic head检查失败' >&2
   exit 1
 fi
-grep -q 'q6r7s8t9u0v1' "$RELEASE_DIR/drill-alembic-current.txt" \
+grep -q 'r7s8t9u0v1w2' "$RELEASE_DIR/drill-alembic-current.txt" \
   || { echo '副本不在Alembic head' >&2; exit 1; }
 if ! docker exec -e PGPASSWORD="$DRILL_MIGRATION_PASSWORD" \
   "$DRILL_DB_CONTAINER" psql -U app_migration -d "$DRILL_DB" \
@@ -786,7 +786,7 @@ if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm b
   echo '生产Alembic head检查失败' >&2
   exit 1
 fi
-grep -q 'q6r7s8t9u0v1' "$RELEASE_DIR/production-alembic-current-after.txt" \
+grep -q 'r7s8t9u0v1w2' "$RELEASE_DIR/production-alembic-current-after.txt" \
   || { echo '生产库不在Alembic head' >&2; exit 1; }
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
   -v "$RELEASE_DIR:/artifacts" backend-migrate \
@@ -870,7 +870,21 @@ unset PHOTONTHIX_ADMIN_PASSWORD
 
 若 Photonthix 已存在，先通过平台查询接口核对状态，不要重复创建或直接改库。
 
+平台管理员可通过以下控制面接口核对租户与维护域名，所有域名新增、修改和删除都会写入 `platform_audit_logs`；主域名必须先切换到另一条记录才能删除：
+
+```text
+GET    /api/platform/tenants
+GET    /api/platform/tenants/{tenant_id}
+POST   /api/platform/tenants/{tenant_id}/domains
+PATCH  /api/platform/tenants/{tenant_id}/domains/{domain_id}
+DELETE /api/platform/tenants/{tenant_id}/domains/{domain_id}
+```
+
+域名修改后必须先核对平台详情和审计日志，再更新 DNS/Caddy；不要直接修改 `tenant_domains` 绕过审计。
+
 ## 6. 内部域名、HTTPS 与麦克风
+
+应用进程对登录、公开简历上传和公开代码运行分别执行分钟级限流，并可通过 `RATE_LIMIT_LOGIN`、`RATE_LIMIT_PUBLIC_UPLOAD`、`RATE_LIMIT_PUBLIC_CODE_RUN` 调整单进程阈值。该内存限流只承担应用最后一道防线，不是集群级防护。生产入口还必须在受信网关/WAF 按客户端 IP 与路径配置独立阈值和突发容量，并限制请求体大小；多副本部署时网关计数必须集中共享。只有受信代理可以覆盖真实客户端地址，禁止直接信任公网请求提供的 `X-Forwarded-For`。429 比例、拒绝路径和重试间隔必须纳入监控，但不得记录登录密码、JWT、公开令牌或代码正文。
 
 内部 DNS 必须把以下两个名称解析到同一台受控服务器：
 

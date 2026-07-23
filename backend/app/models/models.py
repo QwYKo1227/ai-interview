@@ -1,10 +1,10 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, Index, UniqueConstraint, text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, Index, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
 from app.models.base import Base
 import enum
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from app.models.tenant_models import TenantScopedMixin
 from app.models.tenant_constraints import TenantForeignKeyConstraint
 
@@ -38,7 +38,6 @@ class UserRole(str, enum.Enum):
 class User(TenantScopedMixin, Base):
     __tablename__ = "users"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
         UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id_id"),
     )
 
@@ -50,6 +49,20 @@ class User(TenantScopedMixin, Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @validates("email")
+    def normalize_email(self, _key, value):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("email is required")
+        return value.strip().lower()
+
+
+Index(
+    "uq_users_tenant_lower_email",
+    User.tenant_id,
+    func.lower(User.email),
+    unique=True,
+)
 
 class PositionStatus(str, enum.Enum):
     OPEN = "open"

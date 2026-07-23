@@ -1,0 +1,33 @@
+export type TenantStatus = 'active' | 'inactive';
+
+export interface PlatformDomain {
+  id: string;
+  domain: string;
+  is_primary: boolean;
+  created_at: string;
+}
+
+export interface PlatformTenant {
+  id: string;
+  code: string;
+  name: string;
+  logo_url?: string | null;
+  primary_domain?: string | null;
+  status: TenantStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlatformTenantDetail extends PlatformTenant {
+  domains: PlatformDomain[];
+}
+
+export interface PlatformLoginPayload { email: string; password: string }
+
+export interface TenantOnboardingPayload {
+  code: string;
+  name: string;
+  primary_domain: string;
+  admin_email: string;
+  admin_password: string;
+}

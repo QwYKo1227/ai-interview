@@ -131,9 +131,14 @@ GREEN：
 
 ### Diff 检查
 
-- 命令：`git diff --check`
-- 结果：退出码 0，无空白错误。
+- 命令：`git diff --check fa78459..HEAD`
+- 结果：退出码 0；检查范围覆盖 `fa78459` 到最终修复提交，避免干净工作树下无范围命令漏检已提交内容。
 - 实现提交前 staged 检查：`git diff --cached --check`，退出码 0。
+
+### 文档格式复审修复
+
+- 移除平台控制台设计文档和本报告 EOF 的多余空白行。
+- 最终提交后使用 `git diff --check fa78459..HEAD` 复验累计提交范围，并单独核对 `git status --short` 为空。
 
 ## 提交
 

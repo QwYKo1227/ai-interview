@@ -310,13 +310,15 @@ const PositionsList: React.FC = () => {
       title: '岗位名称',
       dataIndex: 'title', 
       key: 'title',
+      width: 220,
       render: (text: string) => <span style={{ fontWeight: 500, color: '#0F172A' }}>{text}</span>
     },
-    { title: '部门', dataIndex: 'department', key: 'department', render: (v: string) => v || '-' },
+    { title: '部门', dataIndex: 'department', key: 'department', width: 120, render: (v: string) => v || '-' },
     { 
       title: '类型', 
       dataIndex: 'position_type', 
       key: 'position_type',
+      width: 100,
       render: (type: string) => {
         const config = positionTypeConfig[type] || { color: 'default', text: type };
         return <Tag color={config.color} style={{ border: 'none' }}>{config.text}</Tag>;
@@ -326,6 +328,7 @@ const PositionsList: React.FC = () => {
       title: '紧急度', 
       dataIndex: 'urgency', 
       key: 'urgency',
+      width: 100,
       render: (urgency: string) => {
         const config = urgencyConfig[urgency] || { color: 'default', text: urgency };
         return <Tag color={config.color} style={{ border: 'none' }}>{config.text}</Tag>;
@@ -335,6 +338,7 @@ const PositionsList: React.FC = () => {
       title: '状态', 
       dataIndex: 'status', 
       key: 'status',
+      width: 100,
       render: (status: string) => {
         let color = 'default';
         let text = '已关闭';
@@ -351,17 +355,21 @@ const PositionsList: React.FC = () => {
     { 
       title: '招聘进度', 
       key: 'stats',
+      width: 160,
       render: (_: any, record: Position) => renderStats(record.stats)
     },
     { 
       title: '创建时间', 
       dataIndex: 'created_at', 
       key: 'created_at',
+      width: 180,
       render: (date: string) => <span style={{ color: '#64748B' }}>{new Date(date).toLocaleDateString()}</span>
     },
     {
       title: '操作',
       key: 'action',
+      width: 200,
+      fixed: 'right' as const,
       render: (_: any, record: Position) => (
         <Space size="small">
           <Tooltip title="查看详情">
@@ -394,7 +402,7 @@ const PositionsList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+      <div className="positions-page-header" style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
         <div>
           <Title level={2} style={{ margin: 0, fontWeight: 700 }}>岗位管理</Title>
           <Text type="secondary">管理企业的招聘岗位信息</Text>
@@ -402,7 +410,7 @@ const PositionsList: React.FC = () => {
         <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd} size="large" style={{ borderRadius: '8px' }}>新增岗位</Button>
       </div>
       
-      <div style={{ marginBottom: 24, padding: '24px', background: '#fff', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="positions-filter-bar" style={{ marginBottom: 24, padding: '24px', background: '#fff', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
           <Input 
               placeholder="搜索岗位名称" 
               prefix={<EyeOutlined style={{ color: '#94A3B8' }} />} 
@@ -432,8 +440,10 @@ const PositionsList: React.FC = () => {
       </div>
       
       <Table 
+        className="positions-table"
         columns={columns} 
         dataSource={data} 
+        scroll={{ x: 1180 }}
         loading={loading} 
         rowKey="id" 
         pagination={{ pageSize: 10, showSizeChanger: true }}
@@ -451,7 +461,7 @@ const PositionsList: React.FC = () => {
         confirmLoading={submitting}
         width={800}
         centered
-        destroyOnClose
+        destroyOnHidden
         okText="保存"
         cancelText="取消"
       >
@@ -590,7 +600,7 @@ const PositionsList: React.FC = () => {
 
       <Drawer
         title="岗位详情"
-        width={800}
+        size={800}
         onClose={() => setIsDrawerVisible(false)}
         open={isDrawerVisible}
         extra={

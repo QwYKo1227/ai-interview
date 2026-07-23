@@ -57,6 +57,22 @@ code {
   min-width: 0;
 }
 
+.positions-page-header,
+.positions-filter-bar {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.positions-table {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.positions-table .ant-table-cell-fix-right,
+.positions-table .ant-table-cell-fix-end {
+  background: var(--surface-color);
+}
+
 .app-user-name {
   display: inline-block;
   max-width: 180px;

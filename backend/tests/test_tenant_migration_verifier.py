@@ -176,6 +176,7 @@ def test_production_caddy_defaults_to_both_internal_tenant_domains():
     root = Path(__file__).parents[2]
     caddyfile = (root / "Caddyfile").read_text(encoding="utf-8")
     compose = (root / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    env_example = (root / ".env.example").read_text(encoding="utf-8")
     domains = "interview.careray.com, interview.photonthix.com"
 
     assert f"APP_DOMAINS:{domains}" in caddyfile
@@ -183,6 +184,11 @@ def test_production_caddy_defaults_to_both_internal_tenant_domains():
     assert 'Permissions-Policy "microphone=(self)"' in caddyfile
     assert "APP_DOMAINS" in compose
     assert domains in compose
+    assert "UNIFIED_ENTRY_HOSTS=interview.careray.com" in env_example
+    assert (
+        "UNIFIED_ENTRY_HOSTS: ${UNIFIED_ENTRY_HOSTS:?Set UNIFIED_ENTRY_HOSTS "
+        "to the shared company login hostname}" in compose
+    )
     migrate_service = compose.split("  backend-migrate:", 1)[1].split(
         "  postgres-finalize:", 1
     )[0]
@@ -351,6 +357,9 @@ def test_compose_env_file_preserves_spaced_domains_without_executing_commands(
         f"MALICIOUS=$(touch {marker.as_posix()})\n",
         encoding="utf-8",
     )
+    environ = os.environ.copy()
+    environ.pop("APP_DOMAINS", None)
+    environ.pop("MALICIOUS", None)
 
     completed = subprocess.run(
         [
@@ -368,6 +377,8 @@ def test_compose_env_file_preserves_spaced_domains_without_executing_commands(
         capture_output=True,
         timeout=30,
         check=False,
+        cwd=tmp_path,
+        env=environ,
     )
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)

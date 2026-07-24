@@ -131,6 +131,33 @@ def test_unified_entry_allows_explicit_tenant_login(
     assert response.status_code == 200
 
 
+def test_shared_login_domain_allows_company_selection_despite_domain_mapping(
+    client, db, tenant_a, tenant_b, monkeypatch
+):
+    monkeypatch.setenv("UNIFIED_ENTRY_HOSTS", "interview.careray.com")
+    create_user(db, tenant_b.id, "member@example.com", "Password123")
+    db.add(
+        TenantDomain(
+            tenant_id=tenant_a.id,
+            domain="interview.careray.com",
+            is_primary=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/auth/login",
+        headers={"Host": "interview.careray.com"},
+        json={
+            "tenant_code": tenant_b.code,
+            "email": "member@example.com",
+            "password": "Password123",
+        },
+    )
+
+    assert response.status_code == 200
+
+
 def test_tenant_a_password_cannot_login_to_tenant_b(client, db, tenant_a, tenant_b):
     create_user(db, tenant_a.id, "same@example.com", "Password123")
     create_user(db, tenant_b.id, "same@example.com", "OtherPass123")

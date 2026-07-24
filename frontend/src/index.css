@@ -271,6 +271,14 @@ code {
   font-size: 14px;
 }
 
+.ant-table-tbody > tr.ant-table-measure-row > td {
+  height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+}
+
 .ant-table-tbody > tr:hover > td {
   background: #F8FAFC !important;
 }

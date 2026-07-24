@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PositionsList from './List'
 import request from '../../utils/request'
+import '../../index.css'
 
 vi.mock('../../utils/request', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
@@ -63,5 +64,19 @@ describe('PositionsList responsive table', () => {
     expect(actionCell).toHaveClass('ant-table-cell-fix-end')
     expect(container.querySelector('.positions-table')).toBeInTheDocument()
     expect(container.querySelector('.ant-table-content')).toHaveStyle({ overflowX: 'auto' })
+  })
+
+  it('keeps the Ant Design column measurement row collapsed', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [position] : [])
+    const { container } = render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+
+    const measureCell = container.querySelector('.ant-table-measure-row td')
+    expect(measureCell).toBeInTheDocument()
+    expect(measureCell).toHaveStyle({
+      padding: '0px',
+      lineHeight: '0',
+    })
   })
 })

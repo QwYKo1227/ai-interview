@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCurrentPositionListParams,
   buildPositionListParams,
-  createLatestRequestCoordinator,
+  createEmptyPositionListFilters,
+  reconcileDepartmentSelection,
   reconcileHiringManagerSelection,
 } from './filters';
+import { createLatestRequestCoordinator } from '../../utils/latestRequest';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -20,18 +22,32 @@ const deferred = <T>() => {
 describe('buildPositionListParams', () => {
   it('omits hiring_manager_id when no manager is selected', () => {
     expect(buildPositionListParams({ title: '', status: undefined, hiringManagerId: undefined }))
-      .toEqual({ title: '', status: undefined });
+      .toEqual({});
   });
 
-  it('combines hiring manager with title and status', () => {
+  it('combines all position filters', () => {
     expect(buildPositionListParams({
       title: 'Backend',
+      department: 'Engineering',
       status: 'published',
       hiringManagerId: 'manager-id',
+      urgency: 'urgent',
     })).toEqual({
       title: 'Backend',
+      department: 'Engineering',
       status: 'published',
       hiring_manager_id: 'manager-id',
+      urgency: 'urgent',
+    });
+  });
+
+  it('creates an empty five-field filter state for reset', () => {
+    expect(createEmptyPositionListFilters()).toEqual({
+      title: '',
+      department: undefined,
+      hiringManagerId: undefined,
+      urgency: undefined,
+      status: undefined,
     });
   });
 });
@@ -112,5 +128,14 @@ describe('reconcileHiringManagerSelection', () => {
 
   it('clears the selected manager after it disappears', () => {
     expect(reconcileHiringManagerSelection('manager-c', managers)).toBeUndefined();
+  });
+});
+
+describe('reconcileDepartmentSelection', () => {
+  it('preserves an available department and clears a missing one', () => {
+    expect(reconcileDepartmentSelection('Engineering', ['Engineering']))
+      .toBe('Engineering');
+    expect(reconcileDepartmentSelection('People', ['Engineering']))
+      .toBeUndefined();
   });
 });

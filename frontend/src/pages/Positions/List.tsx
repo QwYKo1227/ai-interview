@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge } from 'antd';
+import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Card } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
@@ -7,9 +7,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   buildCurrentPositionListParams,
-  createLatestRequestCoordinator,
+  createEmptyPositionListFilters,
+  type PositionListFilters,
+  reconcileDepartmentSelection,
   reconcileHiringManagerSelection,
 } from './filters';
+import { createLatestRequestCoordinator } from '../../utils/latestRequest';
 
 const { Title, Text } = Typography;
 
@@ -81,24 +84,16 @@ const PositionsList: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [users, setUsers] = useState<HiringManagerOption[]>([]);
   const [hiringManagers, setHiringManagers] = useState<HiringManagerOption[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
   const [jdModalVisible, setJdModalVisible] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
-  const [searchTitle, setSearchTitle] = useState<string>('');
-  const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
-  const [searchHiringManagerId, setSearchHiringManagerId] = useState<string | undefined>();
-  const positionListFiltersRef = useRef({
-    title: searchTitle,
-    status: searchStatus,
-    hiringManagerId: searchHiringManagerId,
-  });
-  positionListFiltersRef.current = {
-    title: searchTitle,
-    status: searchStatus,
-    hiringManagerId: searchHiringManagerId,
-  };
+  const [filters, setFilters] = useState<PositionListFilters>(createEmptyPositionListFilters);
+  const positionListFiltersRef = useRef(filters);
+  positionListFiltersRef.current = filters;
   const [positionRequestCoordinator] = useState(createLatestRequestCoordinator);
   const [hiringManagerRequestCoordinator] = useState(createLatestRequestCoordinator);
+  const [departmentRequestCoordinator] = useState(createLatestRequestCoordinator);
 
   const fetchPositions = useCallback(async () => {
     await positionRequestCoordinator.run<Position[]>(
@@ -129,23 +124,51 @@ const PositionsList: React.FC = () => {
       {
         onSuccess: (res) => {
           setHiringManagers(res);
-          setSearchHiringManagerId((selectedId) => (
-            reconcileHiringManagerSelection(selectedId, res)
-          ));
+          setFilters((current) => ({
+            ...current,
+            hiringManagerId: reconcileHiringManagerSelection(
+              current.hiringManagerId,
+              res,
+            ),
+          }));
         },
         onError: () => message.error('获取招聘负责人列表失败'),
       },
     );
   }, [hiringManagerRequestCoordinator]);
 
+  const fetchDepartments = useCallback(async () => {
+    await departmentRequestCoordinator.run<string[]>(
+      () => request.get('/positions/departments'),
+      {
+        onSuccess: (res) => {
+          setDepartments(res);
+          setFilters((current) => ({
+            ...current,
+            department: reconcileDepartmentSelection(current.department, res),
+          }));
+        },
+        onError: () => message.error('获取部门列表失败'),
+      },
+    );
+  }, [departmentRequestCoordinator]);
+
   useEffect(() => {
     void fetchUsers();
     void fetchHiringManagers();
-  }, [fetchHiringManagers, fetchUsers]);
+    void fetchDepartments();
+  }, [fetchDepartments, fetchHiringManagers, fetchUsers]);
 
   useEffect(() => {
     void fetchPositions();
-  }, [fetchPositions, searchHiringManagerId, searchStatus, searchTitle]);
+  }, [
+    fetchPositions,
+    filters.department,
+    filters.hiringManagerId,
+    filters.status,
+    filters.title,
+    filters.urgency,
+  ]);
 
   const handleAdd = () => {
     setEditingId(null);
@@ -188,6 +211,7 @@ const PositionsList: React.FC = () => {
           message.success('删除成功');
           void fetchPositions();
           void fetchHiringManagers();
+          void fetchDepartments();
         } catch {
           message.error('删除失败');
         }
@@ -213,6 +237,7 @@ const PositionsList: React.FC = () => {
           setSelectedRowKeys([]);
           void fetchPositions();
           void fetchHiringManagers();
+          void fetchDepartments();
         } catch {
           message.error('批量删除失败');
         }
@@ -312,6 +337,7 @@ const PositionsList: React.FC = () => {
       setIsModalVisible(false);
       void fetchPositions();
       void fetchHiringManagers();
+      void fetchDepartments();
     } catch {
       // Validation error
     } finally {
@@ -357,14 +383,17 @@ const PositionsList: React.FC = () => {
       render: (text: string) => <span style={{ fontWeight: 500, color: '#0F172A' }}>{text}</span>
     },
     { title: '部门', dataIndex: 'department', key: 'department', render: (v: string) => v || '-' },
-    { 
-      title: '类型', 
-      dataIndex: 'position_type', 
-      key: 'position_type',
-      render: (type: string) => {
-        const config = positionTypeConfig[type] || { color: 'default', text: type };
-        return <Tag color={config.color} style={{ border: 'none' }}>{config.text}</Tag>;
-      }
+    {
+      title: '招聘人数',
+      dataIndex: 'headcount',
+      key: 'headcount',
+      render: (value: number) => `${value || 1} 人`,
+    },
+    {
+      title: '招聘负责人',
+      dataIndex: 'hiring_manager_name',
+      key: 'hiring_manager_name',
+      render: (value: string | null) => value || '-',
     },
     { 
       title: '紧急度', 
@@ -446,16 +475,41 @@ const PositionsList: React.FC = () => {
         <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd} size="large" style={{ borderRadius: '8px' }}>新增岗位</Button>
       </div>
       
-      <div style={{ marginBottom: 24, padding: '24px', background: '#fff', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <Input 
-              placeholder="搜索岗位名称" 
-              prefix={<EyeOutlined style={{ color: '#94A3B8' }} />} 
-              style={{ width: 300 }} 
+      <Card style={{ marginBottom: 24, borderRadius: '8px' }} bodyStyle={{ padding: '24px' }}>
+        <Form layout="inline">
+          <Form.Item label="岗位名称">
+            <Input
+              placeholder="请输入岗位名称"
+              prefix={<EyeOutlined style={{ color: '#94A3B8' }} />}
+              style={{ width: 200 }}
               allowClear
-              onChange={(e) => setSearchTitle(e.target.value)}
-          />
-          <Select
-              placeholder="招聘负责人"
+              value={filters.title}
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                title: event.target.value,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="部门">
+            <Select
+              placeholder="请选择部门"
+              style={{ width: 180 }}
+              allowClear
+              showSearch
+              value={filters.department}
+              options={departments.map((department) => ({
+                value: department,
+                label: department,
+              }))}
+              onChange={(department) => setFilters((current) => ({
+                ...current,
+                department,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="招聘负责人">
+            <Select
+              placeholder="请选择招聘负责人"
               style={{ width: 220 }}
               allowClear
               showSearch
@@ -466,29 +520,60 @@ const PositionsList: React.FC = () => {
                   ? `${manager.full_name} (${manager.email})`
                   : manager.email,
               }))}
-              value={searchHiringManagerId}
-              onChange={setSearchHiringManagerId}
-          />
-          <Select
-              placeholder="岗位状态"
-              style={{ width: 150 }}
+              value={filters.hiringManagerId}
+              onChange={(hiringManagerId) => setFilters((current) => ({
+                ...current,
+                hiringManagerId,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="紧急度">
+            <Select
+              placeholder="请选择紧急度"
+              style={{ width: 140 }}
               allowClear
-              onChange={(value) => setSearchStatus(value)}
-          >
+              value={filters.urgency}
+              onChange={(urgency) => setFilters((current) => ({
+                ...current,
+                urgency,
+              }))}
+            >
+              <Select.Option value="low">低</Select.Option>
+              <Select.Option value="medium">中</Select.Option>
+              <Select.Option value="high">高</Select.Option>
+              <Select.Option value="urgent">紧急</Select.Option>
+            </Select>
+          </Form.Item>
+          <Form.Item label="状态">
+            <Select
+              placeholder="请选择状态"
+              style={{ width: 140 }}
+              allowClear
+              value={filters.status}
+              onChange={(status) => setFilters((current) => ({
+                ...current,
+                status,
+              }))}
+            >
               <Select.Option value="open">待发布</Select.Option>
               <Select.Option value="published">招聘中</Select.Option>
               <Select.Option value="closed">已关闭</Select.Option>
-          </Select>
+            </Select>
+          </Form.Item>
           {selectedRowKeys.length > 0 && (
-            <Space>
-              <span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span>
-              <Button onClick={() => handleBatchPublish(true)} type="primary" ghost>批量发布</Button>
-              <Button onClick={() => handleBatchPublish(false)}>批量下架</Button>
-              <Button danger onClick={handleBatchDelete}>批量删除</Button>
-              <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
-            </Space>
+            <>
+              <Form.Item><span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span></Form.Item>
+              <Form.Item><Button onClick={() => handleBatchPublish(true)} type="primary" ghost>批量发布</Button></Form.Item>
+              <Form.Item><Button onClick={() => handleBatchPublish(false)}>批量下架</Button></Form.Item>
+              <Form.Item><Button danger onClick={handleBatchDelete}>批量删除</Button></Form.Item>
+              <Form.Item><Button onClick={() => setSelectedRowKeys([])}>取消选择</Button></Form.Item>
+            </>
           )}
-      </div>
+          <Form.Item>
+            <Button onClick={() => setFilters(createEmptyPositionListFilters())}>重置</Button>
+          </Form.Item>
+        </Form>
+      </Card>
       
       <Table 
         columns={columns} 

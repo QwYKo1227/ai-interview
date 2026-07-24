@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from app.config.tenant_session import (
@@ -286,33 +287,36 @@ def reset_tenant_admin_password(
                 raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
             set_tenant_context(db, tenant_id)
             bound_tenant_id = tenant_id
-            target = (
-                db.query(User)
-                .filter(
+            password_hash = get_password_hash(payload.new_password)
+            target = db.execute(
+                update(User)
+                .where(
                     User.id == user_id,
                     User.tenant_id == tenant_id,
                     User.role == UserRole.ADMIN,
                 )
-                .first()
-            )
+                .values(
+                    hashed_password=password_hash,
+                    credential_version=User.credential_version + 1,
+                )
+                .returning(User.email, User.credential_version)
+                .execution_options(synchronize_session=False)
+            ).first()
             if target is None:
                 raise TenantAdminNotFoundError(TENANT_ADMIN_NOT_FOUND_MESSAGE)
-            target.hashed_password = get_password_hash(payload.new_password)
-            target.credential_version += 1
             db.add(
                 PlatformAuditLog(
                     actor_id=actor_id,
                     action="tenant.admin_password_reset",
                     target_tenant_id=tenant_id,
                     details={
-                        "target_user_id": str(target.id),
+                        "target_user_id": str(user_id),
                         "target_email": target.email,
                         "credential_version": target.credential_version,
                     },
                 )
             )
             db.flush()
-            db.expunge(target)
     except (
         TenantActorError,
         TenantAdminNotFoundError,

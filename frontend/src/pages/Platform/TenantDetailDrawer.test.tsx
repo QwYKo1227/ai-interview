@@ -135,6 +135,53 @@ describe('TenantDetailDrawer', () => {
     expect(screen.getByLabelText('新密码')).toBeInTheDocument();
   });
 
+  it('accepts a Unicode letter password that satisfies the backend policy', async () => {
+    mockGet.mockResolvedValueOnce({ ...tenant, admins: [tenant.admins[0]] });
+    mockPatch.mockResolvedValueOnce({ success: true });
+    const user = userEvent.setup();
+    const unicodePassword = '密码密码密码密码1';
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await user.click(await screen.findByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), unicodePassword);
+    await user.type(screen.getByLabelText('确认新密码'), unicodePassword);
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
+      '/platform/tenants/tenant-careray/admins/admin-1/password',
+      { new_password: unicodePassword },
+    ));
+  });
+
+  it('does not let an older reset request close a newly opened admin modal', async () => {
+    mockGet.mockResolvedValueOnce({
+      ...tenant,
+      admins: [
+        ...tenant.admins,
+        { id: 'admin-2', email: 'backup-admin@careray.com', full_name: '备用管理员', is_active: true },
+      ],
+    });
+    let resolveReset: ((value: { success: boolean }) => void) | undefined;
+    mockPatch.mockReturnValueOnce(new Promise((resolve) => { resolveReset = resolve; }));
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('admin@careray.com');
+    await user.click(screen.getAllByRole('button', { name: '重置密码' })[0]);
+    await user.type(screen.getByLabelText('新密码'), 'Replacement123');
+    await user.type(screen.getByLabelText('确认新密码'), 'Replacement123');
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+    await user.click(screen.getByRole('button', { name: /取\s*消/ }));
+    await user.click(screen.getAllByRole('button', { name: '重置密码' })[1]);
+    expect(screen.getByText('目标账号：backup-admin@careray.com')).toBeInTheDocument();
+
+    resolveReset?.({ success: true });
+    await Promise.resolve();
+
+    expect(screen.getByText('目标账号：backup-admin@careray.com')).toBeInTheDocument();
+    expect(screen.getByLabelText('新密码')).toBeInTheDocument();
+  });
+
   it('adds a normalized domain then refreshes the detail and parent list', async () => {
     mockGet.mockResolvedValue(tenant);
     mockPost.mockResolvedValueOnce({});

@@ -880,6 +880,35 @@ def test_platform_cannot_reset_non_admin_or_cross_tenant_account(
     assert non_admin.status_code == 404, non_admin.text
 
 
+def test_platform_password_reset_failure_releases_tenant_context(
+    platform_client, db, platform_admin, monkeypatch
+):
+    headers = platform_login(platform_client, platform_admin)
+    tenant_id = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()["id"]
+    admin_id = platform_client.get(
+        f"/api/platform/tenants/{tenant_id}", headers=headers
+    ).json()["admins"][0]["id"]
+
+    def fail_hash(_password):
+        raise RuntimeError("hashing unavailable")
+
+    monkeypatch.setattr(tenant_service, "get_password_hash", fail_hash)
+    response = platform_client.patch(
+        f"/api/platform/tenants/{tenant_id}/admins/{admin_id}/password",
+        headers=headers,
+        json={"new_password": "Replacement123"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": TENANT_ONBOARDING_MESSAGE}
+    with pytest.raises(RuntimeError, match="tenant-scoped"):
+        get_tenant_id(db)
+
+
 def test_platform_domain_maintenance_is_audited(
     platform_client, db, platform_admin
 ):

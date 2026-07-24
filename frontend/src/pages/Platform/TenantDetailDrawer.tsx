@@ -17,6 +17,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
   const [passwordForm] = Form.useForm<{ new_password: string; confirm_password: string }>();
   const requestVersion = useRef(0);
   const scopeVersion = useRef(0);
+  const passwordRequestVersion = useRef(0);
   const currentScope = useRef({ open, tenantId });
   const [tenant, setTenant] = useState<PlatformTenantDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,6 +33,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
 
   useLayoutEffect(() => {
     scopeVersion.current += 1;
+    passwordRequestVersion.current += 1;
     currentScope.current = { open, tenantId };
     requestVersion.current += 1;
     setTenant(null);
@@ -78,6 +80,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
   useEffect(() => () => {
     scopeVersion.current += 1;
     requestVersion.current += 1;
+    passwordRequestVersion.current += 1;
     currentScope.current = { open: false, tenantId: null };
   }, []);
 
@@ -162,13 +165,17 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
   };
 
   const closePasswordModal = () => {
+    passwordRequestVersion.current += 1;
     setResetAdmin(null);
+    setResettingPassword(false);
     setPasswordResetError(null);
     passwordForm.resetFields();
   };
 
   const openPasswordModal = (admin: PlatformTenantAdmin) => {
+    passwordRequestVersion.current += 1;
     passwordForm.resetFields();
+    setResettingPassword(false);
     setPasswordResetError(null);
     setPasswordResetSuccess(null);
     setResetAdmin(admin);
@@ -179,6 +186,13 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
     const operationAdmin = resetAdmin;
     if (!operationTenantId || !operationAdmin) return;
     const operationScopeVersion = scopeVersion.current;
+    const operationRequestVersion = passwordRequestVersion.current;
+    const isOperationCurrent = () => (
+      passwordRequestVersion.current === operationRequestVersion
+      && scopeVersion.current === operationScopeVersion
+      && currentScope.current.open
+      && currentScope.current.tenantId === operationTenantId
+    );
     setResettingPassword(true);
     setPasswordResetError(null);
     try {
@@ -186,20 +200,16 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
         `/platform/tenants/${operationTenantId}/admins/${operationAdmin.id}/password`,
         { new_password },
       );
-      if (
-        scopeVersion.current === operationScopeVersion
-        && currentScope.current.open
-        && currentScope.current.tenantId === operationTenantId
-      ) {
+      if (isOperationCurrent()) {
         setPasswordResetSuccess(`已重置 ${operationAdmin.email} 的密码`);
         closePasswordModal();
       }
     } catch {
-      if (scopeVersion.current === operationScopeVersion) {
+      if (isOperationCurrent()) {
         setPasswordResetError('密码重置失败，请稍后重试');
       }
     } finally {
-      if (scopeVersion.current === operationScopeVersion) setResettingPassword(false);
+      if (isOperationCurrent()) setResettingPassword(false);
     }
   };
 
@@ -209,7 +219,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
       validator: (_: unknown, value?: string) => {
         if (!value) return Promise.resolve();
         const bytes = new TextEncoder().encode(value).length;
-        if (bytes < 12 || bytes > 72 || !/[A-Za-z]/.test(value) || !/\d/.test(value)) {
+        if (bytes < 12 || bytes > 72 || !/\p{L}/u.test(value) || !/\p{N}/u.test(value)) {
           return Promise.reject(new Error('密码须为 12–72 个 UTF-8 字节，并包含字母和数字'));
         }
         return Promise.resolve();

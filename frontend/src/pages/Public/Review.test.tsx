@@ -9,6 +9,12 @@ vi.mock('../../utils/request', () => ({
   default: { get: vi.fn(), post: vi.fn() },
 }))
 
+vi.mock('../../components/PdfCanvasPreview', () => ({
+  default: ({ url }: { url: string }) => (
+    <div data-testid="pdf-canvas-preview" data-url={url}>PDF Canvas Preview</div>
+  ),
+}))
+
 const reviewPayload = {
   completed: false,
   resume: {
@@ -140,9 +146,10 @@ describe('PublicReview', () => {
     const layout = container.querySelector('.public-review-layout')
     expect(layout).toBeInTheDocument()
     expect(layout?.firstElementChild).toHaveClass('public-review-preview')
-    expect(container.querySelector('iframe[title="Resume Preview"]')).toHaveAttribute(
-      'src', expect.stringContaining('blob:resume-preview'),
+    expect(screen.getByTestId('pdf-canvas-preview')).toHaveAttribute(
+      'data-url', 'blob:resume-preview',
     )
+    expect(container.querySelector('iframe')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /下载原件/ })).toHaveAttribute(
       'href', 'blob:resume-preview',
     )
@@ -160,7 +167,7 @@ describe('PublicReview', () => {
     renderReview()
 
     expect(await screen.findByText('该文件格式暂不支持在线预览，请下载后查看')).toBeInTheDocument()
-    expect(screen.queryByTitle('Resume Preview')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('pdf-canvas-preview')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /下载原件/ })).toBeInTheDocument()
   })
 

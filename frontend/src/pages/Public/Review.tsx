@@ -8,7 +8,7 @@ import {
 } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
-import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
+import PdfCanvasPreview from '../../components/PdfCanvasPreview';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -54,7 +54,6 @@ const PublicReview: React.FC = () => {
       : undefined,
   );
   const isPdf = resumeFile.contentType === 'application/pdf';
-  const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(resumeFile.url) : '';
 
   useEffect(() => {
     fetchResume();
@@ -180,11 +179,7 @@ const PublicReview: React.FC = () => {
               <Text type="secondary">简历原件加载失败</Text>
             ) : resumeFile.url ? (
               isPdf ? (
-                <iframe
-                  src={pdfPreviewUrl}
-                  style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: '#fff' }}
-                  title="Resume Preview"
-                />
+                <PdfCanvasPreview url={resumeFile.url} />
               ) : (
                 <Space direction="vertical" align="center" style={{ padding: 32, textAlign: 'center' }}>
                   <FileWordOutlined style={{ fontSize: 64, color: '#3b82f6' }} />

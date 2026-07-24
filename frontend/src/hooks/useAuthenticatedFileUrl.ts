@@ -6,9 +6,13 @@ const apiPath = (path: string) => path.startsWith('/api/') ? path.slice(4) : pat
 export const useAuthenticatedFileUrl = (path?: string) => {
   const [url, setUrl] = useState('');
   const [contentType, setContentType] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
+    setLoading(Boolean(path));
+    setError(false);
     setUrl(previous => {
       if (previous) URL.revokeObjectURL(previous);
       return '';
@@ -23,10 +27,13 @@ export const useAuthenticatedFileUrl = (path?: string) => {
       objectUrl = URL.createObjectURL(blob);
       setContentType(blob.type || 'application/octet-stream');
       setUrl(objectUrl);
+      setLoading(false);
     }).catch(() => {
       if (!controller.signal.aborted) {
         setUrl('');
         setContentType('');
+        setError(true);
+        setLoading(false);
       }
     });
     return () => {
@@ -35,7 +42,7 @@ export const useAuthenticatedFileUrl = (path?: string) => {
     };
   }, [path]);
 
-  return { url, contentType };
+  return { url, contentType, loading, error };
 };
 
 export const authenticatedApiPath = apiPath;

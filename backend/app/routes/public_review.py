@@ -3,8 +3,13 @@ from sqlalchemy.orm import Session
 
 from app.config.database import get_unscoped_db
 from app.models.models import DepartmentReview
+from app.routes.files import _response as stored_file_response
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
-from app.services.resume_service import get_public_review_payload, submit_public_department_review
+from app.services.resume_service import (
+    get_public_review_file,
+    get_public_review_payload,
+    submit_public_department_review,
+)
 from app.schemas.resume import PublicDepartmentReviewSubmit
 from app.core.proxy import resolve_request_host
 
@@ -18,6 +23,17 @@ def _resolve_review(db: Session, token: str, request: Request) -> DepartmentRevi
         db, request_host=resolve_request_host(request), tenant_id=resolved.tenant_id
     )
     return resolved.resource
+
+
+@router.get("/{token}/resume-file")
+def get_resume_file_for_review(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    review = _resolve_review(db, token, request)
+    record = get_public_review_file(db, review)
+    return stored_file_response(record)
 
 
 @router.get("/{token}")

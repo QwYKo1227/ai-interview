@@ -4,12 +4,15 @@ import {
   Card, Descriptions, Button, Rate, Input, message, Spin, Result, Space, Tag, Typography, Divider
 } from 'antd';
 import {
-  CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined
+  CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined, DownloadOutlined, FileWordOutlined
 } from '@ant-design/icons';
 import request from '../../utils/request';
+import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
+import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
+type LoadError = 'expired' | 'not_found' | null;
 
 interface ResumeData {
   id: string;
@@ -20,6 +23,7 @@ interface ResumeData {
   ai_review: string;
   resume_markdown: string;
   parsed_data: any;
+  file_available: boolean;
   position: {
     id: string;
     title: string;
@@ -36,13 +40,21 @@ const PublicReview: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [resume, setResume] = useState<ResumeData | null>(null);
-  const [existingReview, setExistingReview] = useState<any>(null);
+  const [completed, setCompleted] = useState(false);
+  const [loadError, setLoadError] = useState<LoadError>(null);
 
   const [technicalScore, setTechnicalScore] = useState<number>(0);
   const [experienceScore, setExperienceScore] = useState<number>(0);
   const [overallScore, setOverallScore] = useState<number>(0);
   const [recommendation, setRecommendation] = useState<string>('');
   const [comment, setComment] = useState<string>('');
+  const resumeFile = useAuthenticatedFileUrl(
+    resume?.file_available && token
+      ? `/api/public/review/${token}/resume-file`
+      : undefined,
+  );
+  const isPdf = resumeFile.contentType === 'application/pdf';
+  const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(resumeFile.url) : '';
 
   useEffect(() => {
     fetchResume();
@@ -51,9 +63,15 @@ const PublicReview: React.FC = () => {
   const fetchResume = async () => {
     setLoading(true);
     try {
+      setLoadError(null);
       const res = await request.get(`/public/review/${token}`);
+      if (res.completed) {
+        setCompleted(true);
+        setResume(null);
+        return;
+      }
+      setCompleted(false);
       setResume(res.resume);
-      setExistingReview(res.existing_review);
 
       if (res.existing_review) {
         setTechnicalScore(res.existing_review.technical_score || 0);
@@ -63,7 +81,9 @@ const PublicReview: React.FC = () => {
         setComment(res.existing_review.comment || '');
       }
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '获取简历信息失败');
+      setCompleted(false);
+      setResume(null);
+      setLoadError(e?.response?.status === 410 ? 'expired' : 'not_found');
     } finally {
       setLoading(false);
     }
@@ -85,10 +105,7 @@ const PublicReview: React.FC = () => {
         comment,
       });
       message.success('审核已提交');
-      setExistingReview((current: any) => ({
-        ...(current || {}),
-        is_completed: true,
-      }));
+      setCompleted(true);
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败');
     } finally {
@@ -104,6 +121,35 @@ const PublicReview: React.FC = () => {
     );
   }
 
+  if (loadError === 'expired') {
+    return (
+      <div style={{ padding: 40 }}>
+        <Result
+          status="warning"
+          title="评审链接已过期"
+          subTitle="该链接已超过 14 天有效期，请联系招聘负责人。"
+        />
+      </div>
+    );
+  }
+
+  if (completed) {
+    return (
+      <div style={{ padding: 40, maxWidth: 800, margin: '0 auto' }}>
+        <Result
+          status="success"
+          title="审核已完成"
+          subTitle="您已完成该简历的审核，感谢您的参与！"
+          extra={[
+            <Button type="primary" key="resumes" onClick={() => navigate('/resumes')}>
+              返回简历管理
+            </Button>,
+          ]}
+        />
+      </div>
+    );
+  }
+
   if (!resume) {
     return (
       <div style={{ padding: 40 }}>
@@ -112,26 +158,47 @@ const PublicReview: React.FC = () => {
     );
   }
 
-  if (existingReview?.is_completed) {
-    return (
-      <div style={{ padding: 40, maxWidth: 800, margin: '0 auto' }}>
-        <Result
-          status="success"
-          title="审核已完成"
-          subTitle="您已完成该简历的审核，感谢您的参与！"
-          extra={[
-            <Button type="primary" key="back" onClick={() => navigate('/')}>
-              返回首页
-            </Button>,
-          ]}
-        />
-      </div>
-    );
-  }
-
   return (
-    <div style={{ padding: 40, maxWidth: 1000, margin: '0 auto' }}>
-      <Card>
+    <div className="public-review-page">
+      <div className="public-review-layout">
+        <section className="public-review-preview" aria-label="简历原件预览">
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: '#fff' }}>
+            <Title level={5} style={{ margin: 0 }}>简历原件预览</Title>
+            {resumeFile.url && (
+              <Button type="primary" icon={<DownloadOutlined />} href={resumeFile.url} download>
+                下载原件
+              </Button>
+            )}
+          </div>
+          <div style={{ height: 'calc(100% - 65px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {resumeFile.loading ? (
+              <Space direction="vertical" align="center">
+                <Spin />
+                <Text type="secondary">加载预览中...</Text>
+              </Space>
+            ) : resumeFile.error ? (
+              <Text type="secondary">简历原件加载失败</Text>
+            ) : resumeFile.url ? (
+              isPdf ? (
+                <iframe
+                  src={pdfPreviewUrl}
+                  style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: '#fff' }}
+                  title="Resume Preview"
+                />
+              ) : (
+                <Space direction="vertical" align="center" style={{ padding: 32, textAlign: 'center' }}>
+                  <FileWordOutlined style={{ fontSize: 64, color: '#3b82f6' }} />
+                  <Text type="secondary">该文件格式暂不支持在线预览，请下载后查看</Text>
+                </Space>
+              )
+            ) : (
+              <Text type="secondary">暂无简历原件</Text>
+            )}
+          </div>
+        </section>
+
+        <main className="public-review-content">
+          <Card>
         <Title level={3}>简历审核</Title>
         <Text type="secondary">请仔细阅读简历信息并给出您的评审意见</Text>
 
@@ -247,7 +314,9 @@ const PublicReview: React.FC = () => {
             提交审核
           </Button>
         </div>
-      </Card>
+          </Card>
+        </main>
+      </div>
     </div>
   );
 };

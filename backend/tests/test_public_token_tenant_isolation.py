@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 from app.config.database import get_unscoped_db
@@ -12,7 +13,7 @@ from app.models.models import (
 )
 from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, TenantStatus
 from app.models.file_models import StoredFile
-from app.routes import coding_tests, positions, public_review, resumes
+from app.routes import coding_tests, files, positions, public_review, resumes
 from app.routes.offers import public_router as offer_public_router
 from app.services import offer_service, resume_service
 from app.services.public_token_service import (
@@ -20,6 +21,7 @@ from app.services.public_token_service import (
     issue_public_token,
     resolve_public_token,
 )
+from app.utils.file_storage import save_upload_file
 
 
 def _offer(db, tenant, *, email="candidate@example.com"):
@@ -262,16 +264,109 @@ def test_review_public_route_uses_precreated_review_token_not_reviewer_query(db,
     assert legacy.status_code == 404
     response = client.get(f"/api/public/review/{raw}")
     assert response.status_code == 200
+    assert response.json()["completed"] is False
+    assert response.json()["resume"]["file_available"] is False
     submitted = client.post(
         f"/api/public/review/{raw}/submit",
         json={"technical_score": 8, "overall_score": 8, "recommendation": "recommend", "comment": "ok"},
     )
     assert submitted.status_code == 200
+
+    reopened = client.get(f"/api/public/review/{raw}")
+    assert reopened.status_code == 200
+    assert reopened.json() == {"completed": True}
+
     repeated = client.post(
         f"/api/public/review/{raw}/submit",
         json={"technical_score": 9, "overall_score": 9, "recommendation": "recommend"},
     )
     assert repeated.status_code == 404
+    token_record = db.query(PublicAccessToken).filter(
+        PublicAccessToken.token_hash == hash_token(raw)
+    ).one()
+    assert token_record.revoked_at is None
+
+    token_record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    expired = client.get(f"/api/public/review/{raw}")
+    assert expired.status_code == 410
+
+
+def test_review_resume_file_is_available_only_while_review_is_active(
+    db, tenant_a, test_resume, test_user, tmp_path, monkeypatch
+):
+    stored = save_upload_file(
+        UploadFile(filename="candidate.pdf", file=BytesIO(b"resume-pdf")),
+        tenant_a.id,
+        "resumes",
+        root=tmp_path,
+        resource_type="resume",
+        resource_id=test_resume.id,
+    )
+    db.add(stored)
+    db.flush()
+    test_resume.file_id = stored.id
+    review = DepartmentReview(
+        tenant_id=tenant_a.id,
+        resume_id=test_resume.id,
+        reviewer_id=test_user.id,
+        is_completed=False,
+    )
+    db.add(review)
+    db.commit()
+    raw = issue_public_token(
+        db, tenant_a.id, "department_review", review.id,
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    db.expunge_all()
+    monkeypatch.setattr(files, "UPLOAD_ROOT", tmp_path)
+    client = _client(db, public_review.router)
+
+    active = client.get(f"/api/public/review/{raw}/resume-file")
+    assert active.status_code == 200
+    assert active.content == b"resume-pdf"
+    assert active.headers["content-type"] == "application/pdf"
+
+    submitted = client.post(
+        f"/api/public/review/{raw}/submit",
+        json={"recommendation": "recommend"},
+    )
+    assert submitted.status_code == 200
+    blocked = client.get(f"/api/public/review/{raw}/resume-file")
+    assert blocked.status_code == 404
+
+
+def test_review_resume_file_rejects_mismatched_stored_file(
+    db, tenant_a, test_resume, test_user, tmp_path, monkeypatch
+):
+    stored = save_upload_file(
+        UploadFile(filename="other.pdf", file=BytesIO(b"other")),
+        tenant_a.id,
+        "resumes",
+        root=tmp_path,
+        resource_type="resume",
+        resource_id=uuid4(),
+    )
+    db.add(stored)
+    db.flush()
+    test_resume.file_id = stored.id
+    review = DepartmentReview(
+        tenant_id=tenant_a.id, resume_id=test_resume.id,
+        reviewer_id=test_user.id, is_completed=False,
+    )
+    db.add(review)
+    db.commit()
+    raw = issue_public_token(
+        db, tenant_a.id, "department_review", review.id,
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    db.expunge_all()
+    monkeypatch.setattr(files, "UPLOAD_ROOT", tmp_path)
+    client = _client(db, public_review.router)
+
+    response = client.get(f"/api/public/review/{raw}/resume-file")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Public resource not found"
 
 
 def test_public_positions_are_tenant_scoped_and_legacy_global_list_is_closed(db, tenant_a, tenant_b):

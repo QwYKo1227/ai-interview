@@ -85,7 +85,10 @@ const PublicReview: React.FC = () => {
         comment,
       });
       message.success('审核已提交');
-      fetchResume();
+      setExistingReview((current: any) => ({
+        ...(current || {}),
+        is_completed: true,
+      }));
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败');
     } finally {

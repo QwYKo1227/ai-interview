@@ -1,6 +1,13 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from app.models.models import Position, Resume, ResumeStatus, QuestionBank, User
+from app.models.models import (
+    Position,
+    PositionUrgency,
+    Resume,
+    ResumeStatus,
+    QuestionBank,
+    User,
+)
 from app.schemas.position import PositionCreate, PositionUpdate, PositionStats, PositionWithStats, QuestionBankBrief
 from app.models.models import Position, PositionStatus
 from uuid import UUID
@@ -31,6 +38,8 @@ def get_positions(
     status: str = None,
     title: str = None,
     hiring_manager_id: Optional[UUID] = None,
+    department: Optional[str] = None,
+    urgency: Optional[PositionUrgency] = None,
 ):
     query = db.query(Position)
     if status:
@@ -39,6 +48,10 @@ def get_positions(
         query = query.filter(Position.title.ilike(f"%{title}%"))
     if hiring_manager_id:
         query = query.filter(Position.hiring_manager_id == hiring_manager_id)
+    if department:
+        query = query.filter(Position.department == department)
+    if urgency:
+        query = query.filter(Position.urgency == urgency)
     return query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
 
 
@@ -51,6 +64,17 @@ def get_hiring_managers(db: Session) -> List[User]:
         .all()
     )
 
+
+def get_position_departments(db: Session) -> List[str]:
+    rows = (
+        db.query(Position.department)
+        .filter(Position.department.isnot(None), Position.department != "")
+        .distinct()
+        .order_by(Position.department.asc())
+        .all()
+    )
+    return [department for (department,) in rows]
+
 def get_positions_with_stats(
     db: Session,
     skip: int = 0,
@@ -58,6 +82,8 @@ def get_positions_with_stats(
     status: str = None,
     title: str = None,
     hiring_manager_id: Optional[UUID] = None,
+    department: Optional[str] = None,
+    urgency: Optional[PositionUrgency] = None,
 ) -> List[PositionWithStats]:
     query = db.query(Position)
     if status:
@@ -66,6 +92,10 @@ def get_positions_with_stats(
         query = query.filter(Position.title.ilike(f"%{title}%"))
     if hiring_manager_id:
         query = query.filter(Position.hiring_manager_id == hiring_manager_id)
+    if department:
+        query = query.filter(Position.department == department)
+    if urgency:
+        query = query.filter(Position.urgency == urgency)
     
     positions = query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
     

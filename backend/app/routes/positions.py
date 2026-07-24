@@ -12,10 +12,10 @@ from app.services.position_service import (
     create_position, get_positions, get_positions_with_stats,
     get_position, update_position, delete_position,
     get_position_stats, get_linked_question_banks, generate_position_jd,
-    get_hiring_managers
+    get_hiring_managers, get_position_departments
 )
 from app.services.ai_service import generate_jd_stream, chat_jd_stream
-from app.models.models import User, UserRole
+from app.models.models import PositionUrgency, User, UserRole
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List
@@ -41,6 +41,8 @@ def get_positions_route(
     status: str = None,
     title: str = None,
     hiring_manager_id: UUID = None,
+    department: str = None,
+    urgency: PositionUrgency = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -51,6 +53,8 @@ def get_positions_route(
         status=status,
         title=title,
         hiring_manager_id=hiring_manager_id,
+        department=department,
+        urgency=urgency,
     )
 
 
@@ -60,6 +64,14 @@ def get_hiring_managers_route(
     current_user: User = Depends(get_current_user),
 ):
     return get_hiring_managers(db)
+
+
+@router.get("/departments", response_model=List[str])
+def get_position_departments_route(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_position_departments(db)
 
 @router.get("/public", response_model=List[PositionResponse])
 def get_public_positions_route(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):

@@ -118,6 +118,7 @@ cp frontend/.env.example frontend/.env
 
 ```bash
 docker compose up -d postgres
+docker compose run --rm postgres-init
 ```
 
 ### 3. 启动后端
@@ -127,7 +128,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python scripts/migrate_system_config_singleton.py
+alembic upgrade head
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -148,12 +149,12 @@ npm run dev
 项目内置了演示数据、测试简历 PDF 和截图脚本，便于生成 README、博客或发布页素材。
 
 ```bash
-# 1. 准备一个演示数据库
-docker exec ai_interview_db sh -c "createdb -U postgres ai_interview_demo" || true
+# 1. 确认本地数据库已经完成角色初始化和 Alembic 迁移（参见上方“快速开始”）
 
-# 2. 写入岗位、候选人、AI 分析、面试、笔试、工作流等演示数据
+# 2. 向本地开发数据库写入岗位、候选人、AI 分析、面试、笔试、工作流等演示数据
 cd backend
-DATABASE_URL=postgresql://postgres:postgres@localhost:5433/ai_interview_demo python scripts/seed_demo_data.py
+DATABASE_URL=postgresql://app_runtime:runtime_dev_password@localhost:5433/ai_interview \
+python scripts/seed_demo_data.py
 
 # 3. 生成真实感测试简历 PDF
 cd ..
@@ -168,6 +169,8 @@ node scripts/capture-demo-screenshots.mjs
 ## Docker 部署
 
 生产部署建议先修改根目录 `.env`，至少设置高强度 `SECRET_KEY` 和 `INITIAL_ADMIN_PASSWORD`。
+
+已有生产实例升级到 Careray 与 Photonthix 多租户版本时，请严格按照[多租户生产发布、验收与回滚手册](docs/deployment/multi-tenant-production-rollout.md)执行备份、分阶段迁移、隔离验收与回滚演练，不要直接使用一条 `up` 命令跨越数据迁移门禁。
 
 ```bash
 docker compose -f docker-compose.prod.yml up --build -d

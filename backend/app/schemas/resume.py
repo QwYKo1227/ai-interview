@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
@@ -69,7 +69,8 @@ class ResumeUpdate(BaseModel):
 
 class ResumeResponse(ResumeBase):
     id: UUID
-    file_path: str
+    file_path: Optional[str] = None
+    file_id: Optional[UUID] = None
     parsed_data: Optional[Dict[str, Any]] = None
     match_score: Optional[int] = None
     parse_status: Optional[str] = None
@@ -115,6 +116,14 @@ class DepartmentReviewUpdate(BaseModel):
     comment: Optional[str] = None
 
 
+class PublicDepartmentReviewSubmit(BaseModel):
+    technical_score: Optional[int] = Field(default=None, ge=1, le=10)
+    experience_score: Optional[int] = Field(default=None, ge=1, le=10)
+    overall_score: Optional[int] = Field(default=None, ge=1, le=10)
+    recommendation: ReviewRecommendation
+    comment: Optional[str] = Field(default=None, max_length=5000)
+
+
 class DepartmentReviewResponse(DepartmentReviewBase):
     id: UUID
     resume_id: UUID
@@ -124,12 +133,18 @@ class DepartmentReviewResponse(DepartmentReviewBase):
     updated_at: Optional[datetime] = None
     reviewer_name: Optional[str] = None  # 评审人姓名
 
+    public_token: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
 # HR决策相关 Schema
 class HRDecisionCreate(BaseModel):
-    hr_id: UUID  # HR用户ID
+    hr_id: UUID = Field(
+        ...,
+        deprecated=True,
+        description="Deprecated: ignored; the authenticated user is used instead.",
+    )
     decision: ResumeStatus  # REJECTED, WAITLIST, PENDING_INTERVIEW 等
     reject_reason_category: Optional[RejectReasonCategory] = None
     reject_reason_detail: Optional[str] = None

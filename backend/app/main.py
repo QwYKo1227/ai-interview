@@ -5,54 +5,74 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, public_review, workflows
+from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, platform, public_review, workflows, files
 from app.routes.offers import router as offers_router, public_router as offers_public_router
-from app.config.database import engine, SessionLocal
-from app.models.models import Base, User, UserRole
+from app.config.database import SessionLocal
+from app.config.tenant_session import tenant_session
+from app.models.models import User, UserRole
+from app.models.tenant_models import Tenant, TenantStatus
 from app.core.security import get_password_hash
 from app.services.workflow_service import create_builtin_workflows
+from app.core.observability import install_observability
+from app.core.rate_limit import get_rate_limiter
+from app.core.proxy import validate_proxy_configuration
 
-# Create tables
-Base.metadata.create_all(bind=engine)
+validate_proxy_configuration()
 
 # Seed initial user if not exists
 def seed_db():
-    db = SessionLocal()
+    control_db = SessionLocal()
     try:
         admin_email = os.getenv("INITIAL_ADMIN_EMAIL", "admin@example.com")
         admin_password = os.getenv("INITIAL_ADMIN_PASSWORD")
         admin_name = os.getenv("INITIAL_ADMIN_NAME", "System Admin")
         app_env = os.getenv("APP_ENV", "development")
+        tenant_code = os.getenv("INITIAL_TENANT_CODE", "careray")
 
         if not admin_password and app_env == "development":
             admin_password = "admin123"
 
-        user = db.query(User).filter(User.email == admin_email).first()
-        if not user:
-            if not admin_password:
-                print("Skipping initial admin user. Set INITIAL_ADMIN_PASSWORD to seed one.")
-                return
-            print("Seeding initial admin user...")
-            admin_user = User(
-                email=admin_email,
-                hashed_password=get_password_hash(admin_password),
-                full_name=admin_name,
-                role=UserRole.ADMIN
+        tenant = (
+            control_db.query(Tenant)
+            .filter(
+                Tenant.code == tenant_code,
+                Tenant.status == TenantStatus.ACTIVE,
             )
-            db.add(admin_user)
-            db.commit()
-            print(f"Admin user created: {admin_email}")
-        else:
-            if app_env == "development" and admin_password:
+            .first()
+        )
+        if tenant is None:
+            print(
+                f"Skipping initial admin user. Tenant {tenant_code!r} does not exist."
+            )
+            return
+        tenant_id = tenant.id
+        control_db.rollback()
+        with tenant_session(tenant_id) as db:
+            normalized_email = admin_email.strip().lower()
+            user = db.query(User).filter(User.email == normalized_email).first()
+            if not user:
+                if not admin_password:
+                    print("Skipping initial admin user. Set INITIAL_ADMIN_PASSWORD to seed one.")
+                    return
+                print("Seeding initial admin user...")
+                admin_user = User(
+                    email=normalized_email,
+                    hashed_password=get_password_hash(admin_password),
+                    full_name=admin_name,
+                    role=UserRole.ADMIN
+                )
+                db.add(admin_user)
+                db.commit()
+                print(f"Admin user created: {normalized_email}")
+            elif app_env == "development" and admin_password:
                 user.hashed_password = get_password_hash(admin_password)
                 user.full_name = user.full_name or admin_name
                 user.role = UserRole.ADMIN
                 db.commit()
     except Exception as e:
-        print(f"Error seeding DB: {e}")
+        print(f"Error seeding DB: {type(e).__name__}")
     finally:
-        db.close()
+        control_db.close()
 
 seed_db()
 
@@ -61,12 +81,8 @@ app = FastAPI(
     description="API for AI Interview Assistant System",
     version="1.0.0"
 )
-
-# Ensure uploads directory exists
-os.makedirs("uploads", exist_ok=True)
-
-# Mount static files
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+install_observability(app)
+get_rate_limiter(app)
 
 origins = os.getenv("CORS_ORIGINS", "*").split(",")
 
@@ -79,7 +95,9 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(platform.router, prefix="/api")
 app.include_router(positions.router, prefix="/api")
+app.include_router(positions.public_router, prefix="/api")
 app.include_router(question_banks.router, prefix="/api")
 app.include_router(resumes.router, prefix="/api")
 app.include_router(interviews.router, prefix="/api")
@@ -92,16 +110,34 @@ app.include_router(offers_public_router, prefix="/api")
 app.include_router(offer_templates.router, prefix="/api")
 app.include_router(public_review.router, prefix="/api")
 app.include_router(workflows.router, prefix="/api")
+app.include_router(files.router, prefix="/api")
+app.include_router(files.public_router, prefix="/api")
 
 
 def init_builtin_workflows_on_startup():
-    db = SessionLocal()
+    control_db = SessionLocal()
     try:
-        create_builtin_workflows(db)
+        tenant_ids = [
+            tenant_id
+            for (tenant_id,) in control_db.query(Tenant.id)
+            .filter(Tenant.status == TenantStatus.ACTIVE)
+            .all()
+        ]
     except Exception as e:
-        print(f"Error initializing builtin workflows: {e}")
+        print(f"Error listing tenants for builtin workflows: {type(e).__name__}")
+        return
     finally:
-        db.close()
+        control_db.close()
+
+    for tenant_id in tenant_ids:
+        try:
+            with tenant_session(tenant_id) as db:
+                create_builtin_workflows(db)
+        except Exception as e:
+            print(
+                "Error initializing builtin workflows for tenant "
+                f"{tenant_id}: {type(e).__name__}"
+            )
 
 init_builtin_workflows_on_startup()
 

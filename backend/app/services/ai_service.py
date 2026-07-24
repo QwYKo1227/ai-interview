@@ -3,9 +3,9 @@ import os
 from typing import Dict, Any, List
 import json
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
 from app.schemas.position import JDChatMessage
 from app.utils.prompt_manager import prompt_manager
-from app.config.database import SessionLocal
 from app.services.system_config_service import get_system_config
 
 load_dotenv()
@@ -20,55 +20,56 @@ _DEFAULT_BASE_URL_BY_PROVIDER = {
     "openai_compatible": None,
 }
 
-_client_cache = None
-_client_cache_key = None
+def _get_llm_config(db: Session | None = None) -> Dict[str, Any]:
+    """Resolve tenant config only when the caller supplies a scoped session."""
+    cfg = get_system_config(db) if db is not None else None
+    llm_provider = (cfg.llm_provider if cfg else None) or _DEFAULT_PROVIDER
+    llm_base_url = (cfg.llm_base_url if cfg else None) or _DEFAULT_BASE_URL_BY_PROVIDER.get(llm_provider) or _DEFAULT_BASE_URL
+    llm_model = (cfg.llm_model if cfg else None) or _DEFAULT_MODEL
+    llm_temperature = (cfg.llm_temperature if cfg and cfg.llm_temperature is not None else None)
+    llm_temperature = _DEFAULT_TEMPERATURE if llm_temperature is None else llm_temperature
+    llm_max_tokens = cfg.llm_max_tokens if cfg else None
+    llm_api_key = (cfg.llm_api_key if cfg else None) or os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+    return {
+        "llm_provider": llm_provider,
+        "llm_base_url": llm_base_url,
+        "llm_model": llm_model,
+        "llm_temperature": llm_temperature,
+        "llm_max_tokens": llm_max_tokens,
+        "llm_api_key": llm_api_key,
+    }
 
 
-def _get_llm_config() -> Dict[str, Any]:
-    db = SessionLocal()
-    try:
-        cfg = get_system_config(db)
-        llm_provider = (cfg.llm_provider if cfg else None) or _DEFAULT_PROVIDER
-        llm_base_url = (cfg.llm_base_url if cfg else None) or _DEFAULT_BASE_URL_BY_PROVIDER.get(llm_provider) or _DEFAULT_BASE_URL
-        llm_model = (cfg.llm_model if cfg else None) or _DEFAULT_MODEL
-        llm_temperature = (cfg.llm_temperature if cfg and cfg.llm_temperature is not None else None)
-        llm_temperature = _DEFAULT_TEMPERATURE if llm_temperature is None else llm_temperature
-        llm_max_tokens = cfg.llm_max_tokens if cfg else None
-        llm_api_key = (cfg.llm_api_key if cfg else None) or os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
-        return {
-            "llm_provider": llm_provider,
-            "llm_base_url": llm_base_url,
-            "llm_model": llm_model,
-            "llm_temperature": llm_temperature,
-            "llm_max_tokens": llm_max_tokens,
-            "llm_api_key": llm_api_key,
-        }
-    finally:
-        db.close()
-
-
-def _get_client() -> OpenAI:
-    global _client_cache, _client_cache_key
-    cfg = _get_llm_config()
-    key = (cfg.get("llm_base_url"), cfg.get("llm_api_key"))
-    if _client_cache is not None and _client_cache_key == key:
-        return _client_cache
-    _client_cache_key = key
-    _client_cache = OpenAI(
+def _get_client(
+    db: Session | None = None,
+    config: Dict[str, Any] | None = None,
+) -> OpenAI:
+    """Build a request-local client so tenant credentials cannot race."""
+    cfg = config if config is not None else _get_llm_config(db)
+    return OpenAI(
         api_key=cfg.get("llm_api_key"),
         base_url=cfg.get("llm_base_url"),
     )
-    return _client_cache
 
-def _get_extra_body() -> Dict[str, Any]:
-    cfg = _get_llm_config()
+def _get_extra_body(
+    db: Session | None = None,
+    config: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    cfg = config or _get_llm_config(db)
     if cfg.get("llm_provider") == "dashscope":
         return {"enable_thinking": False}
     return {}
 
-def analyze_resume(resume_text: str, position_description: str, other_positions: str = "") -> Dict[str, Any]:
+def analyze_resume(
+    resume_text: str,
+    position_description: str,
+    other_positions: str = "",
+    *,
+    db: Session | None = None,
+) -> Dict[str, Any]:
     prompt_data = prompt_manager.get_prompt(
         "analyze_resume",
+        db=db,
         resume_text=resume_text,
         position_description=position_description,
         other_positions=other_positions
@@ -79,29 +80,30 @@ def analyze_resume(resume_text: str, position_description: str, other_positions:
         return {}
 
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'system', 'content': prompt_data['system']},
                 {'role': 'user', 'content': prompt_data['user']}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"AI analysis failed: {e}")
+        print("AI analysis failed")
         return {}
 
-def generate_resume_markdown(resume_text: str) -> str:
+def generate_resume_markdown(resume_text: str, *, db: Session | None = None) -> str:
     prompt_data = prompt_manager.get_prompt(
-        "generate_resume_markdown", 
+        "generate_resume_markdown",
+        db=db,
         resume_text=resume_text
     )
     
@@ -109,17 +111,17 @@ def generate_resume_markdown(resume_text: str) -> str:
         return resume_text
         
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'system', 'content': prompt_data['system']},
                 {'role': 'user', 'content': prompt_data['user']}
             ],
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         content = completion.choices[0].message.content
@@ -127,7 +129,7 @@ def generate_resume_markdown(resume_text: str) -> str:
         content = content.replace("```markdown", "").replace("```", "").strip()
         return content
     except Exception as e:
-        print(f"Markdown generation failed: {e}")
+        print("Markdown generation failed")
         return resume_text
 
 def generate_interview_questions(
@@ -135,7 +137,9 @@ def generate_interview_questions(
     position_description: str,
     question_bank_content: str = "",
     count: int = 5,
-    interview_category: str = "technical"
+    interview_category: str = "technical",
+    *,
+    db: Session | None = None,
 ) -> list:
     # 面试类型描述映射
     category_descriptions = {
@@ -150,6 +154,7 @@ def generate_interview_questions(
 
     prompt_data = prompt_manager.get_prompt(
         "generate_interview_questions",
+        db=db,
         resume_data=json.dumps(resume_data, ensure_ascii=False),
         position_description=position_description,
         question_bank_content=question_bank_content,
@@ -161,18 +166,18 @@ def generate_interview_questions(
         return []
 
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'system', 'content': prompt_data['system']},
                 {'role': 'user', 'content': prompt_data['user']}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         result = json.loads(completion.choices[0].message.content)
@@ -180,7 +185,7 @@ def generate_interview_questions(
             return result
         return result.get("questions", [])
     except Exception as e:
-        print(f"Question generation failed: {e}")
+        print("Question generation failed")
         return []
 
 def generate_interview_evaluation(
@@ -188,10 +193,13 @@ def generate_interview_evaluation(
     scores: Dict[str, Any], 
     total_score: int,
     panel_details: str = "",
-    transcripts: str = "" # New parameter for candidate audio transcripts
+    transcripts: str = "", # New parameter for candidate audio transcripts
+    *,
+    db: Session | None = None,
 ) -> Dict[str, str]:
     prompt_data = prompt_manager.get_prompt(
-        "generate_interview_evaluation", 
+        "generate_interview_evaluation",
+        db=db,
         questions=json.dumps(questions, ensure_ascii=False), 
         scores=json.dumps(scores, ensure_ascii=False),
         total_score=total_score,
@@ -203,37 +211,40 @@ def generate_interview_evaluation(
         return {"evaluation": "生成评价失败", "suggestion": "waitlist"}
         
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'system', 'content': prompt_data['system']},
                 {'role': 'user', 'content': prompt_data['user']}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"Evaluation generation failed: {e}")
+        print("Evaluation generation failed")
         return {"evaluation": "生成评价失败", "suggestion": "waitlist"}
 
 
 def generate_interview_evaluation_from_transcript(
     transcript: str,
     interviewer_evaluation: str,
-    interviewer_score: int
+    interviewer_score: int,
+    *,
+    db: Session | None = None,
 ) -> Dict[str, str]:
     """
     根据录音转写和面试官评价生成综合评价
     """
     prompt_data = prompt_manager.get_prompt(
         "generate_interview_evaluation_from_transcript",
+        db=db,
         transcript=transcript,
         interviewer_evaluation=interviewer_evaluation,
         interviewer_score=interviewer_score
@@ -243,24 +254,24 @@ def generate_interview_evaluation_from_transcript(
         return {"evaluation": interviewer_evaluation, "suggestion": "waitlist"}
         
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'system', 'content': prompt_data['system']},
                 {'role': 'user', 'content': prompt_data['user']}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"Evaluation from transcript generation failed: {e}")
+        print("Evaluation from transcript generation failed")
         return {"evaluation": interviewer_evaluation, "suggestion": "waitlist"}
 
 
@@ -270,9 +281,12 @@ def generate_coding_test_evaluation(
     language: str,
     code: str,
     run_result: Dict[str, Any],
+    *,
+    db: Session | None = None,
 ) -> Dict[str, Any]:
     prompt_data = prompt_manager.get_prompt(
         "generate_coding_test_evaluation",
+        db=db,
         title=title,
         description=description,
         language=language,
@@ -284,24 +298,24 @@ def generate_coding_test_evaluation(
         return {"evaluation": "生成评价失败"}
 
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {"role": "system", "content": prompt_data["system"]},
                 {"role": "user", "content": prompt_data["user"]},
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print(f"Coding evaluation generation failed: {e}")
+        print("Coding evaluation generation failed")
         return {"evaluation": "生成评价失败"}
 
 def generate_jd(
@@ -309,10 +323,13 @@ def generate_jd(
     department: str = "",
     location: str = "",
     salary_range: str = "",
-    keywords: str = ""
+    keywords: str = "",
+    *,
+    db: Session | None = None,
 ) -> Dict[str, str]:
     prompt_data = prompt_manager.get_prompt(
         "generate_jd",
+        db=db,
         title=title,
         department=department or "未指定",
         location=location or "未指定",
@@ -324,18 +341,18 @@ def generate_jd(
         return {"description": "生成岗位描述失败", "requirements": "生成任职要求失败"}
     
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'system', 'content': prompt_data['system']},
                 {'role': 'user', 'content': prompt_data['user']}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         result = json.loads(completion.choices[0].message.content)
@@ -344,59 +361,83 @@ def generate_jd(
             "requirements": result.get("requirements", "")
         }
     except Exception as e:
-        print(f"JD generation failed: {e}")
+        print("JD generation failed")
         return {"description": "生成岗位描述失败", "requirements": "生成任职要求失败"}
+
+def _stream_chat_events(client: OpenAI, request: Dict[str, Any], error_label: str):
+    """Iterate a prepared network request without consulting tenant state."""
+    try:
+        stream = client.chat.completions.create(**request)
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield "data: " + json.dumps(
+                    {"content": chunk.choices[0].delta.content},
+                    ensure_ascii=False,
+                ) + "\n\n"
+        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
+    except Exception as exc:
+        print(error_label)
+        yield "data: " + json.dumps(
+            {"error": "AI 服务暂时不可用"}, ensure_ascii=False
+        ) + "\n\n"
+
 
 def generate_jd_stream(
     title: str,
     department: str = "",
     location: str = "",
     salary_range: str = "",
-    keywords: str = ""
+    keywords: str = "",
+    *,
+    db: Session | None = None,
 ):
-    prompt_data = prompt_manager.get_prompt(
-        "generate_jd",
-        title=title,
-        department=department or "未指定",
-        location=location or "未指定",
-        salary_range=salary_range or "面议",
-        keywords=keywords or "无特殊要求"
-    )
-    
-    if not prompt_data.get("user"):
-        yield "data: " + json.dumps({"error": "生成失败，请检查配置"}, ensure_ascii=False) + "\n\n"
-        return
-    
     try:
-        cfg = _get_llm_config()
+        prompt_data = prompt_manager.get_prompt(
+            "generate_jd",
+            db=db,
+            title=title,
+            department=department or "未指定",
+            location=location or "未指定",
+            salary_range=salary_range or "面议",
+            keywords=keywords or "无特殊要求",
+        )
+        if not prompt_data.get("user"):
+            return iter((
+                "data: "
+                + json.dumps({"error": "生成失败，请检查配置"}, ensure_ascii=False)
+                + "\n\n",
+            ))
+
+        cfg = dict(_get_llm_config(db))
+        client = _get_client(config=cfg)
         extra = {"temperature": cfg["llm_temperature"], "stream": True}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
-        
-        stream = _get_client().chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'system', 'content': prompt_data['system']},
-                {'role': 'user', 'content': prompt_data['user']}
+        request = {
+            "model": cfg["llm_model"],
+            "messages": [
+                {"role": "system", "content": prompt_data["system"]},
+                {"role": "user", "content": prompt_data["user"]},
             ],
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            "response_format": {"type": "json_object"},
+            "extra_body": _get_extra_body(config=cfg),
             **extra,
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield "data: " + json.dumps({"content": chunk.choices[0].delta.content}, ensure_ascii=False) + "\n\n"
-        
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-    except Exception as e:
-        print(f"JD stream generation failed: {e}")
-        yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+        }
+        return _stream_chat_events(client, request, "JD stream generation failed")
+    except Exception as exc:
+        print("JD stream generation failed")
+        return iter((
+            "data: " + json.dumps(
+                {"error": "AI 服务暂时不可用"}, ensure_ascii=False
+            ) + "\n\n",
+        ))
 
 def chat_jd_stream(
     messages: List[JDChatMessage],
     current_description: str = "",
-    current_requirements: str = ""
+    current_requirements: str = "",
+    *,
+    db: Session | None = None,
 ):
     system_prompt = """你是一个专业的招聘专家，擅长撰写和优化岗位描述（JD）。
 
@@ -421,7 +462,8 @@ def chat_jd_stream(
 3. 修改时要保持整体结构完整，不要只返回部分内容"""
 
     try:
-        cfg = _get_llm_config()
+        cfg = dict(_get_llm_config(db))
+        client = _get_client(config=cfg)
         extra = {"temperature": cfg["llm_temperature"], "stream": True}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
@@ -430,43 +472,42 @@ def chat_jd_stream(
         for msg in messages:
             formatted_messages.append({"role": msg.role, "content": msg.content})
         
-        stream = _get_client().chat.completions.create(
-            model=cfg["llm_model"],
-            messages=formatted_messages,
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+        request = {
+            "model": cfg["llm_model"],
+            "messages": formatted_messages,
+            "response_format": {"type": "json_object"},
+            "extra_body": _get_extra_body(config=cfg),
             **extra,
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield "data: " + json.dumps({"content": chunk.choices[0].delta.content}, ensure_ascii=False) + "\n\n"
-        
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-    except Exception as e:
-        print(f"JD chat stream failed: {e}")
-        yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+        }
+        return _stream_chat_events(client, request, "JD chat stream failed")
+    except Exception as exc:
+        print("JD chat stream failed")
+        return iter((
+            "data: " + json.dumps(
+                {"error": "AI 服务暂时不可用"}, ensure_ascii=False
+            ) + "\n\n",
+        ))
 
 
-def generate_text(prompt: str) -> str:
+def generate_text(prompt: str, *, db: Session | None = None) -> str:
     """
     通用文本生成函数，用于生成面试评价等文本内容
     """
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": cfg["llm_temperature"]}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
 
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {'role': 'user', 'content': prompt}
             ],
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         return completion.choices[0].message.content
     except Exception as e:
-        print(f"Text generation failed: {e}")
+        print("Text generation failed")
         return ""

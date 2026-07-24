@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response, File, UploadFile, Form
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
+from app.config.tenant_session import tenant_session
 from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore
 from app.services.interview_service import (
     create_interview, get_interviews, get_interview, update_interview, delete_interview,
@@ -8,7 +9,7 @@ from app.services.interview_service import (
     submit_interview_panel_score, aggregate_panel_scores, start_interview, cancel_interview, get_submission_status
 )
 from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore, InterviewPanelResponse
-from app.models.models import User, UserRole, Resume, Position, InterviewStatus, InterviewResult, InterviewPanel
+from app.models.models import User, UserRole, Resume, Position, Interview, InterviewStatus, InterviewResult, InterviewPanel
 from app.routes.auth import get_current_user
 from app.core.security import check_roles
 
@@ -16,6 +17,14 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
+import logging
+from app.core.observability import background_task_context
+from app.services.interview_access import (
+    require_interview_access,
+    require_interview_assignment,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/interviews",
@@ -47,10 +56,17 @@ def submit_panel_score_route(
     interview_id: UUID, 
     score_data: InterviewScore, 
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    panel, all_submitted = submit_interview_panel_score(db, interview_id, current_user.id, score_data)
+    require_interview_assignment(db, interview_id, current_user)
+    panel, all_submitted = submit_interview_panel_score(
+        db,
+        interview_id,
+        current_user.id,
+        score_data,
+        actor=current_user,
+    )
     
     if not panel:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -73,7 +89,7 @@ def submit_panel_score_route(
 def aggregate_scores_route(
     interview_id: UUID, 
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user) # Only allowed users (HR/Admin) should do this ideally
 ):
     db_interview = aggregate_panel_scores(db, interview_id, background_tasks)
@@ -86,7 +102,8 @@ def confirm_interview_result_route(
     interview_id: UUID,
     confirm_data: ConfirmResult,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
 ):
     db_interview = confirm_interview_result(db, interview_id, confirm_data.result, background_tasks)
     if not db_interview:
@@ -97,7 +114,7 @@ def confirm_interview_result_route(
 def cancel_interview_route(
     interview_id: UUID,
     reason: str = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -110,13 +127,14 @@ def cancel_interview_route(
         return db_interview
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as error:
+        logger.warning("Interview cancellation failed (%s)", type(error).__name__)
+        raise HTTPException(status_code=400, detail="取消面试失败")
 
 @router.get("/{interview_id}/submission-status")
 def get_submission_status_route(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -129,7 +147,12 @@ def get_submission_status_route(
     return status
 
 @router.get("/{interview_id}/export")
-def export_interview_route(interview_id: UUID, format: str = "markdown", db: Session = Depends(get_db)):
+def export_interview_route(
+    interview_id: UUID,
+    format: str = "markdown",
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
     content = export_interview_result(db, interview_id, format)
     if not content:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -137,7 +160,12 @@ def export_interview_route(interview_id: UUID, format: str = "markdown", db: Ses
     return PlainTextResponse(content=content)
 
 @router.put("/{interview_id}/questions", response_model=InterviewResponse)
-def update_questions_route(interview_id: UUID, questions: List[dict], db: Session = Depends(get_db)):
+def update_questions_route(
+    interview_id: UUID,
+    questions: List[dict],
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
     db_interview = update_interview_questions(db, interview_id, questions)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -147,7 +175,7 @@ def update_questions_route(interview_id: UUID, questions: List[dict], db: Sessio
 def create_interview_route(
     interview: InterviewCreate, 
     background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return create_interview(db, interview, background_tasks)
@@ -157,7 +185,7 @@ def get_interviews_route(
     skip: int = 0, 
     limit: int = 100, 
     status: str = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     # Filter for interviewers: only see interviews where they are panel members
@@ -177,7 +205,7 @@ def get_interviews_route(
 @router.post("/email-preview")
 def preview_email_before_create(
     preview_data: EmailPreviewRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """在创建面试前预览邮件内容"""
@@ -246,7 +274,11 @@ def preview_email_before_create(
     }
 
 @router.get("/{interview_id}", response_model=InterviewResponse)
-def get_interview_route(interview_id: UUID, db: Session = Depends(get_db)):
+def get_interview_route(
+    interview_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
     interview = get_interview(db, interview_id)
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -268,7 +300,7 @@ def get_interview_route(interview_id: UUID, db: Session = Depends(get_db)):
 @router.post("/{interview_id}/start", response_model=InterviewResponse)
 def start_interview_route(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -280,7 +312,12 @@ def start_interview_route(
     return db_interview
 
 @router.put("/{interview_id}", response_model=InterviewResponse)
-def update_interview_route(interview_id: UUID, interview: InterviewUpdate, db: Session = Depends(get_db)):
+def update_interview_route(
+    interview_id: UUID,
+    interview: InterviewUpdate,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
     db_interview = update_interview(db, interview_id, interview)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -291,18 +328,29 @@ def submit_score_route(
     interview_id: UUID, 
     score_data: InterviewScore, 
     background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    db_interview = submit_interview_score(db, interview_id, current_user.id, score_data, background_tasks)
+    require_interview_assignment(db, interview_id, current_user)
+    db_interview = submit_interview_score(
+        db,
+        interview_id,
+        current_user.id,
+        score_data,
+        background_tasks,
+        actor=current_user,
+    )
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     return db_interview
 
 from fastapi import UploadFile, File
-import shutil
-import os
 from app.services.audio_service import transcribe_audio
+from app.config.tenant_session import get_tenant_id
+from app.utils.file_storage import (
+    UPLOAD_ROOT, cleanup_new_file, commit_file_replacement, save_upload_file,
+    stored_file_path, tenant_files_from_urls,
+)
 
 # ...
 
@@ -311,68 +359,52 @@ def upload_audio_route(
     interview_id: UUID,
     question_index: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Upload audio recording for a specific question, transcribe it, and save to panel record.
-    """
-    # 1. Save file
-    upload_dir = f"uploads/audio/{interview_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    file_name = f"{current_user.id}_{question_index}.{file_extension}"
-    file_path = os.path.join(upload_dir, file_name)
-    
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    # 2. Transcribe
-    transcript_data = transcribe_audio(file_path)
-    transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
-    
-    # 3. Update DB (InterviewPanel)
-    # We need to find or create the panel for this user
+    """Upload, transcribe and atomically replace one question recording."""
+    interview = require_interview_access(db, interview_id, current_user)
     from app.models.models import InterviewPanel
-    
     panel = db.query(InterviewPanel).filter(
         InterviewPanel.interview_id == interview_id,
         InterviewPanel.interviewer_id == current_user.id
     ).first()
-    
-    if not panel:
-        # Create provisional panel if not exists
-        panel = InterviewPanel(
-            interview_id=interview_id,
-            interviewer_id=current_user.id,
-            scores={},
-            comments={},
-            audio_records={},
-            transcripts={}
+    record_owner = panel if panel is not None else interview
+    tenant_id = get_tenant_id(db)
+    old_files = tenant_files_from_urls(
+        db, tenant_id, "interview", interview_id, "interview_audio",
+        [(record_owner.audio_records or {}).get(question_index)],
+    )
+    stored = None
+    try:
+        stored = save_upload_file(
+            file, tenant_id, "interview_audio",
+            resource_type="interview", resource_id=interview_id,
         )
-        db.add(panel)
-    
-    # Update JSON fields
-    # Note: SQLAlchemy JSON mutation requires re-assignment or flag_modified
-    audio_records = dict(panel.audio_records) if panel.audio_records else {}
-    transcripts = dict(panel.transcripts) if panel.transcripts else {}
-    
-    audio_records[question_index] = file_path
-    transcripts[question_index] = transcript
-    
-    panel.audio_records = audio_records
-    panel.transcripts = transcripts
-    
-    db.commit()
-    db.refresh(panel)
-    
-    return {"transcript": transcript, "file_path": file_path}
+        db.add(stored)
+        transcript_data = transcribe_audio(str(stored_file_path(stored)))
+        transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
+        audio_records = dict(record_owner.audio_records or {})
+        transcripts = dict(record_owner.transcripts or {})
+        audio_records[question_index] = f"/api/files/{stored.id}"
+        transcripts[question_index] = transcript
+        record_owner.audio_records = audio_records
+        record_owner.transcripts = transcripts
+        commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
+    except Exception:
+        if stored is not None:
+            cleanup_new_file(db, stored, root=UPLOAD_ROOT)
+        else:
+            db.rollback()
+        logger.warning("Interview audio upload failed", extra={"resource_id": str(interview_id)})
+        raise HTTPException(status_code=500, detail="Audio upload failed") from None
+    db.refresh(record_owner)
+    return {"transcript": transcript, "file_id": str(stored.id), "download_url": f"/api/files/{stored.id}"}
 
 @router.delete("/{interview_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_interview_route(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_interview = delete_interview(db, interview_id)
@@ -384,7 +416,7 @@ def delete_interview_route(
 @router.get("/{interview_id}/email-preview")
 def get_email_preview(
     interview_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """获取面试邀请邮件预览"""
@@ -461,7 +493,7 @@ def get_email_preview(
 def send_interview_email(
     interview_id: UUID,
     email_data: EmailSendRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """发送面试邀请邮件"""
@@ -503,45 +535,47 @@ def upload_full_interview_audio(
     interview_id: UUID,
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """上传整场面试录音并进行AI分析"""
     from app.services.audio_service import transcribe_audio, format_transcript_for_display
 
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
 
-    upload_dir = f"uploads/full_audio/{interview_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    file_name = f"full_interview.{file_extension}"
-    file_path = os.path.join(upload_dir, file_name)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
+    tenant_id = get_tenant_id(db)
+    old_files = tenant_files_from_urls(
+        db, tenant_id, "interview", interview_id, "interview_audio",
+        [(interview.audio_records or {}).get("full_interview")],
+    )
+    stored = None
     try:
-        transcript_data = transcribe_audio(file_path)
+        stored = save_upload_file(
+            file, tenant_id, "interview_audio",
+            resource_type="interview", resource_id=interview_id,
+        )
+        db.add(stored)
+        transcript_data = transcribe_audio(str(stored_file_path(stored)))
         transcript_text = transcript_data.get("text", "")
         formatted_transcript = format_transcript_for_display(transcript_data)
-    except Exception as e:
-        transcript_text = f"转写失败: {str(e)}"
-        formatted_transcript = transcript_text
-        transcript_data = {"text": transcript_text, "segments": []}
-
-    interview.audio_records = {"full_interview": file_path}
-    interview.transcripts = {
-        "full_interview": transcript_text,
-        "full_interview_data": transcript_data
-    }
-    db.commit()
+        interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
+        interview.transcripts = {
+            "full_interview": transcript_text,
+            "full_interview_data": transcript_data,
+        }
+        commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
+    except Exception:
+        if stored is not None:
+            cleanup_new_file(db, stored, root=UPLOAD_ROOT)
+        else:
+            db.rollback()
+        logger.warning("Full interview audio upload failed", extra={"resource_id": str(interview_id)})
+        raise HTTPException(status_code=500, detail="Audio upload failed") from None
 
     if transcript_text and background_tasks:
         background_tasks.add_task(
             generate_evaluation_from_transcript,
+            interview.tenant_id,
             interview_id,
             transcript_text
         )
@@ -559,13 +593,11 @@ def submit_direct_evaluation(
     interview_id: UUID,
     evaluation_data: DirectEvaluationRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """直接提交面试评价（无需面试题），支持结合录音转写内容"""
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_assignment(db, interview_id, current_user)
 
     transcripts = interview.transcripts or {}
     full_transcript_data = transcripts.get("full_interview", "")
@@ -583,14 +615,20 @@ def submit_direct_evaluation(
             InterviewPanel.interview_id == interview_id,
             InterviewPanel.interviewer_id == current_user.id
         ).first()
-        
-        if panel:
-            panel.scores = {"overall": evaluation_data.score}
-            panel.comments = {"overall": evaluation_data.evaluation}
-            panel.total_score = evaluation_data.score
-            panel.is_submitted = True
-            db.commit()
-            db.refresh(panel)
+
+        if panel is None:
+            panel = InterviewPanel(
+                tenant_id=interview.tenant_id,
+                interview_id=interview_id,
+                interviewer_id=current_user.id,
+            )
+            db.add(panel)
+        panel.scores = {"overall": evaluation_data.score}
+        panel.comments = {"overall": evaluation_data.evaluation}
+        panel.total_score = evaluation_data.score
+        panel.is_submitted = True
+        db.commit()
+        db.refresh(panel)
         
         submitted_panels = db.query(InterviewPanel).filter(
             InterviewPanel.interview_id == interview_id,
@@ -630,6 +668,7 @@ def submit_direct_evaluation(
             if full_transcript:
                 background_tasks.add_task(
                     generate_combined_evaluation,
+                    interview.tenant_id,
                     interview_id,
                     full_transcript,
                     combined_evaluation,
@@ -656,6 +695,7 @@ def submit_direct_evaluation(
             interview.result = InterviewResult.PENDING
             background_tasks.add_task(
                 generate_combined_evaluation,
+                interview.tenant_id,
                 interview_id,
                 full_transcript,
                 evaluation_data.evaluation,
@@ -680,142 +720,118 @@ def submit_direct_evaluation_with_audio(
     evaluation: str = Form(...),
     suggestion: str = Form(None),
     score: int = Form(5),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """同时上传录音和评价，AI综合分析生成最终评价"""
     from app.services.audio_service import transcribe_audio
 
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_assignment(db, interview_id, current_user)
 
-    upload_dir = f"uploads/full_audio/{interview_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    file_name = f"full_interview.{file_extension}"
-    file_path = os.path.join(upload_dir, file_name)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
+    tenant_id = get_tenant_id(db)
+    old_files = tenant_files_from_urls(
+        db, tenant_id, "interview", interview_id, "interview_audio",
+        [(interview.audio_records or {}).get("full_interview")],
+    )
+    stored = None
+    background_payload = None
     try:
-        transcript_data = transcribe_audio(file_path)
+        stored = save_upload_file(
+            file, tenant_id, "interview_audio",
+            resource_type="interview", resource_id=interview_id,
+        )
+        db.add(stored)
+        transcript_data = transcribe_audio(str(stored_file_path(stored)))
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
-    except Exception as e:
-        transcript = f"转写失败: {str(e)}"
-        transcript_data = {"text": transcript, "segments": []}
+        interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
+        interview.transcripts = {
+            "full_interview": transcript,
+            "full_interview_data": transcript_data,
+        }
 
-    interview.audio_records = {"full_interview": file_path}
-    interview.transcripts = {
-        "full_interview": transcript,
-        "full_interview_data": transcript_data
-    }
-
-    panel_members = interview.panel_members or []
-    is_multi_interviewer = len(panel_members) > 1
-
-    if is_multi_interviewer:
-        panel = db.query(InterviewPanel).filter(
-            InterviewPanel.interview_id == interview_id,
-            InterviewPanel.interviewer_id == current_user.id
-        ).first()
-        
-        if panel:
+        panel_members = interview.panel_members or []
+        if len(panel_members) > 1:
+            panel = db.query(InterviewPanel).filter(
+                InterviewPanel.interview_id == interview_id,
+                InterviewPanel.interviewer_id == current_user.id,
+            ).first()
+            if panel is None:
+                panel = InterviewPanel(
+                    tenant_id=interview.tenant_id,
+                    interview_id=interview_id,
+                    interviewer_id=current_user.id,
+                )
+                db.add(panel)
             panel.scores = {"overall": score}
             panel.comments = {"overall": evaluation}
             panel.total_score = score
             panel.is_submitted = True
-            db.commit()
-            db.refresh(panel)
-        
-        submitted_panels = db.query(InterviewPanel).filter(
-            InterviewPanel.interview_id == interview_id,
-            InterviewPanel.is_submitted == True
-        ).all()
-        
-        submitted_ids = [str(p.interviewer_id) for p in submitted_panels]
-        required_ids = [str(uid) for uid in panel_members]
-        
-        print(f"[Direct Eval Audio] Submitted IDs: {submitted_ids}")
-        print(f"[Direct Eval Audio] Required IDs: {required_ids}")
-        
-        all_submitted = all(uid in submitted_ids for uid in required_ids)
-        print(f"[Direct Eval Audio] All submitted: {all_submitted}")
-        
-        if all_submitted:
-            interview.status = InterviewStatus.ANALYZING
-            interview.result = InterviewResult.PENDING
-            
-            all_evaluations = []
-            for p in submitted_panels:
-                interviewer_name = p.interviewer_user.full_name if p.interviewer_user else str(p.interviewer_id)
-                all_evaluations.append(f"**{interviewer_name}**: {p.comments.get('overall', '')} (评分: {p.total_score})")
-            
-            combined_evaluation = "\n\n".join(all_evaluations)
-            avg_score = sum(p.total_score or 0 for p in submitted_panels) // len(submitted_panels)
-            
-            interview.evaluation = combined_evaluation
-            interview.suggestion = "综合多位面试官评价"
-            interview.total_score = avg_score
-            interview.scores = {"overall": avg_score}
-            interview.comments = {"overall": combined_evaluation}
-            
-            db.commit()
-            db.refresh(interview)
-            
+            submitted_panels = db.query(InterviewPanel).filter(
+                InterviewPanel.interview_id == interview_id,
+                InterviewPanel.is_submitted == True,
+            ).all()
+            submitted_ids = {str(item.interviewer_id) for item in submitted_panels}
+            if all(str(uid) in submitted_ids for uid in panel_members):
+                all_evaluations = []
+                for item in submitted_panels:
+                    name = item.interviewer_user.full_name if item.interviewer_user else str(item.interviewer_id)
+                    all_evaluations.append(
+                        f"**{name}**: {item.comments.get('overall', '')} (评分: {item.total_score})"
+                    )
+                combined = "\n\n".join(all_evaluations)
+                average = sum(item.total_score or 0 for item in submitted_panels) // len(submitted_panels)
+                interview.status = InterviewStatus.ANALYZING if transcript else InterviewStatus.COMPLETED
+                interview.result = InterviewResult.PENDING
+                interview.evaluation = combined
+                interview.suggestion = "综合多位面试官评价"
+                interview.total_score = average
+                interview.scores = {"overall": average}
+                interview.comments = {"overall": combined}
+                if transcript:
+                    background_payload = (transcript, combined, "综合多位面试官评价", average)
+            else:
+                interview.result = InterviewResult.PENDING
+        else:
+            interview.evaluation = evaluation
+            interview.suggestion = suggestion
+            interview.total_score = score
+            interview.scores = {"overall": score}
+            interview.comments = {"overall": evaluation}
             if transcript:
-                background_tasks.add_task(
-                    generate_combined_evaluation,
-                    interview_id,
-                    transcript,
-                    combined_evaluation,
-                    "综合多位面试官评价",
-                    avg_score
-                )
+                interview.status = InterviewStatus.ANALYZING
+                background_payload = (transcript, evaluation, suggestion, score)
             else:
                 interview.status = InterviewStatus.COMPLETED
-                db.commit()
-                db.refresh(interview)
+            interview.result = InterviewResult.PENDING
+        commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
+    except Exception:
+        if stored is not None:
+            cleanup_new_file(db, stored, root=UPLOAD_ROOT)
         else:
-            interview.result = InterviewResult.PENDING
-            db.commit()
-            db.refresh(interview)
-    else:
-        interview.evaluation = evaluation
-        interview.suggestion = suggestion
-        interview.total_score = score
-        interview.scores = {"overall": score}
-        interview.comments = {"overall": evaluation}
+            db.rollback()
+        logger.warning("Direct evaluation audio upload failed", extra={"resource_id": str(interview_id)})
+        raise HTTPException(status_code=500, detail="Audio upload failed") from None
 
-        if transcript:
-            interview.status = InterviewStatus.ANALYZING
-            interview.result = InterviewResult.PENDING
-            background_tasks.add_task(
-                generate_combined_evaluation,
-                interview_id,
-                transcript,
-                evaluation,
-                suggestion,
-                score
-            )
-        else:
-            interview.status = InterviewStatus.COMPLETED
-            interview.result = InterviewResult.PENDING
-
-        db.commit()
-        db.refresh(interview)
-
+    db.refresh(interview)
+    if background_payload:
+        background_tasks.add_task(
+            generate_combined_evaluation,
+            interview.tenant_id,
+            interview_id,
+            *background_payload,
+        )
     return interview
 
 
-def generate_evaluation_from_transcript(interview_id: UUID, transcript: str):
+@background_task_context
+def generate_evaluation_from_transcript(tenant_id: UUID, interview_id: UUID, transcript: str):
     """根据转写内容生成评价（后台任务）"""
-    generate_combined_evaluation(interview_id, transcript, None, None, None)
+    generate_combined_evaluation(tenant_id, interview_id, transcript, None, None, None)
 
 
+@background_task_context
 def generate_combined_evaluation(
+    tenant_id: UUID,
     interview_id: UUID,
     transcript: str,
     interviewer_evaluation: str = None,
@@ -823,12 +839,10 @@ def generate_combined_evaluation(
     interviewer_score: int = None
 ):
     """根据录音转写和面试官评价综合生成评价（后台任务）"""
-    from app.config.database import SessionLocal
     from app.services.ai_service import generate_text
     from app.models.models import Interview as InterviewModel, Resume, Position
 
-    db = SessionLocal()
-    try:
+    with tenant_session(tenant_id) as db:
         interview = db.query(InterviewModel).filter(InterviewModel.id == interview_id).first()
         if not interview:
             return
@@ -881,7 +895,7 @@ def generate_combined_evaluation(
 请用中文回答，格式清晰。"""
 
         # 调用AI生成评价
-        evaluation = generate_text(prompt)
+        evaluation = generate_text(prompt, db=db)
 
         if evaluation:
             interview.evaluation = evaluation
@@ -898,8 +912,3 @@ def generate_combined_evaluation(
                 interview.suggestion = interviewer_suggestion
 
             db.commit()
-
-    except Exception as e:
-        print(f"生成评价失败: {e}")
-    finally:
-        db.close()

@@ -17,6 +17,7 @@ vi.mock('antd', async () => {
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({
     user: { id: '1', email: 'admin@example.com', full_name: 'HR Admin', role: 'admin' },
+    companyName: '凯锐招聘',
     logout: vi.fn(),
   }),
 }))
@@ -40,6 +41,13 @@ describe('AppLayout responsiveness', () => {
     const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
     expect(container.querySelector('.app-sider')).toHaveClass('ant-layout-sider-collapsed')
     expect(container.querySelector('.app-main-layout')).toHaveStyle({ marginLeft: '80px' })
+  })
+
+  it('shows the current company identity without a company switcher', () => {
+    render(<MemoryRouter initialEntries={['/dashboard']}><AppLayout /></MemoryRouter>)
+
+    expect(screen.getByText('凯锐招聘')).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '公司' })).not.toBeInTheDocument()
   })
 
   it('hides the complete title beside a direct menu icon in collapsed mode', () => {

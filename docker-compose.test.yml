@@ -1,0 +1,23 @@
+name: ai-interview-rls-test
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_test_password
+      POSTGRES_DB: ai_interview_test
+      APP_RUNTIME_PASSWORD: runtime_test_password
+      APP_MIGRATION_PASSWORD: migration_test_password
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./docker/postgres/init/01-app-roles.sh:/docker-entrypoint-initdb.d/01-app-roles.sh:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_interview_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s

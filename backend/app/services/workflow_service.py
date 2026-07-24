@@ -1,6 +1,7 @@
 import json
 import logging
 import httpx
+from fastapi import HTTPException
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable
 from uuid import UUID
@@ -100,15 +101,16 @@ class NodeExecutor:
             messages.append({"role": "user", "content": str(input_data)})
         
         try:
-            cfg = _get_llm_config()
+            ai_db = self.db if self.db.info.get("tenant_id") is not None else None
+            cfg = _get_llm_config(ai_db)
             extra = {"temperature": temperature}
             if max_tokens:
                 extra["max_tokens"] = max_tokens
             
-            completion = _get_client().chat.completions.create(
+            completion = _get_client(config=cfg).chat.completions.create(
                 model=cfg["llm_model"] if model == "default" else model,
                 messages=messages,
-                extra_body=_get_extra_body(),
+                extra_body=_get_extra_body(config=cfg),
                 **extra,
             )
             
@@ -124,7 +126,7 @@ class NodeExecutor:
             return {"output": response_content}
             
         except Exception as e:
-            logger.error(f"LLM execution failed: {e}")
+            logger.error("LLM execution failed (%s)", type(e).__name__)
             raise
     
     def _execute_condition(self, config: Dict[str, Any], input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -256,7 +258,11 @@ class NodeExecutor:
         
         resume = self.db.query(Resume).filter(Resume.id == resume_id).first()
         if not resume:
-            raise ValueError(f"Resume not found: {resume_id}")
+            raise HTTPException(status_code=404, detail="Resume not found")
+
+        reviewer = self.db.query(User).filter(User.id == reviewer_id).first()
+        if reviewer is None:
+            raise HTTPException(status_code=404, detail="Reviewer not found")
         
         existing = self.db.query(DepartmentReview).filter(
             DepartmentReview.resume_id == resume_id,
@@ -555,7 +561,7 @@ class WorkflowEngine:
         try:
             self._run_execution(execution, workflow)
         except Exception as e:
-            logger.error(f"Workflow execution failed: {e}")
+            logger.error("Workflow execution failed (%s)", type(e).__name__)
             execution.status = ExecutionStatus.FAILED
             execution.completed_at = datetime.utcnow()
             self.db.commit()

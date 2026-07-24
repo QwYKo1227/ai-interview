@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.workflow import (
     WorkflowCreate, WorkflowUpdate, WorkflowResponse,
     WorkflowExecutionCreate, WorkflowExecutionResponse
@@ -24,7 +24,7 @@ def list_workflows(
     skip: int = 0,
     limit: int = 100,
     status: Optional[WorkflowStatus] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     engine = WorkflowEngine(db)
@@ -34,7 +34,7 @@ def list_workflows(
 @router.post("", response_model=WorkflowResponse)
 def create_workflow(
     workflow_data: WorkflowCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     engine = WorkflowEngine(db)
@@ -44,7 +44,7 @@ def create_workflow(
 @router.get("/{workflow_id}", response_model=WorkflowResponse)
 def get_workflow(
     workflow_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     engine = WorkflowEngine(db)
@@ -58,7 +58,7 @@ def get_workflow(
 def update_workflow(
     workflow_id: UUID,
     update_data: WorkflowUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     engine = WorkflowEngine(db)
@@ -71,7 +71,7 @@ def update_workflow(
 @router.delete("/{workflow_id}")
 def delete_workflow(
     workflow_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN]))
 ):
     engine = WorkflowEngine(db)
@@ -87,7 +87,7 @@ def delete_workflow(
 @router.post("/{workflow_id}/publish", response_model=WorkflowResponse)
 def publish_workflow(
     workflow_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     engine = WorkflowEngine(db)
@@ -101,10 +101,12 @@ def publish_workflow(
 def execute_workflow(
     workflow_id: UUID,
     execution_data: WorkflowExecutionCreate = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     engine = WorkflowEngine(db)
+    if not engine.get_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found")
     try:
         execution = engine.execute_workflow(
             workflow_id=workflow_id,
@@ -122,17 +124,19 @@ def list_executions(
     workflow_id: UUID,
     skip: int = 0,
     limit: int = 50,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     engine = WorkflowEngine(db)
+    if not engine.get_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found")
     return engine.get_executions(workflow_id=workflow_id, skip=skip, limit=limit)
 
 
 @router.get("/executions/{execution_id}", response_model=WorkflowExecutionResponse)
 def get_execution(
     execution_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     engine = WorkflowEngine(db)
@@ -144,7 +148,7 @@ def get_execution(
 
 @router.post("/init-builtin")
 def init_builtin_workflows(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN]))
 ):
     create_builtin_workflows(db)

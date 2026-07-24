@@ -1,6 +1,8 @@
 import os
 from typing import Dict, Any
-from app.config.database import SessionLocal
+from uuid import UUID
+
+from sqlalchemy.orm import Session
 
 # 默认提示词配置（仅在数据库为空时使用）
 DEFAULT_PROMPTS = {
@@ -227,49 +229,51 @@ DEFAULT_PROMPTS = {
 
 class PromptManager:
     _instance = None
-    _db_prompts = None  # 缓存数据库中的提示词配置
+    _db_prompts: Dict[UUID, Dict[str, Any]] = {}
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(PromptManager, cls).__new__(cls)
         return cls._instance
 
-    def _load_from_db(self) -> Dict[str, Any]:
-        """从数据库加载提示词配置"""
-        db = SessionLocal()
-        try:
-            from app.services.system_config_service import get_system_config
-            config = get_system_config(db)
-            if config and config.prompt_configs:
-                # 如果数据库中有配置，使用数据库的配置
-                self._db_prompts = config.prompt_configs
-            else:
-                # 如果数据库中没有配置，将默认配置写入数据库
-                if config:
-                    config.prompt_configs = DEFAULT_PROMPTS["prompts"]
-                    db.commit()
-                    self._db_prompts = DEFAULT_PROMPTS["prompts"]
-                else:
-                    self._db_prompts = None
-        except Exception as e:
-            print(f"Error loading prompts from database: {e}")
-            self._db_prompts = None
-        finally:
-            db.close()
-        return self._db_prompts or DEFAULT_PROMPTS["prompts"]
+    @staticmethod
+    def default_prompts() -> Dict[str, Any]:
+        return {
+            key: dict(value)
+            for key, value in DEFAULT_PROMPTS["prompts"].items()
+        }
 
-    def reload_from_db(self):
-        """强制从数据库重新加载提示词配置（清除缓存）"""
-        self._db_prompts = None
-        return self._load_from_db()
+    @staticmethod
+    def _tenant_id(db: Session) -> UUID:
+        tenant_id = db.info.get("tenant_id")
+        if not isinstance(tenant_id, UUID):
+            raise RuntimeError("prompt settings require a tenant-scoped session")
+        return tenant_id
 
-    def _get_prompt_config(self, key: str) -> Dict[str, str]:
+    def _load_from_db(self, db: Session) -> Dict[str, Any]:
+        """Load prompt settings through the caller's tenant-scoped session."""
+        from app.services.system_config_service import get_system_config
+
+        tenant_id = self._tenant_id(db)
+        config = get_system_config(db)
+        prompts = (
+            dict(config.prompt_configs)
+            if config is not None and config.prompt_configs
+            else self.default_prompts()
+        )
+        self._db_prompts[tenant_id] = prompts
+        return prompts
+
+    def reload_from_db(self, db: Session) -> Dict[str, Any]:
+        """Clear and reload only the caller tenant's cache bucket."""
+        self._db_prompts.pop(self._tenant_id(db), None)
+        return self._load_from_db(db)
+
+    def _get_prompt_config(self, key: str, db: Session | None = None) -> Dict[str, str]:
         """获取指定 key 的提示词配置"""
-        if self._db_prompts is None:
-            self._load_from_db()
-
-        if self._db_prompts:
-            prompt_config = self._db_prompts.get(key)
+        prompts = self.get_all_prompts(db) if db is not None else self.default_prompts()
+        if prompts:
+            prompt_config = prompts.get(key)
             if prompt_config:
                 return {
                     "system": prompt_config.get('system', ""),
@@ -287,12 +291,12 @@ class PromptManager:
             "user": default_config.get('user', "")
         }
 
-    def get_prompt(self, key: str, **kwargs) -> Dict[str, str]:
+    def get_prompt(self, key: str, *, db: Session | None = None, **kwargs) -> Dict[str, str]:
         """
         Get prompt template by key and format it with kwargs.
         Returns a dictionary with 'system' and 'user' keys.
         """
-        prompt_config = self._get_prompt_config(key)
+        prompt_config = self._get_prompt_config(key, db)
 
         system_prompt = prompt_config.get('system', "")
         user_prompt_template = prompt_config.get('user', "")
@@ -304,27 +308,24 @@ class PromptManager:
         try:
             # Format the user prompt with provided kwargs
             user_prompt = user_prompt_template.format(**kwargs)
-        except KeyError as e:
-            print(f"Missing variable for prompt '{key}': {e}")
-            user_prompt = f"Error: Missing variable {e}. Template: {user_prompt_template}"
-        except Exception as e:
-            print(f"Error formatting prompt '{key}': {e}")
-            user_prompt = user_prompt_template
+        except KeyError:
+            print("Prompt formatting failed: missing variable")
+            user_prompt = "提示词变量缺失"
+        except Exception:
+            print("Prompt formatting failed")
+            user_prompt = "提示词格式化失败"
 
         return {
             "system": system_prompt,
             "user": user_prompt
         }
 
-    def get_all_prompts(self) -> Dict[str, Any]:
+    def get_all_prompts(self, db: Session) -> Dict[str, Any]:
         """获取所有提示词配置"""
-        if self._db_prompts is None:
-            self._load_from_db()
-
-        if self._db_prompts:
-            return self._db_prompts
-
-        return DEFAULT_PROMPTS["prompts"]
+        tenant_id = self._tenant_id(db)
+        if tenant_id not in self._db_prompts:
+            return self._load_from_db(db)
+        return self._db_prompts[tenant_id]
 
 # Global instance
 prompt_manager = PromptManager()

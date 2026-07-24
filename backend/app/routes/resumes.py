@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks, Request
 from sqlalchemy.orm import Session
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.resume import (
     ResumeResponse, ResumeCreate, ResumeUpdate,
     DepartmentReviewCreate, DepartmentReviewUpdate, DepartmentReviewResponse,
@@ -8,7 +9,7 @@ from app.schemas.resume import (
     DuplicateCheckRequest, DuplicateCheckResponse, DepartmentReviewSummary
 )
 from app.services.resume_service import (
-    upload_resume, get_resumes, get_resume, update_resume, delete_resume,
+    upload_resume, upload_public_resume, get_resumes, get_resume, update_resume, delete_resume,
     batch_upload_resumes, reparse_resume,
     check_duplicate_resume, create_department_review, get_department_reviews,
     complete_department_review, aggregate_department_reviews, submit_hr_decision,
@@ -19,6 +20,11 @@ from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List, Dict, Any, Optional
 from uuid import UUID
+from app.services.public_token_service import resolve_public_tenant
+from app.core.rate_limit import enforce_rate_limit
+from app.core.proxy import resolve_request_host
+import hashlib
+import re
 
 router = APIRouter(
     prefix="/resumes",
@@ -35,7 +41,7 @@ def get_resumes_route(
     status: str = None,
     position_id: Optional[UUID] = None,
     reviewer_id: Optional[UUID] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_resumes(db, skip=skip, limit=limit, candidate_name=candidate_name, status=status, position_id=position_id, reviewer_id=reviewer_id)
@@ -45,7 +51,7 @@ def get_resumes_route(
 @router.post("/check-duplicate", response_model=DuplicateCheckResponse)
 def check_duplicate_route(
     request: DuplicateCheckRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -77,26 +83,72 @@ def validate_pdf_file(file: UploadFile):
         raise HTTPException(status_code=400, detail="只允许上传 PDF 格式的文件")
     return file
 
+
+def _public_upload_rate_subject(
+    tenant_id: UUID,
+    position_id: UUID,
+    *,
+    candidate_name: str | None,
+    email: str | None,
+    contact: str | None,
+) -> str | None:
+    """Build one stable, non-reversible candidate identity for rate limiting."""
+
+    normalized_name = " ".join((candidate_name or "").strip().casefold().split())
+    normalized_email = (email or "").strip().casefold()
+    normalized_contact = re.sub(r"\D+", "", contact or "")
+    if not any((normalized_name, normalized_email, normalized_contact)):
+        return None
+    payload = "\x1f".join(
+        (
+            str(tenant_id),
+            str(position_id),
+            normalized_name,
+            normalized_email,
+            normalized_contact,
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 # 注意：单简历上传保持公开，因为应聘者可能通过公开链接投递
 @router.post("", response_model=ResumeResponse)
 def create_resume_route(
     background_tasks: BackgroundTasks,
+    request: Request,
     position_id: UUID = Form(...),
+    tenant_code: str = Form(None),
     file: UploadFile = File(...),
     candidate_name: str = Form(None),  # 公开链接上传时由应聘者填写
     email: str = Form(None),
     contact: str = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_unscoped_db)
 ):
     validate_pdf_file(file)
-    return upload_resume(db, file, position_id, background_tasks, candidate_name, email, contact)
+    tenant_id = resolve_public_tenant(
+        db, request_host=resolve_request_host(request), tenant_code=tenant_code
+    )
+    enforce_rate_limit(request, "public_upload_tenant", tenant_id)
+    candidate_subject = _public_upload_rate_subject(
+        tenant_id,
+        position_id,
+        candidate_name=candidate_name,
+        email=email,
+        contact=contact,
+    )
+    if candidate_subject is None:
+        enforce_rate_limit(request, "public_upload")
+    else:
+        enforce_rate_limit(request, "public_upload", candidate_subject)
+    return upload_public_resume(
+        db, file, position_id, background_tasks, candidate_name, email, contact
+    )
 
 @router.post("/batch", response_model=List[ResumeResponse])
 def batch_upload_resumes_route(
     background_tasks: BackgroundTasks,
     position_id: UUID = Form(...),
     files: List[UploadFile] = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     for f in files:
@@ -108,7 +160,7 @@ def batch_upload_resumes_route(
 @router.get("/{resume_id}", response_model=ResumeResponse)
 def get_resume_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     resume = get_resume_with_reviews(db, resume_id)
@@ -120,7 +172,7 @@ def get_resume_route(
 def update_resume_route(
     resume_id: UUID,
     resume: ResumeUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_resume = update_resume(db, resume_id, resume)
@@ -131,7 +183,7 @@ def update_resume_route(
 @router.delete("/{resume_id}", response_model=ResumeResponse)
 def delete_resume_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_resume = delete_resume(db, resume_id)
@@ -143,7 +195,7 @@ def delete_resume_route(
 def reparse_resume_route(
     resume_id: UUID,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     resume = reparse_resume(db, resume_id, background_tasks)
@@ -156,7 +208,7 @@ def reparse_resume_route(
 @router.get("/{resume_id}/department-reviews", response_model=DepartmentReviewSummary)
 def get_department_reviews_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -169,7 +221,7 @@ def get_department_reviews_route(
 def create_department_review_route(
     resume_id: UUID,
     reviewer_id: UUID = Form(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -188,7 +240,7 @@ def complete_department_review_route(
     overall_score: int = Form(None),
     recommendation: str = Form(None),
     comment: str = Form(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -201,7 +253,7 @@ def complete_department_review_route(
         recommendation=recommendation,
         comment=comment
     )
-    return complete_department_review(db, review_id, reviewer_id, review_data)
+    return complete_department_review(db, resume_id, review_id, reviewer_id, review_data)
 
 # ==================== HR决策 ====================
 
@@ -209,13 +261,14 @@ def complete_department_review_route(
 def submit_hr_decision_route(
     resume_id: UUID,
     decision_data: HRDecisionCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
     HR提交最终决策
     """
-    return submit_hr_decision(db, resume_id, decision_data.hr_id, decision_data)
+    # decision_data.hr_id is retained for request compatibility but is not trusted.
+    return submit_hr_decision(db, resume_id, current_user.id, decision_data)
 
 
 @router.post("/{resume_id}/confirm-rejection", response_model=ResumeResponse)
@@ -223,7 +276,7 @@ def confirm_rejection_route(
     resume_id: UUID,
     reason_category: str = Form(...),
     reason_detail: str = Form(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -242,7 +295,7 @@ def confirm_rejection_route(
 @router.post("/{resume_id}/override-rejection", response_model=ResumeResponse)
 def override_rejection_route(
     resume_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -257,7 +310,7 @@ def transfer_resume_position_route(
     resume_id: UUID,
     background_tasks: BackgroundTasks,
     new_position_id: UUID = Form(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """
@@ -272,7 +325,7 @@ def get_queue_status(
 ):
     from app.services.task_queue import get_task_queue
     queue = get_task_queue()
-    return queue.get_stats()
+    return queue.get_stats(current_user.tenant_id)
 
 
 @router.get("/queue/task/{task_id}")
@@ -282,7 +335,7 @@ def get_task_status(
 ):
     from app.services.task_queue import get_task_queue
     queue = get_task_queue()
-    status = queue.get_status(task_id)
+    status = queue.get_status(task_id, current_user.tenant_id)
     if not status:
         raise HTTPException(status_code=404, detail="Task not found")
     return status
@@ -290,14 +343,14 @@ def get_task_status(
 
 @router.post("/fix-stuck")
 def fix_stuck_resumes(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     from datetime import datetime, timedelta
     from app.services.task_queue import get_task_queue
 
     queue = get_task_queue()
-    queue_stats = queue.get_stats()
+    queue_stats = queue.get_stats(current_user.tenant_id)
 
     stuck_resumes = db.query(Resume).filter(
         Resume.parse_status == "processing",
@@ -306,7 +359,7 @@ def fix_stuck_resumes(
 
     fixed_count = 0
     for resume in stuck_resumes:
-        task_status = queue.get_status(str(resume.id))
+        task_status = queue.get_status(str(resume.id), current_user.tenant_id)
 
         if task_status is None or task_status["status"] in ["completed", "failed"]:
             resume.parse_status = "failed"

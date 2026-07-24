@@ -1,0 +1,314 @@
+from contextlib import contextmanager
+from typing import Iterator
+from uuid import UUID
+from weakref import WeakKeyDictionary
+
+from sqlalchemy import event, inspect, text
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.orm import Session, with_loader_criteria
+
+from app.models.tenant_models import TenantScopedMixin
+
+
+_SET_POSTGRES_TENANT = text(
+    "SELECT set_config('app.current_tenant_id', :tenant_id, true)"
+)
+_TENANT_BINDINGS: WeakKeyDictionary[Session, UUID] = WeakKeyDictionary()
+
+
+class TenantInactiveError(RuntimeError):
+    """The tenant was removed or disabled before scoped work started."""
+
+
+def _require_uuid(tenant_id: UUID) -> UUID:
+    if not isinstance(tenant_id, UUID):
+        raise TypeError("tenant_id must be a UUID")
+    return tenant_id
+
+
+def _tenant_scope(session: Session) -> UUID | None:
+    tenant_id = _TENANT_BINDINGS.get(session)
+    if tenant_id is None and isinstance(session, TenantSession):
+        raise RuntimeError("TenantSession is missing internal tenant binding")
+    return tenant_id
+
+
+def get_tenant_id(session: Session) -> UUID:
+    """Return the immutable tenant binding for a scoped application session."""
+    tenant_id = _tenant_scope(session)
+    if tenant_id is None:
+        raise RuntimeError("operation requires a tenant-scoped session")
+    return tenant_id
+
+
+def _bind_tenant_scope(session: Session, tenant_id: UUID) -> None:
+    configured_tenant = _TENANT_BINDINGS.get(session)
+    if configured_tenant not in (None, tenant_id):
+        raise ValueError("tenant_id does not match session tenant")
+    if configured_tenant is None:
+        _TENANT_BINDINGS[session] = tenant_id
+    session.info["tenant_id"] = tenant_id
+
+
+def _validate_tenant_object(obj, tenant_id: UUID, session: Session) -> None:
+    if not isinstance(obj, TenantScopedMixin):
+        return
+
+    state = inspect(obj)
+    object_tenant = state.dict.get("tenant_id")
+    if object_tenant is None and (
+        state.transient or (state.pending and state.session is session)
+    ):
+        obj.tenant_id = tenant_id
+    elif object_tenant != tenant_id:
+        raise ValueError("tenant_id does not match session tenant")
+
+
+def _preflight_graph(session: Session, instances, cascade: str) -> None:
+    tenant_id = _tenant_scope(session)
+    seen = set()
+    for root in instances:
+        root_state = inspect(root)
+        graph = [(root, root_state)]
+        graph.extend(
+            (obj, state)
+            for obj, _mapper, state, _dict in root_state.mapper.cascade_iterator(
+                cascade, root_state
+            )
+        )
+        for obj, state in graph:
+            if state in seen:
+                continue
+            seen.add(state)
+            if state.session is not None and state.session is not session:
+                raise InvalidRequestError(
+                    "object is already attached to a different Session"
+                )
+            _validate_tenant_object(obj, tenant_id, session)
+
+
+def _scoped_add(session: Session, instance, _warn: bool = True) -> None:
+    _preflight_graph(session, [instance], "save-update")
+    Session.add(session, instance, _warn=_warn)
+
+
+def _scoped_add_all(session: Session, instances) -> None:
+    instances = list(instances)
+    _preflight_graph(session, instances, "save-update")
+    Session.add_all(session, instances)
+
+
+def _scoped_merge(session: Session, instance, *, load: bool = True, options=None):
+    _tenant_scope(session)
+    raise InvalidRequestError("merge() is disabled for tenant-scoped sessions")
+
+
+class TenantCapableSession(Session):
+    """A Session that can be safely bound to a tenant after construction."""
+
+    def add(self, instance, _warn: bool = True) -> None:
+        if _tenant_scope(self) is None:
+            return super().add(instance, _warn=_warn)
+        return _scoped_add(self, instance, _warn=_warn)
+
+    def add_all(self, instances) -> None:
+        if _tenant_scope(self) is None:
+            return super().add_all(instances)
+        return _scoped_add_all(self, instances)
+
+    def merge(self, instance, *, load: bool = True, options=None):
+        if _tenant_scope(self) is None:
+            return super().merge(instance, load=load, options=options)
+        return _scoped_merge(self, instance, load=load, options=options)
+
+
+class TenantSession(TenantCapableSession):
+    """A Session explicitly bound to one tenant for ORM operations.
+
+    The authoritative binding is private and immutable; ``Session.info`` is
+    only an observational mirror and cannot change the active scope.
+    ORM SELECTs and loaders are scoped automatically. Raw textual/Core SQL is
+    outside this application-layer filter and relies on PostgreSQL RLS once it
+    is enabled.
+    """
+
+    def __init__(self, *args, tenant_id: UUID | None = None, **kwargs) -> None:
+        info = dict(kwargs.pop("info", None) or {})
+        configured_tenant = info.get("tenant_id")
+        if tenant_id is None:
+            tenant_id = configured_tenant
+        tenant_id = _require_uuid(tenant_id)
+        if configured_tenant not in (None, tenant_id):
+            raise ValueError("tenant_id does not match session tenant")
+        info["tenant_id"] = tenant_id
+        super().__init__(*args, info=info, **kwargs)
+        _bind_tenant_scope(self, tenant_id)
+
+    def get(self, entity, ident, **kwargs):
+        tenant_id = _tenant_scope(self)
+        instance = super().get(entity, ident, **kwargs)
+        if (
+            isinstance(instance, TenantScopedMixin)
+            and instance.tenant_id != tenant_id
+        ):
+            return None
+        return instance
+
+
+@event.listens_for(Session, "do_orm_execute")
+def add_tenant_filter(execute_state) -> None:
+    tenant_id = _tenant_scope(execute_state.session)
+    if tenant_id is None:
+        return
+    if execute_state.is_from_statement:
+        raise InvalidRequestError(
+            "textual ORM statements are forbidden in tenant-scoped sessions"
+        )
+    if execute_state.is_select:
+        execute_state.statement = execute_state.statement.options(
+            with_loader_criteria(
+                TenantScopedMixin,
+                lambda model: model.tenant_id == tenant_id,
+                include_aliases=True,
+            )
+        )
+
+
+@event.listens_for(Session, "before_flush")
+def fill_tenant_id(session, _flush_context, _instances) -> None:
+    tenant_id = _tenant_scope(session)
+    if tenant_id is None:
+        return
+    for obj in session.new:
+        if isinstance(obj, TenantScopedMixin):
+            if obj.tenant_id not in (None, tenant_id):
+                raise ValueError("tenant_id does not match session tenant")
+            obj.tenant_id = tenant_id
+
+    for obj in session.dirty.union(session.deleted):
+        if isinstance(obj, TenantScopedMixin) and obj.tenant_id != tenant_id:
+            raise ValueError("tenant_id does not match session tenant")
+
+
+@event.listens_for(Session, "before_attach")
+def reject_cross_tenant_attach(session, obj) -> None:
+    tenant_id = _tenant_scope(session)
+    if tenant_id is not None:
+        _validate_tenant_object(obj, tenant_id, session)
+
+
+@event.listens_for(Session, "after_begin")
+def set_postgres_tenant_on_transaction_begin(session, _transaction, connection) -> None:
+    tenant_id = _tenant_scope(session)
+    if tenant_id is not None and connection.dialect.name == "postgresql":
+        connection.execute(
+            _SET_POSTGRES_TENANT,
+            {"tenant_id": str(tenant_id)},
+        )
+
+
+def set_tenant_context(db: TenantCapableSession, tenant_id: UUID) -> None:
+    """Bind a Session to a tenant and configure its current PostgreSQL transaction."""
+
+    if type(db) not in (TenantCapableSession, TenantSession):
+        raise TypeError(
+            "set_tenant_context requires an exact TenantCapableSession "
+            "or TenantSession"
+        )
+    tenant_id = _require_uuid(tenant_id)
+    configured_tenant = _TENANT_BINDINGS.get(db)
+    if configured_tenant not in (None, tenant_id):
+        raise ValueError("tenant_id does not match session tenant")
+    if configured_tenant is None and any(
+        isinstance(obj, TenantScopedMixin) for obj in db.identity_map.values()
+    ):
+        raise ValueError(
+            "cannot set tenant context after tenant-scoped objects were loaded"
+        )
+    _bind_tenant_scope(db, tenant_id)
+
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        db.execute(_SET_POSTGRES_TENANT, {"tenant_id": str(tenant_id)})
+
+
+def _release_platform_onboarding_context(
+    db: TenantCapableSession, tenant_id: UUID
+) -> None:
+    """Release the platform-onboarding binding after scoped objects detach.
+
+    This private escape hatch is intentionally restricted to an exact unscoped
+    ``TenantCapableSession``. Ordinary ``TenantSession`` instances retain their
+    immutable binding for their entire lifetime.
+    """
+
+    if type(db) is not TenantCapableSession:
+        raise TypeError(
+            "platform onboarding release requires an exact TenantCapableSession"
+        )
+    tenant_id = _require_uuid(tenant_id)
+    configured_tenant = _TENANT_BINDINGS.get(db)
+    if configured_tenant != tenant_id:
+        raise ValueError("tenant_id does not match session tenant")
+    if db.in_transaction():
+        raise RuntimeError("cannot release tenant context during a transaction")
+    session_objects = (
+        list(db.identity_map.values())
+        + list(db.new)
+        + list(db.dirty)
+        + list(db.deleted)
+    )
+    if any(isinstance(obj, TenantScopedMixin) for obj in session_objects):
+        raise RuntimeError(
+            "cannot release tenant context while tenant-scoped objects remain"
+        )
+    _TENANT_BINDINGS.pop(db, None)
+    db.info.pop("tenant_id", None)
+
+
+@contextmanager
+def tenant_session(tenant_id: UUID) -> Iterator[TenantSession]:
+    """Open a tenant-bound Session and always release its transaction/connection."""
+
+    tenant_id = _require_uuid(tenant_id)
+    from app.config.database import TenantSessionLocal
+
+    db = TenantSessionLocal(tenant_id=tenant_id)
+    try:
+        from app.models.tenant_models import Tenant, TenantStatus
+
+        tenant = (
+            db.query(Tenant)
+            .filter(Tenant.id == tenant_id, Tenant.status == TenantStatus.ACTIVE)
+            .first()
+        )
+        if tenant is None:
+            raise TenantInactiveError("tenant is not active")
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@contextmanager
+def tenant_authentication_session(tenant_id: UUID) -> Iterator[TenantSession]:
+    """Open a scoped login session before credentials decide disabled-vs-401.
+
+    This narrow entry is only for the authentication service. Background and
+    ordinary business work must use ``tenant_session`` and pass the ACTIVE
+    gate before the caller receives the Session.
+    """
+
+    tenant_id = _require_uuid(tenant_id)
+    from app.config.database import TenantSessionLocal
+
+    db = TenantSessionLocal(tenant_id=tenant_id)
+    try:
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()

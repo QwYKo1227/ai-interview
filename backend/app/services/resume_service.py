@@ -8,18 +8,29 @@ from app.schemas.resume import (
     ResumeStatus as ResumeStatusSchema, DepartmentReviewCreate,
     DepartmentReviewUpdate, HRDecisionCreate, DuplicateCheckRequest
 )
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import UploadFile, HTTPException
-from app.utils.file_storage import save_upload_file
+from app.utils.file_storage import (
+    delete_object_file, save_upload_file, stage_file_deletions,
+    stored_file_path, tenant_resource_files, unlink_file_locations, UPLOAD_ROOT,
+)
+from app.models.file_models import StoredFile
 from app.services.ai_service import analyze_resume, generate_resume_markdown
 from app.services.task_queue import get_task_queue
 import docx
 import PyPDF2
 import os
 from typing import List, Optional, Dict, Any
-from datetime import datetime
-from sqlalchemy import or_, and_, func
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import or_, and_, func, update
 import json
+import logging
+from app.core.observability import background_task_context
+
+from app.config.tenant_session import get_tenant_id, tenant_session
+from app.services.public_token_service import issue_public_token, revoke_public_tokens
+
+logger = logging.getLogger(__name__)
 
 
 EXTRACTED_PROFILE_FIELDS = (
@@ -63,28 +74,45 @@ def read_file_content(file_path: str) -> str:
                 content = f.read()
         else:
             print(f"Unsupported file type: {ext}")
-    except Exception as e:
-        print(f"Error reading file {file_path}: {e}")
+    except Exception as error:
+        logger.error("Resume file read failed (%s)", type(error).__name__)
     return content
 
-from app.config.database import SessionLocal
 from fastapi import BackgroundTasks
 
-def process_resume_task(payload: Dict[str, Any]):
-    resume_id = payload["resume_id"]
+@background_task_context
+def process_resume_task(tenant_id: UUID, resume_id: UUID, payload: Dict[str, Any]):
+    with tenant_session(tenant_id) as db:
+        return _process_resume_task(db, tenant_id, resume_id, payload)
+
+
+def _process_resume_task(
+    db: Session,
+    tenant_id: UUID,
+    resume_id: UUID,
+    payload: Dict[str, Any],
+):
     position_id = payload["position_id"]
     use_user_info = payload.get("use_user_info", False)
 
-    db = SessionLocal()
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
         if not resume:
+            logger.warning(
+                "Resume parse resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(resume_id)},
+            )
             return
         resume.parse_status = "processing"
         resume.parse_error = None
         db.commit()
 
-        content = read_file_content(resume.file_path)
+        file_path = resume.file_path
+        if resume.file_id:
+            stored = db.query(StoredFile).filter(StoredFile.id == resume.file_id).first()
+            if stored:
+                file_path = str(stored_file_path(stored))
+        content = read_file_content(file_path)
         if not content:
             resume.parse_status = "failed"
             resume.parse_error = "读取简历内容失败"
@@ -125,7 +153,9 @@ def process_resume_task(payload: Dict[str, Any]):
         else:
             other_positions_info = "暂无其他相近岗位"
 
-        parsed_data = analyze_resume(content, position_desc, other_positions_info)
+        parsed_data = analyze_resume(
+            content, position_desc, other_positions_info, db=db
+        )
 
         # 解析 AI 返回结果，兼容多种格式
         if not parsed_data:
@@ -214,22 +244,18 @@ def process_resume_task(payload: Dict[str, Any]):
 
         db.commit()
 
-    except Exception as e:
-        try:
-            resume = db.query(Resume).filter(Resume.id == resume_id).first()
-            if resume:
-                resume.parse_status = "failed"
-                resume.parse_error = str(e)[:500]
-                db.commit()
-        finally:
-            pass
-    finally:
-        db.close()
+    except Exception:
+        db.rollback()
+        raise RuntimeError("resume parsing failed") from None
 
 
-def on_resume_parse_failure(payload: Dict[str, Any], error: str):
-    resume_id = payload["resume_id"]
-    db = SessionLocal()
+@background_task_context
+def on_resume_parse_failure(tenant_id: UUID, resume_id: UUID, error: str):
+    with tenant_session(tenant_id) as db:
+        return _on_resume_parse_failure(db, resume_id, error)
+
+
+def _on_resume_parse_failure(db: Session, resume_id: UUID, error: str):
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
         if resume:
@@ -238,18 +264,20 @@ def on_resume_parse_failure(payload: Dict[str, Any], error: str):
             resume.candidate_name = "解析失败"
             db.commit()
             print(f"[TaskQueue] Updated resume {resume_id} status to failed")
-    except Exception as e:
-        print(f"[TaskQueue] Failed to update resume status: {e}")
-    finally:
-        db.close()
+    except Exception:
+        print("[TaskQueue] Failed to update resume status")
 
 
-def process_resume_background(resume_id: UUID, position_id: UUID, use_user_info: bool = False):
+@background_task_context
+def process_resume_background(tenant_id: UUID, resume_id: UUID, position_id: UUID, use_user_info: bool = False):
     queue = get_task_queue()
     queue.submit(
+        tenant_id=tenant_id,
+        resource_id=resume_id,
         task_id=str(resume_id),
         task_type="resume_parse",
         payload={
+            "tenant_id": tenant_id,
             "resume_id": resume_id,
             "position_id": position_id,
             "use_user_info": use_user_info,
@@ -265,13 +293,20 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
     - 公开链接上传时，candidate_name/email/contact 由应聘者填写，解析时不会覆盖
     - 后台上传时，这些字段为空，解析时会从简历中提取
     """
-    # 1. Save file
-    file_path = save_upload_file(file, "resumes")
+    position = db.query(Position).filter(Position.id == position_id).first()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    tenant_id = get_tenant_id(db)
+    stored = save_upload_file(file, tenant_id, "resumes", resource_type="resume")
 
     # 2. Create initial record
     # 如果有应聘者填写的信息，直接使用；否则显示"解析中..."
     db_resume = Resume(
-        file_path=file_path,
+        tenant_id=position.tenant_id,
+        id=uuid4(),
+        file_path=f"/api/files/{stored.id}",
+        file_id=stored.id,
         position_id=position_id,
         status=ResumeStatus.PENDING_SCREENING,
         candidate_name=candidate_name or "解析中...",
@@ -280,17 +315,48 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
         parse_status="processing",
     )
 
-    db.add(db_resume)
-    db.commit()
+    stored.resource_id = db_resume.id
+    db.add_all([stored, db_resume])
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        delete_object_file(UPLOAD_ROOT, tenant_id, stored.object_key)
+        raise
     db.refresh(db_resume)
 
     # 3. Add background task - 传递是否使用用户填写的信息标记
     use_user_info = bool(candidate_name or email or contact)
-    background_tasks.add_task(process_resume_background, db_resume.id, position_id, use_user_info)
+    background_tasks.add_task(
+        process_resume_background,
+        db_resume.tenant_id,
+        db_resume.id,
+        position_id,
+        use_user_info,
+    )
 
     return db_resume
 
+
+def upload_public_resume(
+    db: Session, file: UploadFile, position_id: UUID,
+    background_tasks: BackgroundTasks, candidate_name: str = None,
+    email: str = None, contact: str = None,
+):
+    position = db.query(Position).filter(
+        Position.id == position_id,
+        Position.status == PositionStatus.PUBLISHED,
+    ).first()
+    if position is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return upload_resume(
+        db, file, position_id, background_tasks, candidate_name, email, contact
+    )
+
 def batch_upload_resumes(db: Session, files: List[UploadFile], position_id: UUID, background_tasks: BackgroundTasks):
+    from app.services.tenant_reference_service import require_tenant_entity
+
+    require_tenant_entity(db, Position, position_id, "Position not found")
     uploaded_resumes = []
     for file in files:
         resume = upload_resume(db, file, position_id, background_tasks)
@@ -318,7 +384,9 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
     db.commit()
     db.refresh(resume)
 
-    background_tasks.add_task(process_resume_background, resume.id, resume.position_id)
+    background_tasks.add_task(
+        process_resume_background, resume.tenant_id, resume.id, resume.position_id
+    )
     return resume
 
 def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: str = None, status: str = None, position_id: UUID = None, reviewer_id: UUID = None):
@@ -374,28 +442,48 @@ def delete_resume(db: Session, resume_id: UUID):
     if not db_resume:
         return None
 
+    tenant_id = db_resume.tenant_id
+    file_records = tenant_resource_files(db, tenant_id, "resume", resume_id, "resumes")
     # Get interview IDs for this resume
     interview_ids = [i.id for i in db.query(Interview).filter(Interview.resume_id == resume_id).all()]
+    for interview_id in interview_ids:
+        file_records.extend(tenant_resource_files(
+            db, tenant_id, "interview", interview_id, "interview_audio"
+        ))
+    file_locations = stage_file_deletions(db, file_records)
 
     # Delete associated interview panels first (due to foreign key constraint)
     if interview_ids:
-        db.query(InterviewPanel).filter(InterviewPanel.interview_id.in_(interview_ids)).delete(synchronize_session=False)
+        panels = db.query(InterviewPanel).filter(InterviewPanel.interview_id.in_(interview_ids)).all()
+        for panel in panels:
+            db.delete(panel)
 
     # Delete associated interviews
-    db.query(Interview).filter(Interview.resume_id == resume_id).delete(synchronize_session=False)
+    interviews = db.query(Interview).filter(Interview.resume_id == resume_id).all()
+    for interview in interviews:
+        db.delete(interview)
 
     # Delete associated department reviews
-    db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).delete(synchronize_session=False)
+    department_reviews = db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).all()
+    for review in department_reviews:
+        db.delete(review)
 
     # Delete associated offers
-    db.query(Offer).filter(Offer.resume_id == resume_id).delete(synchronize_session=False)
+    offers = db.query(Offer).filter(Offer.resume_id == resume_id).all()
+    for offer in offers:
+        db.delete(offer)
 
     # Solution: Eager load position before deletion, so it's in memory.
     # Re-query with options
     db_resume = db.query(Resume).options(joinedload(Resume.position)).filter(Resume.id == resume_id).first()
 
     db.delete(db_resume)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    unlink_file_locations(file_locations, root=UPLOAD_ROOT)
     return db_resume
 
 
@@ -406,6 +494,10 @@ def check_duplicate_resume(db: Session, email: Optional[str], contact: Optional[
     检查同一岗位下是否存在相同邮箱或手机号的简历
     返回已存在的简历或 None
     """
+    position = db.query(Position).filter(Position.id == position_id).first()
+    if position is None:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+
     conditions = []
 
     if email:
@@ -428,6 +520,78 @@ def check_duplicate_resume(db: Session, email: Optional[str], contact: Optional[
 
 # ==================== 部门评审 ====================
 
+def get_public_review_payload(db: Session, review: DepartmentReview) -> Dict[str, Any]:
+    resume = db.query(Resume).options(joinedload(Resume.position)).filter(
+        Resume.id == review.resume_id
+    ).first()
+    if resume is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return {
+        "resume": {
+            "id": str(resume.id), "candidate_name": resume.candidate_name,
+            "email": resume.email, "contact": resume.contact,
+            "match_score": resume.match_score, "ai_review": resume.ai_review,
+            "resume_markdown": resume.resume_markdown, "parsed_data": resume.parsed_data,
+            "status": resume.status.value if resume.status else None,
+            "position": {
+                "id": str(resume.position.id), "title": resume.position.title,
+                "description": resume.position.description,
+                "requirements": resume.position.requirements,
+            } if resume.position else None,
+        },
+        "existing_review": {
+            "id": str(review.id), "technical_score": review.technical_score,
+            "experience_score": review.experience_score,
+            "overall_score": review.overall_score,
+            "recommendation": review.recommendation, "comment": review.comment,
+            "is_completed": review.is_completed,
+        },
+    }
+
+
+def submit_public_department_review(
+    db: Session, review: DepartmentReview, *, technical_score: int | None,
+    experience_score: int | None, overall_score: int | None,
+    recommendation: str | None, comment: str | None,
+) -> Dict[str, str]:
+    tenant_id = get_tenant_id(db)
+    review_id, resume_id = review.id, review.resume_id
+    resume = db.query(Resume).filter(Resume.id == resume_id).first()
+    if resume is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    transition = db.execute(
+        update(DepartmentReview).where(
+            DepartmentReview.id == review_id,
+            DepartmentReview.tenant_id == tenant_id,
+            DepartmentReview.is_completed.is_(False),
+        ).values(
+            technical_score=technical_score,
+            experience_score=experience_score,
+            overall_score=overall_score,
+            recommendation=recommendation,
+            comment=comment,
+            is_completed=True,
+            updated_at=datetime.utcnow(),
+        )
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    revoke_public_tokens(db, tenant_id, "department_review", review_id)
+    incomplete = db.query(DepartmentReview).filter(
+        DepartmentReview.resume_id == resume_id,
+        DepartmentReview.is_completed.is_(False),
+    ).count()
+    if incomplete == 0:
+        db.execute(
+            update(Resume).where(
+                Resume.id == resume_id, Resume.tenant_id == tenant_id
+            ).values(status=ResumeStatus.PENDING_HR_DECISION)
+        )
+    db.commit()
+    return {"message": "Review submitted", "review_id": str(review_id)}
+
+
 def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) -> DepartmentReview:
     """
     创建部门评审记录（指派评审人）
@@ -436,6 +600,10 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
     resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="简历不存在")
+
+    reviewer = db.query(User).filter(User.id == reviewer_id).first()
+    if reviewer is None:
+        raise HTTPException(status_code=404, detail="评审人不存在")
 
     # 检查是否已经指派过该评审人
     existing = db.query(DepartmentReview).filter(
@@ -456,6 +624,13 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
     db.add(review)
     db.commit()
     db.refresh(review)
+    review.public_token = issue_public_token(
+        db,
+        review.tenant_id,
+        "department_review",
+        review.id,
+        datetime.now(timezone.utc) + timedelta(days=14),
+    )
 
     # 更新简历状态为待部门评审
     if resume.status == ResumeStatus.PENDING_REVIEW:
@@ -476,12 +651,13 @@ def get_department_reviews(db: Session, resume_id: UUID) -> List[DepartmentRevie
     return reviews
 
 
-def complete_department_review(db: Session, review_id: UUID, reviewer_id: UUID, review_data: DepartmentReviewUpdate) -> DepartmentReview:
+def complete_department_review(db: Session, resume_id: UUID, review_id: UUID, reviewer_id: UUID, review_data: DepartmentReviewUpdate) -> DepartmentReview:
     """
     完成部门评审
     """
     review = db.query(DepartmentReview).filter(
         DepartmentReview.id == review_id,
+        DepartmentReview.resume_id == resume_id,
         DepartmentReview.reviewer_id == reviewer_id
     ).first()
 
@@ -601,15 +777,20 @@ def _send_hr_review_notification(db: Session, resume: Resume, reviews: List[Depa
             
             mail_service._send_email(hr.email, subject, html_content)
             
-    except Exception as e:
-        import logging
-        logging.error(f"Failed to send HR review notification: {e}")
+    except Exception as error:
+        logger.error(
+            "HR review notification failed (%s)", type(error).__name__
+        )
 
 
 def aggregate_department_reviews(db: Session, resume_id: UUID) -> Dict[str, Any]:
     """
     聚合多人评审结果
     """
+    resume = db.query(Resume).filter(Resume.id == resume_id).first()
+    if resume is None:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
     reviews = get_department_reviews(db, resume_id)
 
     if not reviews:
@@ -815,7 +996,9 @@ def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID
     resume.status = ResumeStatus.PENDING_SCREENING
 
     # 清除部门评审记录
-    db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).delete()
+    department_reviews = db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).all()
+    for review in department_reviews:
+        db.delete(review)
 
     # 清除HR评审
     resume.hr_review = None
@@ -828,6 +1011,12 @@ def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID
     db.refresh(resume)
 
     # 触发重新解析
-    background_tasks.add_task(process_resume_background, resume.id, resume.position_id, False)
+    background_tasks.add_task(
+        process_resume_background,
+        resume.tenant_id,
+        resume.id,
+        resume.position_id,
+        False,
+    )
 
     return resume

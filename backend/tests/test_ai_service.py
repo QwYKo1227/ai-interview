@@ -21,20 +21,28 @@ def test_chat_jd_stream_accepts_validated_message_models(monkeypatch):
     ]
     monkeypatch.setattr(
         "app.services.ai_service._get_llm_config",
-        lambda: {
+        lambda db: {
             "llm_model": "test-model",
+            "llm_provider": "openai",
             "llm_temperature": 0.2,
             "llm_max_tokens": None,
         },
     )
-    monkeypatch.setattr("app.services.ai_service._get_client", lambda: client)
-    monkeypatch.setattr("app.services.ai_service._get_extra_body", lambda: {})
+    monkeypatch.setattr(
+        "app.services.ai_service._get_client",
+        lambda *, config: client,
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service._get_extra_body",
+        lambda *, config: {},
+    )
 
     events = list(
         chat_jd_stream(
             messages=[JDChatMessage(role="user", content="Add Python")],
             current_description="Current description",
             current_requirements="Current requirements",
+            db=MagicMock(),
         )
     )
 

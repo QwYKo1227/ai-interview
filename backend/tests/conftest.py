@@ -24,9 +24,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.models.models import (
     Base, User, UserRole, Position, PositionStatus, PositionUrgency, PositionType,
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
-    InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission
+    InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission, Offer
 )
+from app.models.tenant_models import (
+    PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
+)
+from app.models.file_models import StoredFile
 from app.config.database import get_db
+from app.config.tenant_session import TenantCapableSession
 from app.core.security import get_password_hash, create_access_token
 
 
@@ -42,7 +47,12 @@ test_engine = create_engine(
 )
 
 # 创建测试会话工厂
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+TestingSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=test_engine,
+    class_=TenantCapableSession,
+)
 
 
 @pytest.fixture(scope="function")
@@ -54,6 +64,12 @@ def db() -> Generator[Session, None, None]:
     """
     # 只创建面试测试需要的表（排除使用 ARRAY 类型的 QuestionBank）
     tables_to_create = [
+        Tenant.__table__,
+        TenantDomain.__table__,
+        PlatformUser.__table__,
+        PlatformAuditLog.__table__,
+        PublicAccessToken.__table__,
+        StoredFile.__table__,
         User.__table__,
         Position.__table__,
         Resume.__table__,
@@ -63,12 +79,19 @@ def db() -> Generator[Session, None, None]:
         SystemConfig.__table__,
         CodingTest.__table__,
         CodingSubmission.__table__,
+        Offer.__table__,
     ]
 
     for table in tables_to_create:
         table.create(bind=test_engine, checkfirst=True)
 
-    db = TestingSessionLocal()
+    # Resolve the session class at fixture runtime so every test uses the same
+    # currently imported tenant-session module as production dependencies.
+    db = TenantCapableSession(
+        bind=test_engine,
+        autoflush=False,
+        expire_on_commit=True,
+    )
     try:
         yield db
     finally:
@@ -96,6 +119,7 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     test_app.include_router(resumes.router, prefix="/api")
     test_app.include_router(interviews.router, prefix="/api")
     test_app.include_router(coding_tests.router, prefix="/api")
+    test_app.include_router(coding_tests.public_router, prefix="/api")
     test_app.include_router(settings.router, prefix="/api")
 
     # 正确覆盖 get_db 依赖
@@ -106,8 +130,9 @@ def client(db: Session) -> Generator[TestClient, None, None]:
             pass
 
     # 使用 dependency_overrides 正确覆盖
-    from app.config.database import get_db as original_get_db
+    from app.config.database import get_db as original_get_db, get_unscoped_db
     test_app.dependency_overrides[original_get_db] = override_get_db
+    test_app.dependency_overrides[get_unscoped_db] = override_get_db
 
     with TestClient(test_app) as c:
         yield c
@@ -116,12 +141,31 @@ def client(db: Session) -> Generator[TestClient, None, None]:
 
 
 @pytest.fixture
-def test_user(db: Session) -> User:
+def tenant_a(db: Session) -> Tenant:
+    tenant = Tenant(code="careray", name="CareRay", status=TenantStatus.ACTIVE)
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    return tenant
+
+
+@pytest.fixture
+def tenant_b(db: Session) -> Tenant:
+    tenant = Tenant(code="photonthix", name="Photonthix", status=TenantStatus.ACTIVE)
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    return tenant
+
+
+@pytest.fixture
+def test_user(db: Session, tenant_a: Tenant) -> User:
     """
     创建测试用户（HR 角色）
     """
     user = User(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         email="test_hr@example.com",
         hashed_password=get_password_hash("testpassword"),
         full_name="测试HR",
@@ -135,12 +179,13 @@ def test_user(db: Session) -> User:
 
 
 @pytest.fixture
-def test_admin(db: Session) -> User:
+def test_admin(db: Session, tenant_a: Tenant) -> User:
     """
     创建测试管理员用户
     """
     user = User(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         email="test_admin@example.com",
         hashed_password=get_password_hash("testpassword"),
         full_name="测试管理员",
@@ -154,12 +199,13 @@ def test_admin(db: Session) -> User:
 
 
 @pytest.fixture
-def test_interviewer(db: Session) -> User:
+def test_interviewer(db: Session, tenant_a: Tenant) -> User:
     """
     创建测试面试官用户
     """
     user = User(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         email="test_interviewer@example.com",
         hashed_password=get_password_hash("testpassword"),
         full_name="测试面试官",
@@ -173,12 +219,13 @@ def test_interviewer(db: Session) -> User:
 
 
 @pytest.fixture
-def test_position(db: Session) -> Position:
+def test_position(db: Session, tenant_a: Tenant) -> Position:
     """
     创建测试岗位
     """
     position = Position(
         id=uuid4(),
+        tenant_id=tenant_a.id,
         title="高级Python工程师",
         description="负责后端系统开发和维护",
         requirements="5年以上Python开发经验，熟悉FastAPI",
@@ -203,6 +250,7 @@ def test_resume(db: Session, test_position: Position) -> Resume:
     """
     resume = Resume(
         id=uuid4(),
+        tenant_id=test_position.tenant_id,
         candidate_name="张三",
         contact="13800138000",
         email="zhangsan@example.com",
@@ -225,6 +273,7 @@ def test_interview(db: Session, test_resume: Resume, test_position: Position, te
     """
     interview = Interview(
         id=uuid4(),
+        tenant_id=test_position.tenant_id,
         resume_id=test_resume.id,
         position_id=test_position.id,
         interviewer="主面试官",
@@ -250,6 +299,7 @@ def test_interview_in_progress(db: Session, test_resume: Resume, test_position: 
     """
     interview = Interview(
         id=uuid4(),
+        tenant_id=test_position.tenant_id,
         resume_id=test_resume.id,
         position_id=test_position.id,
         interviewer="主面试官",
@@ -275,6 +325,7 @@ def test_interview_panel(db: Session, test_interview: Interview, test_interviewe
     """
     panel = InterviewPanel(
         id=uuid4(),
+        tenant_id=test_interview.tenant_id,
         interview_id=test_interview.id,
         interviewer_id=test_interviewer.id,
         scores={},
@@ -292,7 +343,11 @@ def auth_headers(test_user: User) -> dict:
     """
     生成HR认证请求头
     """
-    access_token = create_access_token(data={"sub": test_user.email})
+    access_token = create_access_token(
+        user_id=test_user.id,
+        tenant_id=test_user.tenant_id,
+        role=test_user.role.value,
+    )
     return {"Authorization": f"Bearer {access_token}"}
 
 
@@ -307,7 +362,11 @@ def admin_auth_headers(test_admin: User, db: Session) -> dict:
     if not existing:
         db.add(test_admin)
         db.commit()
-    access_token = create_access_token(data={"sub": test_admin.email})
+    access_token = create_access_token(
+        user_id=test_admin.id,
+        tenant_id=test_admin.tenant_id,
+        role=test_admin.role.value,
+    )
     return {"Authorization": f"Bearer {access_token}"}
 
 
@@ -316,7 +375,11 @@ def interviewer_auth_headers(test_interviewer: User) -> dict:
     """
     生成面试官认证请求头
     """
-    access_token = create_access_token(data={"sub": test_interviewer.email})
+    access_token = create_access_token(
+        user_id=test_interviewer.id,
+        tenant_id=test_interviewer.tenant_id,
+        role=test_interviewer.role.value,
+    )
     return {"Authorization": f"Bearer {access_token}"}
 
 

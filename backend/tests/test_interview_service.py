@@ -320,6 +320,7 @@ class TestAggregatePanelScores:
         # 创建已提交的面试官评分
         panel = InterviewPanel(
             id=uuid4(),
+            tenant_id=test_interview.tenant_id,
             interview_id=test_interview.id,
             interviewer_id=test_interviewer.id,
             scores={"0": 8, "1": 9},
@@ -354,6 +355,7 @@ class TestAggregatePanelScores:
         # 创建两个面试官的评分
         panel1 = InterviewPanel(
             id=uuid4(),
+            tenant_id=test_interview.tenant_id,
             interview_id=test_interview.id,
             interviewer_id=test_interviewer.id,
             scores={"0": 8, "1": 9},
@@ -363,6 +365,7 @@ class TestAggregatePanelScores:
         )
         panel2 = InterviewPanel(
             id=uuid4(),
+            tenant_id=test_interview.tenant_id,
             interview_id=test_interview.id,
             interviewer_id=test_user.id,
             scores={"0": 7, "1": 8},

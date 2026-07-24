@@ -1,9 +1,8 @@
-http://{$APP_DOMAIN:interview.careray.com} {
-    redir https://{host}{uri} permanent
-}
-
-https://{$APP_DOMAIN:interview.careray.com} {
-    tls internal
-    header Permissions-Policy "microphone=(self)"
-    reverse_proxy frontend:80
+{$APP_DOMAINS:interview.careray.com, interview.photonthix.com} {
+	tls internal
+	header Permissions-Policy "microphone=(self)"
+	reverse_proxy frontend:80 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Host {http.request.host}
+	}
 }

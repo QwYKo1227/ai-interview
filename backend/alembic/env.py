@@ -14,6 +14,7 @@ sys.path.append(os.getcwd())
 from app.models.base import Base
 # Import all models here to register them with Base.metadata
 from app.models import models, workflow_models
+from app.models.tenant_autogenerate import render_tenant_constraint
 
 load_dotenv()
 
@@ -38,7 +39,13 @@ target_metadata = Base.metadata
 # ... etc.
 
 def get_url():
-    return os.getenv("DATABASE_URL")
+    migration_url = os.getenv("MIGRATION_DATABASE_URL")
+    if not migration_url:
+        raise RuntimeError(
+            "MIGRATION_DATABASE_URL is required for Alembic; "
+            "DATABASE_URL is reserved for the runtime application"
+        )
+    return migration_url
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -58,6 +65,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_item=render_tenant_constraint,
     )
 
     with context.begin_transaction():
@@ -81,7 +89,9 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            render_item=render_tenant_constraint,
         )
 
         with context.begin_transaction():

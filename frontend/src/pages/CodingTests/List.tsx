@@ -157,6 +157,9 @@ const CodingTestsList: React.FC = () => {
       } else {
         const created = await request.post('/coding-tests', payload);
         message.success('创建成功，正在生成题目...');
+        if (created?.public_token) {
+          showPublicLink(created.public_token, '笔试公开链接');
+        }
         setOpen(false);
         fetchList();
         
@@ -223,6 +226,33 @@ const CodingTestsList: React.FC = () => {
         message.info(url);
       }
       document.body.removeChild(textArea);
+    }
+  };
+
+  const showPublicLink = (token: string, title: string) => {
+    const url = `${window.location.origin}/public/coding-tests/${token}`;
+    Modal.info({
+      title,
+      width: 640,
+      content: (
+        <Space.Compact style={{ width: '100%', marginTop: 16 }}>
+          <Input value={url} readOnly />
+          <Button type="primary" onClick={() => copyLink(token)}>复制链接</Button>
+        </Space.Compact>
+      ),
+    });
+  };
+
+  const reissueAndCopyLink = async (codingTestId: string) => {
+    try {
+      const result = await request.post(`/coding-tests/${codingTestId}/public-token`);
+      if (!result?.public_token) {
+        message.error('未能生成笔试公开链接');
+        return;
+      }
+      await copyLink(result.public_token);
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '生成笔试公开链接失败');
     }
   };
 
@@ -404,7 +434,7 @@ const CodingTestsList: React.FC = () => {
       render: (_: any, record: any) => (
         <Space size="small">
           <Tooltip title="复制链接">
-            <Button type="text" icon={<LinkOutlined />} onClick={() => copyLink(record.public_token)} />
+            <Button type="text" icon={<LinkOutlined />} onClick={() => reissueAndCopyLink(record.id)} />
           </Tooltip>
         </Space>
       ),

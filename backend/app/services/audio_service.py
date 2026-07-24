@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 
 dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
+
+class AudioTranscriptionError(RuntimeError):
+    """Safe domain error raised when audio transcription cannot complete."""
+
+    error_code = "audio_transcription_failed"
+
 def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> dict:
     """
     Transcribe audio file using DashScope ASR SDK (FunASR).
@@ -29,13 +35,20 @@ def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> d
         }
     """
     if not os.path.exists(audio_file_path):
-        return {"text": "", "segments": []}
+        logger.error(
+            "Audio transcription failed",
+            extra={"error_code": "missing_input", "exception_type": "FileNotFoundError"},
+        )
+        raise AudioTranscriptionError()
         
+    wav_path = None
+    temp_dir = None
     try:
         sound = AudioSegment.from_file(audio_file_path)
         sound = sound.set_frame_rate(16000).set_channels(1)
         
-        wav_path = audio_file_path + ".wav"
+        temp_dir = tempfile.TemporaryDirectory(prefix="ai-interview-audio-")
+        wav_path = os.path.join(temp_dir.name, "converted.wav")
         sound.export(wav_path, format="wav")
         
         recognition = Recognition(
@@ -48,14 +61,14 @@ def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> d
         
         result = recognition.call(wav_path)
         
-        if os.path.exists(wav_path):
-            os.remove(wav_path)
-            
         if result.status_code == HTTPStatus.OK:
             sentences = result.get_sentence()
             
             if not sentences:
-                logger.warning(f"ASR Result empty: {result}")
+                logger.warning(
+                    "Audio transcription returned no sentences",
+                    extra={"error_code": "empty_result"},
+                )
                 return {"text": "", "segments": []}
             
             segments = []
@@ -100,12 +113,29 @@ def transcribe_audio(audio_file_path: str, enable_diarization: bool = True) -> d
                 "segments": segments
             }
         else:
-            logger.error(f"ASR Error: {result.message}")
-            return {"text": f"[语音转写失败: {result.message}]", "segments": []}
+            logger.error(
+                "Audio transcription failed",
+                extra={
+                    "error_code": "provider_status",
+                    "exception_type": "ProviderResponseError",
+                },
+            )
+            raise AudioTranscriptionError()
             
-    except Exception as e:
-        logger.error(f"Transcription process failed: {e}")
-        return {"text": f"[语音转写异常: {str(e)}]", "segments": []}
+    except AudioTranscriptionError:
+        raise
+    except Exception as error:
+        logger.error(
+            "Audio transcription failed",
+            extra={
+                "error_code": "unexpected_error",
+                "exception_type": type(error).__name__,
+            },
+        )
+        raise AudioTranscriptionError() from None
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
 
 
 def transcribe_audio_simple(audio_file_path: str) -> str:

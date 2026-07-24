@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Optional
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.dashboard import (
     DashboardData, DashboardStats, Activity, TrendData,
     RecruitmentFunnel, PositionAnalyticsResponse, InterviewerAnalyticsResponse,
@@ -23,7 +23,7 @@ router = APIRouter(
 
 @router.get("/stats", response_model=DashboardData)
 def read_dashboard_stats(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     stats = get_dashboard_stats(db)
@@ -38,35 +38,35 @@ def read_dashboard_stats(
 
 @router.get("/overview", response_model=OverviewResponse)
 def read_overview(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_overview(db)
 
 @router.get("/funnel", response_model=RecruitmentFunnel)
 def read_funnel(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_recruitment_funnel(db)
 
 @router.get("/positions", response_model=PositionAnalyticsResponse)
 def read_position_analytics(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_position_analytics(db)
 
 @router.get("/interviewers", response_model=InterviewerAnalyticsResponse)
 def read_interviewer_analytics(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
     return get_interviewer_analytics(db)
 
 @router.get("/timeline", response_model=TimelineAnalyticsResponse)
 def read_timeline_analytics(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
     days: int = Query(default=30, ge=7, le=365, description="Number of days to analyze")
 ):

@@ -1,32 +1,51 @@
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import secrets
 import random
 import os
 import json
+import logging
+from app.core.observability import background_task_context
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, BackgroundTasks
 
-from app.models.models import CodingTest, CodingTestStatus, CodingSubmission, CodingSubmissionStatus, QuestionBank
+from app.models.models import CodingTest, CodingTestStatus, CodingSubmission, CodingSubmissionStatus, Position, QuestionBank, Resume
 from app.schemas.coding_test import CodingTestCreate, CodingTestUpdate
 from app.services.code_runner_service import run_code_against_tests
 from app.services.coding_test_ai_service import generate_coding_evaluation_background
+from app.services.tenant_reference_service import require_tenant_entity
+from app.config.tenant_session import tenant_session
+from app.config.tenant_session import get_tenant_id
+from app.services.public_token_service import hash_token, issue_public_token, resolve_public_token
+from app.models.file_models import StoredFile
+from app.utils.file_storage import stored_file_path
+from sqlalchemy.orm.attributes import set_committed_value
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_references(db: Session, data: Dict[str, Any]) -> None:
+    references = (
+        ("question_bank_id", QuestionBank, "Question bank not found"),
+        ("resume_id", Resume, "Resume not found"),
+        ("position_id", Position, "Position not found"),
+    )
+    for field, model, detail in references:
+        entity_id = data.get(field)
+        if entity_id is not None:
+            require_tenant_entity(db, model, entity_id, detail)
 
 
 def _generate_public_token() -> str:
-    return secrets.token_urlsafe(16)
+    # Legacy column remains non-null until the schema cleanup migration. It
+    # stores a digest marker, never a usable bearer credential.
+    return hash_token(secrets.token_urlsafe(32))
 
 
 def create_coding_test(db: Session, coding_test: CodingTestCreate, creator_id: UUID) -> CodingTest:
+    _validate_references(db, coding_test.model_dump())
     token = _generate_public_token()
-    for _ in range(5):
-        exists = db.query(CodingTest).filter(CodingTest.public_token == token).first()
-        if not exists:
-            break
-        token = _generate_public_token()
-    else:
-        raise HTTPException(status_code=500, detail="Failed to generate public token")
 
     test_type = coding_test.test_type or "algorithm"
     gen_status = "completed" if test_type == "algorithm" else "pending"
@@ -54,6 +73,15 @@ def create_coding_test(db: Session, coding_test: CodingTestCreate, creator_id: U
     db.add(db_test)
     db.commit()
     db.refresh(db_test)
+    raw_token = issue_public_token(
+        db,
+        get_tenant_id(db),
+        "coding_test",
+        db_test.id,
+        datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    # Return the credential once without marking the legacy DB column dirty.
+    set_committed_value(db_test, "public_token", raw_token)
     return db_test
 
 
@@ -69,7 +97,8 @@ def update_coding_test(db: Session, coding_test_id: UUID, payload: CodingTestUpd
     db_test = get_coding_test(db, coding_test_id)
     if not db_test:
         return None
-    data = payload.dict(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True)
+    _validate_references(db, data)
     for k, v in data.items():
         setattr(db_test, k, v)
     db.commit()
@@ -107,7 +136,20 @@ def close_coding_test(db: Session, coding_test_id: UUID) -> Optional[CodingTest]
 
 
 def get_public_coding_test(db: Session, token: str) -> Optional[CodingTest]:
-    return db.query(CodingTest).filter(CodingTest.public_token == token).first()
+    return resolve_public_token(db, token, "coding_test").resource
+
+
+def reissue_coding_test_public_token(db: Session, coding_test_id: UUID) -> str:
+    db_test = get_coding_test(db, coding_test_id)
+    if db_test is None:
+        raise HTTPException(status_code=404, detail="Coding test not found")
+    return issue_public_token(
+        db,
+        get_tenant_id(db),
+        "coding_test",
+        db_test.id,
+        datetime.now(timezone.utc) + timedelta(days=30),
+    )
 
 
 def run_public_code(db: Session, token: str, code: str, language: str) -> dict:
@@ -126,6 +168,7 @@ def submit_public_code(db: Session, background_tasks: BackgroundTasks, token: st
     run = run_code_against_tests(language=language, code=code, test_cases=db_test.test_cases or [], time_limit_ms=db_test.time_limit_ms or 3000)
 
     db_sub = CodingSubmission(
+        tenant_id=db_test.tenant_id,
         coding_test_id=db_test.id,
         candidate_name=candidate_name,
         candidate_email=candidate_email,
@@ -141,7 +184,9 @@ def submit_public_code(db: Session, background_tasks: BackgroundTasks, token: st
     db.commit()
     db.refresh(db_sub)
 
-    background_tasks.add_task(generate_coding_evaluation_background, db_sub.id)
+    background_tasks.add_task(
+        generate_coding_evaluation_background, db_test.tenant_id, db_sub.id
+    )
 
     return db_sub
 
@@ -168,6 +213,7 @@ def submit_choice_answers(db: Session, token: str, candidate_name: Optional[str]
     passed = correct_count >= len(questions) * 0.6
 
     db_sub = CodingSubmission(
+        tenant_id=db_test.tenant_id,
         coding_test_id=db_test.id,
         candidate_name=candidate_name,
         candidate_email=candidate_email,
@@ -191,6 +237,7 @@ def submit_essay_answers(db: Session, background_tasks: BackgroundTasks, token: 
         raise HTTPException(status_code=404, detail="Coding test not found")
 
     db_sub = CodingSubmission(
+        tenant_id=db_test.tenant_id,
         coding_test_id=db_test.id,
         candidate_name=candidate_name,
         candidate_email=candidate_email,
@@ -204,18 +251,22 @@ def submit_essay_answers(db: Session, background_tasks: BackgroundTasks, token: 
     db.commit()
     db.refresh(db_sub)
 
-    background_tasks.add_task(evaluate_essay_answers_background, db_sub.id)
+    background_tasks.add_task(
+        evaluate_essay_answers_background, db_test.tenant_id, db_sub.id
+    )
 
     return db_sub
 
 
-def evaluate_essay_answers_background(submission_id: UUID):
-    from app.config.database import SessionLocal
-    db = SessionLocal()
-    try:
+@background_task_context
+def evaluate_essay_answers_background(tenant_id: UUID, submission_id: UUID):
+    with tenant_session(tenant_id) as db:
         submission = db.query(CodingSubmission).filter(CodingSubmission.id == submission_id).first()
         if not submission:
-            print(f"Submission {submission_id} not found")
+            logger.warning(
+                "Essay evaluation resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(submission_id)},
+            )
             return
         
         test = submission.coding_test
@@ -242,7 +293,8 @@ def evaluate_essay_answers_background(submission_id: UUID):
                 user_answer,
                 reference,
                 keywords,
-                max_score
+                max_score,
+                db=db,
             )
             
             print(f"AI result for {q_id}: score={ai_result.get('score')}, evaluation={ai_result.get('evaluation')}")
@@ -268,15 +320,9 @@ def evaluate_essay_answers_background(submission_id: UUID):
         submission.evaluated_at = datetime.utcnow()
         db.commit()
         print(f"Essay evaluation completed for {submission_id}: total_score={total_score}")
-    except Exception as e:
-        print(f"Error evaluating essay answers: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        db.close()
 
 
-def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: str, keywords: list, max_score: int) -> dict:
+def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: str, keywords: list, max_score: int, *, db: Session) -> dict:
     from app.services.ai_service import _get_client, _get_llm_config, _get_extra_body
     
     if not user_answer or not user_answer.strip():
@@ -308,19 +354,19 @@ def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: s
 请给出评分和简要评价。"""
 
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": 0.3}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = 500
         
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         
@@ -328,7 +374,7 @@ def _evaluate_essay_with_ai(question: str, user_answer: str, reference_answer: s
         score = min(max(0, int(result.get("score", 0))), max_score)
         return {"score": score, "evaluation": result.get("evaluation", "")}
     except Exception as e:
-        print(f"AI evaluation failed: {e}")
+        print("AI evaluation failed")
         if keywords:
             matched = sum(1 for kw in keywords if kw.lower() in user_answer.lower())
             score = int((matched / len(keywords)) * max_score) if keywords else 0
@@ -378,8 +424,8 @@ def _read_file_content(file_path: str) -> str:
                 for page in reader.pages:
                     text += page.extract_text() or ""
             return text
-        except Exception as e:
-            print(f"PDF read error: {e}")
+        except Exception as error:
+            logger.error("Coding test PDF read failed (%s)", type(error).__name__)
             return ""
     
     if ext == 'docx':
@@ -388,14 +434,20 @@ def _read_file_content(file_path: str) -> str:
             doc = Document(file_path)
             text = "\n".join([para.text for para in doc.paragraphs])
             return text
-        except Exception as e:
-            print(f"DOCX read error: {e}")
+        except Exception as error:
+            logger.error("Coding test DOCX read failed (%s)", type(error).__name__)
             return ""
     
     return ""
 
 
-def _generate_questions_with_ai(content: str, test_type: str, count: int) -> List[Dict[str, Any]]:
+def _generate_questions_with_ai(
+    content: str,
+    test_type: str,
+    count: int,
+    *,
+    db: Session | None = None,
+) -> List[Dict[str, Any]]:
     from app.services.ai_service import _get_client, _get_llm_config, _get_extra_body
     
     if test_type == "choice":
@@ -455,19 +507,19 @@ def _generate_questions_with_ai(content: str, test_type: str, count: int) -> Lis
 请确保题目覆盖题库中的核心知识点，难度适中。"""
     
     try:
-        cfg = _get_llm_config()
+        cfg = _get_llm_config(db)
         extra = {"temperature": 0.7}
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
         
-        completion = _get_client().chat.completions.create(
+        completion = _get_client(config=cfg).chat.completions.create(
             model=cfg["llm_model"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
+            extra_body=_get_extra_body(config=cfg),
             **extra,
         )
         
@@ -481,7 +533,7 @@ def _generate_questions_with_ai(content: str, test_type: str, count: int) -> Lis
         
         return questions
     except Exception as e:
-        print(f"AI question generation failed: {e}")
+        print("AI question generation failed")
         return []
 
 
@@ -523,21 +575,31 @@ def generate_questions_from_bank(db: Session, question_bank_id: UUID, test_type:
             return result
     
     if bank.source_file:
-        content = _read_file_content(bank.source_file)
+        source_path = bank.source_file
+        if bank.source_file_id:
+            stored = db.query(StoredFile).filter(StoredFile.id == bank.source_file_id).first()
+            if stored:
+                source_path = str(stored_file_path(stored))
+        content = _read_file_content(source_path)
         if content:
-            questions = _generate_questions_with_ai(content, test_type, count)
+            questions = _generate_questions_with_ai(
+                content, test_type, count, db=db
+            )
             if questions:
                 return questions
     
     return []
 
 
-def generate_questions_background(coding_test_id: UUID, question_bank_id: UUID, test_type: str, count: int = 10):
-    from app.config.database import SessionLocal
-    db = SessionLocal()
-    try:
+@background_task_context
+def generate_questions_background(tenant_id: UUID, coding_test_id: UUID, question_bank_id: UUID, test_type: str, count: int = 10):
+    with tenant_session(tenant_id) as db:
         db_test = db.query(CodingTest).filter(CodingTest.id == coding_test_id).first()
         if not db_test:
+            logger.warning(
+                "Coding question generation resource not found",
+                extra={"tenant_id": str(tenant_id), "resource_id": str(coding_test_id)},
+            )
             return
         
         try:
@@ -549,10 +611,6 @@ def generate_questions_background(coding_test_id: UUID, question_bank_id: UUID, 
                 db_test.question_generation_status = "failed"
             db.commit()
         except Exception as e:
-            print(f"Background question generation failed: {e}")
+            print("Background question generation failed")
             db_test.question_generation_status = "failed"
             db.commit()
-    except Exception as e:
-        print(f"Background task error: {e}")
-    finally:
-        db.close()

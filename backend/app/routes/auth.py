@@ -1,14 +1,25 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from jose import JWTError, jwt
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.config.tenant_session import tenant_authentication_session
 from app.models.models import User, UserRole
-from app.schemas.user import Token, UserResponse, UserLogin, TokenData, UserCreate, UserUpdateMe, ChangePasswordRequest
-from app.core.security import verify_password, create_access_token, SECRET_KEY, ALGORITHM, check_roles, get_password_hash, get_current_user_dep
+from app.models.tenant_models import Tenant, TenantDomain, TenantStatus
+from app.schemas.tenant import TenantSummary
+from app.schemas.user import Token, UserResponse, CurrentUserResponse, UserLogin, UserCreate, UserUpdateMe, ChangePasswordRequest
+from app.core.security import verify_password, create_access_token, check_roles, get_password_hash
+from app.core.tenant_dependencies import get_current_user_dep, get_tenant_context, get_tenant_db
+from app.core.tenant_context import TenantContext
+from app.core.rate_limit import enforce_rate_limit
+from app.core.host_policy import resolve_request_origin
+from sqlalchemy.exc import IntegrityError
 from datetime import timedelta
 from typing import List
 import re
+
+
+LOGIN_ERROR = "公司、账号或密码错误"
+DUMMY_PASSWORD_HASH = "$2b$12$b2EfUH39fOFct42kb2HHv.Uq3Dml9R3urPsHrAu.F5E87KLizmY5C"
 
 router = APIRouter(
     prefix="/auth",
@@ -41,63 +52,181 @@ def validate_password_strength(password: str) -> None:
             detail="密码必须包含数字"
         )
 
-@router.post("/token", response_model=Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    print(f"Login attempt: {form_data.username}")
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user:
-        print(f"User not found: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+def _login_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=LOGIN_ERROR,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _authenticate_tenant_user(
+    db: Session, *, tenant_code: str, email: str, password: str
+) -> tuple[Tenant, User]:
+    tenant_code = tenant_code.strip().lower()
+    email = email.strip().lower()
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.code == tenant_code)
+        .first()
+    )
+    if tenant is None:
+        verify_password(password, DUMMY_PASSWORD_HASH)
+        raise _login_error()
+    with tenant_authentication_session(tenant.id) as tenant_db:
+        user = (
+            tenant_db.query(User)
+            .filter(User.tenant_id == tenant.id, User.email == email)
+            .first()
         )
-    if not verify_password(form_data.password, user.hashed_password):
-        print(f"Invalid password for user: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+        password_hash = (
+            user.hashed_password
+            if user is not None and user.is_active
+            else DUMMY_PASSWORD_HASH
         )
-    if not user.is_active:
+        password_matches = verify_password(password, password_hash)
+        if (
+            user is None
+            or not user.is_active
+            or not password_matches
+        ):
+            raise _login_error()
+
+    if tenant.status != TenantStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="账户已被禁用，请联系管理员",
+            detail="Tenant access is disabled",
         )
-    access_token_expires = timedelta(minutes=60 * 24 * 30) # 30 days
+
+    return tenant, user
+
+
+def _token_for_user(tenant: Tenant, user: User) -> Token:
+    access_token_expires = timedelta(minutes=60 * 24 * 30)  # 30 days
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        user_id=user.id,
+        tenant_id=tenant.id,
+        role=user.role.value,
+        expires_delta=access_token_expires,
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return Token(access_token=access_token, token_type="bearer")
+
+
+def _enforce_login_host(db: Session, request: Request, tenant: Tenant) -> None:
+    """A registered company host may authenticate only its mapped tenant."""
+    domain = resolve_request_origin(db, request).domain
+    if domain is not None and domain.tenant_id != tenant.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant does not match request domain",
+        )
+
+
+@router.get("/tenants", response_model=List[TenantSummary])
+def list_login_tenants(
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    resolve_request_origin(db, request)
+    rows = (
+        db.query(Tenant, TenantDomain.domain)
+        .outerjoin(
+            TenantDomain,
+            (TenantDomain.tenant_id == Tenant.id) & TenantDomain.is_primary,
+        )
+        .filter(Tenant.status == TenantStatus.ACTIVE)
+        .order_by(Tenant.code)
+        .all()
+    )
+    return [
+        TenantSummary(
+            id=tenant.id,
+            code=tenant.code,
+            name=tenant.name,
+            logo_url=tenant.logo_url,
+            primary_domain=primary_domain,
+        )
+        for tenant, primary_domain in rows
+    ]
+
+
+@router.post("/token", response_model=Token, deprecated=True)
+def login_for_access_token(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    tenant_code: str = Form(...),
+    db: Session = Depends(get_unscoped_db),
+):
+    enforce_rate_limit(
+        request,
+        "login",
+        tenant_code.strip().lower(),
+        form_data.username.strip().lower(),
+    )
+    tenant, user = _authenticate_tenant_user(
+        db,
+        tenant_code=tenant_code,
+        email=form_data.username,
+        password=form_data.password,
+    )
+    _enforce_login_host(db, request, tenant)
+    return _token_for_user(tenant, user)
 
 @router.post("/login", response_model=Token)
-def login(login_data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == login_data.email).first()
-    if not user or not verify_password(login_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="账户已被禁用，请联系管理员",
-        )
-    access_token_expires = timedelta(minutes=60 * 24 * 30)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+def login(
+    login_data: UserLogin,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    enforce_rate_limit(
+        request,
+        "login",
+        login_data.tenant_code.strip().lower(),
+        str(login_data.email).strip().lower(),
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    tenant, user = _authenticate_tenant_user(
+        db,
+        tenant_code=login_data.tenant_code,
+        email=str(login_data.email),
+        password=login_data.password,
+    )
+    _enforce_login_host(db, request, tenant)
+    return _token_for_user(tenant, user)
 
-@router.get("/me", response_model=UserResponse)
-def read_users_me(current_user: User = Depends(get_current_user)):
-    return current_user
+@router.get("/me", response_model=CurrentUserResponse)
+def read_users_me(
+    current_user: User = Depends(get_current_user),
+    tenant_context: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_unscoped_db),
+):
+    tenant, primary_domain = (
+        db.query(Tenant, TenantDomain.domain)
+        .outerjoin(
+            TenantDomain,
+            (TenantDomain.tenant_id == Tenant.id) & TenantDomain.is_primary,
+        )
+        .filter(Tenant.id == tenant_context.tenant_id)
+        .one()
+    )
+    return CurrentUserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        is_active=current_user.is_active,
+        tenant=TenantSummary(
+            id=tenant.id,
+            code=tenant.code,
+            name=tenant.name,
+            logo_url=tenant.logo_url,
+            primary_domain=primary_domain,
+        ),
+    )
 
 @router.put("/me", response_model=UserResponse)
 def update_users_me(
     payload: UserUpdateMe,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     data = payload.dict(exclude_unset=True)
@@ -111,7 +240,7 @@ def update_users_me(
 @router.post("/change-password")
 def change_password(
     payload: ChangePasswordRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if not verify_password(payload.current_password, current_user.hashed_password):
@@ -128,38 +257,59 @@ def change_password(
 def get_users(
     skip: int = 0, 
     limit: int = 100, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     return db.query(User).offset(skip).limit(limit).all()
 
+def _is_email_unique_conflict(error: IntegrityError) -> bool:
+    original = error.orig
+    sqlstate = getattr(original, "sqlstate", getattr(original, "pgcode", None))
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    return (
+        sqlstate == "23505"
+        and constraint_name == "uq_users_tenant_lower_email"
+    )
+
+
 @router.post("/users", response_model=UserResponse)
 def create_user(
     user: UserCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
-    db_user = db.query(User).filter(User.email == user.email).first()
+    normalized_email = str(user.email).strip().lower()
+    db_user = db.query(User).filter(User.email == normalized_email).first()
     if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     # 验证密码强度
     validate_password_strength(user.password)
 
     hashed_password = get_password_hash(user.password)
     new_user = User(
-        email=user.email,
+        email=normalized_email,
         hashed_password=hashed_password,
         full_name=user.full_name,
         role=user.role
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        if _is_email_unique_conflict(error):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            ) from None
+        raise
     db.refresh(new_user)
     return new_user
 
 @router.get("/interviewers", response_model=List[UserResponse])
-def get_interviewers(db: Session = Depends(get_db)):
+def get_interviewers(db: Session = Depends(get_tenant_db)):
     # Helper to get all interviewers (HR and Interviewer roles can be assigned)
     # Accessible by authenticated users to assign to interviews
     return db.query(User).filter(User.role.in_([UserRole.HR, UserRole.INTERVIEWER, UserRole.ADMIN])).all()
@@ -168,7 +318,7 @@ def get_interviewers(db: Session = Depends(get_db)):
 def update_user(
     user_id: str,
     user_update: UserUpdateMe,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """更新用户信息"""
@@ -195,7 +345,7 @@ def update_user(
 def update_user_role(
     user_id: str,
     role: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """更新用户角色"""
@@ -226,7 +376,7 @@ def update_user_role(
 @router.put("/users/{user_id}/status")
 def toggle_user_status(
     user_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """切换用户状态（启用/禁用）"""
@@ -252,7 +402,7 @@ def toggle_user_status(
 @router.delete("/users/{user_id}")
 def delete_user(
     user_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
     """删除用户"""

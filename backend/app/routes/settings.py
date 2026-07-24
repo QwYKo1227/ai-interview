@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, Tuple
 import os
 
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.core.security import check_roles
 from app.models.models import SystemConfig, UserRole
 from app.services.system_config_service import get_or_create_system_config
@@ -38,7 +38,7 @@ def _get_or_create_config(db: Session) -> SystemConfig:
 
 @router.get("/system", response_model=SystemModelConfigResponse)
 def get_system_settings(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     config = _get_or_create_config(db)
@@ -54,7 +54,7 @@ def get_system_settings(
 @router.put("/system", response_model=SystemModelConfigResponse)
 def update_system_settings(
     payload: SystemModelConfigUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     config = _get_or_create_config(db)
@@ -96,7 +96,7 @@ def update_system_settings(
 
 @router.get("/mail", response_model=MailConfigResponse)
 def get_mail_settings(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     """获取邮件配置"""
@@ -118,7 +118,7 @@ def get_mail_settings(
 @router.put("/mail", response_model=MailConfigResponse)
 def update_mail_settings(
     payload: MailConfigUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     """更新邮件配置"""
@@ -174,7 +174,7 @@ def update_mail_settings(
 @router.post("/mail/test")
 def test_mail_settings(
     payload: MailTestRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     """测试邮件配置"""
@@ -193,13 +193,13 @@ def test_mail_settings(
 
 @router.get("/prompts", response_model=PromptConfigsResponse)
 def get_prompt_configs(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     """获取所有提示词配置"""
     from app.utils.prompt_manager import prompt_manager
 
-    prompts = prompt_manager.get_all_prompts()
+    prompts = prompt_manager.get_all_prompts(db)
     prompt_items = {}
     for key, config in prompts.items():
         prompt_items[key] = PromptConfigItem(
@@ -213,7 +213,7 @@ def get_prompt_configs(
 def update_prompt_config(
     key: str,
     payload: PromptConfigUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     """更新指定提示词配置"""
@@ -224,7 +224,7 @@ def update_prompt_config(
 
     # 确保配置已初始化
     if not config.prompt_configs:
-        config.prompt_configs = prompt_manager._prompts.get('prompts', {})
+        config.prompt_configs = prompt_manager.default_prompts()
 
     # 获取现有配置
     existing_config = config.prompt_configs.get(key, {})
@@ -245,20 +245,20 @@ def update_prompt_config(
     db.refresh(config)
 
     # 清除缓存，强制重新加载
-    prompt_manager.reload_from_db()
+    prompt_manager.reload_from_db(db)
 
     return {"message": "提示词配置已更新", "key": key}
 
 
 @router.post("/prompts/reload")
 def reload_prompt_configs(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     _current_user=Depends(check_roles([UserRole.ADMIN])),
 ):
     """强制重新加载提示词配置（清除缓存）"""
     from app.utils.prompt_manager import prompt_manager
 
-    prompt_manager.reload_from_db()
+    prompt_manager.reload_from_db(db)
     return {"message": "提示词配置已重新加载"}
 
 

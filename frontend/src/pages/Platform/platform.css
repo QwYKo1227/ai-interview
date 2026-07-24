@@ -1,0 +1,586 @@
+.platform-login,
+.platform-shell {
+  --platform-ink: #0B1220;
+  --platform-paper: #F8FAFC;
+  --platform-signal: #2563EB;
+  --platform-status: #0891B2;
+  --platform-line: #CBD5E1;
+  --platform-muted: #475569;
+  color: var(--platform-ink);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.platform-login {
+  position: relative;
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  padding: 32px;
+  background-color: var(--platform-paper);
+  background-image: linear-gradient(rgba(11, 18, 32, 0.055) 1px, transparent 1px), linear-gradient(90deg, rgba(11, 18, 32, 0.055) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.platform-login__panel {
+  position: relative;
+  width: min(100%, 440px);
+  padding: 40px 40px 32px 56px;
+  border: 1px solid var(--platform-line);
+  background: rgba(248, 250, 252, 0.94);
+  box-shadow: 12px 12px 0 rgba(11, 18, 32, 0.045);
+}
+
+.platform-login__signal {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background: var(--platform-signal);
+}
+
+.platform-login__heading {
+  margin-bottom: 32px;
+}
+
+.platform-eyebrow {
+  margin: 0 0 10px;
+  color: var(--platform-status);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.platform-login h1,
+.platform-shell h1 {
+  margin: 0;
+  color: var(--platform-ink);
+  font-size: clamp(26px, 4vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.16;
+}
+
+.platform-login__description {
+  margin: 14px 0 0;
+  color: var(--platform-muted);
+  font-size: 14px;
+}
+
+.platform-login__form .ant-form-item-label > label {
+  color: var(--platform-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.platform-login__form .ant-input,
+.platform-login__form .ant-input-affix-wrapper {
+  min-height: 44px;
+  border-color: var(--platform-line) !important;
+  border-radius: 0 !important;
+  background: #FFFFFF;
+}
+
+.platform-login__form .ant-input-affix-wrapper:focus-within,
+.platform-login__form .ant-input:focus {
+  border-color: var(--platform-signal) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16) !important;
+}
+
+.platform-login__submit {
+  margin: 30px 0 0;
+}
+
+.platform-login__submit .ant-btn {
+  height: 44px;
+  border-radius: 0;
+  font-weight: 600;
+}
+
+.platform-login__alert {
+  margin-bottom: 24px;
+  border-radius: 0 !important;
+}
+
+.platform-shell {
+  min-height: 100vh;
+  background-color: var(--platform-paper);
+  background-image: linear-gradient(rgba(11, 18, 32, 0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(11, 18, 32, 0.045) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.platform-shell__header {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto minmax(160px, 1fr);
+  align-items: center;
+  min-height: 68px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--platform-line);
+  background: rgba(248, 250, 252, 0.94);
+}
+
+.platform-shell__brand {
+  color: var(--platform-ink);
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.platform-shell__brand span {
+  color: var(--platform-signal);
+}
+
+.platform-shell__module {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--platform-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.platform-shell__module-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--platform-status);
+}
+
+.platform-shell__logout {
+  justify-self: end;
+  border-radius: 0 !important;
+  color: var(--platform-muted) !important;
+}
+
+.platform-shell__logout:hover {
+  color: var(--platform-signal) !important;
+  background: rgba(37, 99, 235, 0.08) !important;
+}
+
+.platform-shell__content {
+  width: min(100% - 64px, 1200px);
+  margin: 0 auto;
+  padding: clamp(40px, 7vw, 88px) 0;
+}
+
+.platform-tenants {
+  position: relative;
+  padding-left: 28px;
+}
+
+.platform-tenants::before {
+  position: absolute;
+  top: 0;
+  bottom: 28px;
+  left: 0;
+  width: 5px;
+  background: var(--platform-signal);
+  content: '';
+}
+
+.platform-tenants__heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenants__description,
+.platform-tenants__modal-description {
+  margin: 12px 0 0;
+  color: var(--platform-muted);
+  font-size: 14px;
+}
+
+.platform-tenants__onboard,
+.platform-tenants__form-actions .ant-btn {
+  min-height: 40px;
+  border-radius: 0 !important;
+  font-weight: 600;
+}
+
+.platform-tenants__stats {
+  display: flex;
+  margin: 0;
+  border-bottom: 1px solid var(--platform-line);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.platform-tenants__stats span {
+  position: relative;
+  flex: 1;
+  padding: 14px 18px;
+  color: var(--platform-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  letter-spacing: 0.015em;
+}
+
+.platform-tenants__stats span + span {
+  border-left: 1px solid var(--platform-line);
+}
+
+.platform-tenants__stats span::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 9px 1px 0;
+  background: var(--platform-status);
+  content: '';
+}
+
+.platform-tenants__stats span:first-child::before {
+  background: var(--platform-signal);
+}
+
+.platform-tenants__stats span:last-child::before {
+  background: #64748B;
+}
+
+.platform-tenants__table {
+  border: 1px solid var(--platform-line);
+  border-top: 0;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.platform-tenants__table .ant-table {
+  border-radius: 0 !important;
+  background: transparent;
+}
+
+.platform-tenants__table .ant-table-thead > tr > th {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  color: var(--platform-muted);
+  background: rgba(226, 232, 240, 0.48);
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+.platform-tenants__table .ant-table-tbody > tr > td {
+  padding-top: 16px;
+  padding-bottom: 16px;
+  border-bottom-color: rgba(203, 213, 225, 0.76);
+  color: var(--platform-ink);
+  font-size: 14px;
+}
+
+.platform-tenants__table .ant-table-tbody > tr:hover > td {
+  background: rgba(37, 99, 235, 0.045) !important;
+}
+
+.platform-tenants__company {
+  display: grid;
+  gap: 5px;
+}
+
+.platform-tenants__company strong {
+  font-weight: 650;
+}
+
+.platform-tenants__company code {
+  color: var(--platform-signal);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+.platform-tenants__table .ant-tag {
+  min-width: 56px;
+  margin-inline-end: 0;
+  border-radius: 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.platform-tenants__table .ant-btn-link {
+  padding: 0;
+  color: var(--platform-signal);
+  font-size: 13px;
+}
+
+.platform-tenants__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.platform-tenants__actions .ant-btn-dangerous {
+  color: #B91C1C;
+}
+
+.platform-tenants__alert {
+  margin-top: 24px;
+  border-radius: 0 !important;
+}
+
+.platform-tenants__alert .ant-alert-actions .ant-btn {
+  border-radius: 0;
+}
+
+.platform-tenants__modal .ant-modal-content {
+  --platform-ink: #0B1220;
+  --platform-signal: #2563EB;
+  --platform-line: #CBD5E1;
+  --platform-muted: #475569;
+  border-radius: 0;
+  box-shadow: 10px 10px 0 rgba(11, 18, 32, 0.08);
+}
+
+.platform-tenants__modal .ant-modal-header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenants__modal .ant-modal-title {
+  color: var(--platform-ink);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.platform-tenants__form {
+  margin-top: 24px;
+}
+
+.platform-tenants__form .ant-form-item-label > label {
+  color: var(--platform-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.platform-tenants__form .ant-input,
+.platform-tenants__form .ant-input-affix-wrapper {
+  min-height: 40px;
+  border-radius: 0 !important;
+}
+
+.platform-tenants__form .ant-input:focus,
+.platform-tenants__form .ant-input-affix-wrapper:focus-within {
+  border-color: var(--platform-signal) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14) !important;
+}
+
+.platform-tenants__modal-alert {
+  margin-top: 20px;
+  border-radius: 0 !important;
+}
+
+.platform-tenants__form-actions {
+  display: flex;
+  justify-content: end;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.platform-tenant-detail .ant-drawer-content,
+.platform-tenant-detail__modal .ant-modal-content {
+  --platform-ink: #0B1220;
+  --platform-paper: #F8FAFC;
+  --platform-signal: #2563EB;
+  --platform-status: #0891B2;
+  --platform-line: #CBD5E1;
+  --platform-muted: #475569;
+  background: var(--platform-paper);
+}
+
+.platform-tenant-detail .ant-drawer-header {
+  border-bottom-color: var(--platform-line);
+}
+
+.platform-tenant-detail .ant-drawer-title,
+.platform-tenant-detail h2 {
+  color: var(--platform-ink);
+  font-weight: 700;
+}
+
+.platform-tenant-detail h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.platform-tenant-detail__summary {
+  margin-bottom: 32px;
+}
+
+.platform-tenant-detail__summary .ant-descriptions-view,
+.platform-tenant-detail__summary .ant-descriptions-item-label,
+.platform-tenant-detail__summary .ant-descriptions-item-content {
+  border-color: var(--platform-line) !important;
+}
+
+.platform-tenant-detail__summary .ant-descriptions-item-label {
+  width: 112px;
+  color: var(--platform-muted);
+  background: rgba(226, 232, 240, 0.48) !important;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.platform-tenant-detail__domains-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__domains-heading .platform-eyebrow {
+  margin-bottom: 6px;
+}
+
+.platform-tenant-detail__domains-heading .ant-btn,
+.platform-tenant-detail__form-actions .ant-btn {
+  min-height: 38px;
+  border-radius: 0;
+  font-weight: 600;
+}
+
+.platform-tenant-detail__domains {
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__domains .ant-list-item {
+  padding: 16px 4px;
+  border-block-end-color: var(--platform-line);
+}
+
+.platform-tenant-detail__domains .ant-list-item-meta-title {
+  color: var(--platform-ink);
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+}
+
+.platform-tenant-detail__domains .ant-list-item-meta-description {
+  color: var(--platform-muted);
+  font-size: 12px;
+}
+
+.platform-tenant-detail__domains .ant-btn-link {
+  padding-inline: 2px;
+}
+
+.platform-tenant-detail__dns-note {
+  margin-top: 24px;
+  border-radius: 0 !important;
+}
+
+.platform-tenant-detail__modal .ant-modal-content {
+  border-radius: 0;
+  box-shadow: 10px 10px 0 rgba(11, 18, 32, 0.08);
+}
+
+.platform-tenant-detail__modal .ant-modal-header {
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__modal .ant-modal-title {
+  color: var(--platform-ink);
+  font-weight: 700;
+}
+
+.platform-tenant-detail__modal .ant-form-item-label > label {
+  color: var(--platform-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.platform-tenant-detail__modal .ant-input {
+  min-height: 40px;
+  border-radius: 0 !important;
+}
+
+.platform-tenant-detail__modal .ant-input:focus {
+  border-color: var(--platform-signal) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14) !important;
+}
+
+.platform-login :focus-visible,
+.platform-shell :focus-visible {
+  outline: 3px solid rgba(8, 145, 178, 0.42);
+  outline-offset: 3px;
+}
+
+@media (max-width: 560px) {
+  .platform-login {
+    place-items: stretch;
+    padding: 16px;
+  }
+
+  .platform-login__panel {
+    align-self: center;
+    padding: 32px 24px 28px 36px;
+  }
+
+  .platform-shell__header {
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .platform-shell__module {
+    display: none;
+  }
+
+  .platform-shell__content {
+    width: min(100% - 32px, 1200px);
+    padding-top: 48px;
+  }
+
+  .platform-tenants {
+    padding-left: 20px;
+  }
+
+  .platform-tenants__heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .platform-tenants__onboard {
+    width: 100%;
+  }
+
+  .platform-tenants__stats {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .platform-tenants__stats span + span {
+    border-top: 1px solid var(--platform-line);
+    border-left: 0;
+  }
+
+  .platform-tenants__modal {
+    max-width: calc(100vw - 32px);
+    margin: 0 auto;
+  }
+
+  .platform-tenants__actions {
+    gap: 8px;
+  }
+
+  .platform-tenant-detail__domains-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .platform-tenant-detail__domains-heading .ant-btn {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .platform-login *,
+  .platform-shell * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

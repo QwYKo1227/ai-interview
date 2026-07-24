@@ -130,6 +130,16 @@ code {
   vertical-align: middle;
 }
 
+.app-company-name {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 1599px) {
   .app-content {
     margin: 20px !important;

@@ -1,27 +1,29 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_, or_
+from sqlalchemy import desc, and_, or_, update
 from app.models.models import (
     Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User
 )
 from app.schemas.offer import OfferCreate, OfferUpdate, OfferStats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 import logging
-import secrets
+from fastapi import HTTPException
 
 from app.services.mail_service import MailService
+from app.services.public_token_service import issue_public_token, resolve_public_token, revoke_public_tokens
+from app.config.tenant_session import get_tenant_id
 
 logger = logging.getLogger(__name__)
 
 def create_offer(db: Session, offer_data: OfferCreate, user_id: UUID) -> Offer:
     resume = db.query(Resume).filter(Resume.id == offer_data.resume_id).first()
     if not resume:
-        raise ValueError("简历不存在")
+        raise HTTPException(status_code=404, detail="Resume not found")
     
     position = db.query(Position).filter(Position.id == offer_data.position_id).first()
     if not position:
-        raise ValueError("岗位不存在")
+        raise HTTPException(status_code=404, detail="Position not found")
     
     existing_offer = db.query(Offer).filter(
         Offer.resume_id == offer_data.resume_id,
@@ -228,16 +230,21 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
     if offer.status not in [OfferStatus.DRAFT, OfferStatus.PENDING]:
         raise ValueError("当前状态不允许发送")
     
-    token = secrets.token_urlsafe(32)
-    offer.token = token
+    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
+    resume_original_status = resume.status if resume else None
+
+    expiry = offer.valid_until
+    if expiry is None:
+        expiry = datetime.now(timezone.utc) + timedelta(days=7)
+    elif expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    token = issue_public_token(db, offer.tenant_id, "offer", offer.id, expiry)
+    offer.token = None
     offer.status = OfferStatus.SENT
     offer.sent_at = datetime.utcnow()
-    db.commit()
-    
-    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
     if resume:
         resume.status = ResumeStatus.OFFER_PENDING
-        db.commit()
+    db.commit()
     
     result = {
         "success": True,
@@ -256,9 +263,19 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
                 confirm_url=confirm_url
             )
             result["email_sent"] = email_result
+            if not email_result:
+                raise RuntimeError("mail delivery returned false")
         except Exception as e:
-            logger.error(f"Failed to send offer email: {e}")
-            result["error"] = str(e)
+            logger.error("Failed to send offer email (%s)", type(e).__name__)
+            revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
+            offer.status = OfferStatus.PENDING
+            offer.sent_at = None
+            if resume and resume_original_status is not None:
+                resume.status = resume_original_status
+            db.commit()
+            result["success"] = False
+            result["error"] = "Failed to send offer email"
+            result["token"] = None
     
     return result
 
@@ -343,8 +360,11 @@ def reopen_offer(db: Session, offer_id: UUID) -> Offer:
         raise ValueError("当前状态不允许重新打开")
     
     old_status = offer.status.value
-    offer.status = OfferStatus.SENT
-    offer.token = secrets.token_urlsafe(32)
+    # Reopening invalidates the old public link; an HR user must explicitly
+    # send the offer again to issue and deliver a fresh credential.
+    offer.status = OfferStatus.PENDING
+    offer.token = None
+    revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
     offer.notes = (offer.notes or "") + f"\n重新打开（原状态：{old_status}）"
     
     db.commit()
@@ -399,18 +419,18 @@ def get_pending_offers_for_resume(db: Session, resume_id: UUID) -> List[Offer]:
     ).all()
 
 def mark_expired_offers(db: Session) -> int:
-    expired_count = db.query(Offer).filter(
+    expired_offers = db.query(Offer).filter(
         Offer.status == OfferStatus.SENT,
         Offer.valid_until < datetime.utcnow()
-    ).update({"status": OfferStatus.EXPIRED})
+    ).all()
+    for offer in expired_offers:
+        offer.status = OfferStatus.EXPIRED
     
     db.commit()
-    return expired_count
+    return len(expired_offers)
 
 def get_offer_by_token(db: Session, token: str) -> Optional[Dict[str, Any]]:
-    offer = db.query(Offer).filter(Offer.token == token).first()
-    if not offer:
-        return None
+    offer = resolve_public_token(db, token, "offer").resource
     
     return {
         "id": str(offer.id),
@@ -451,9 +471,66 @@ def get_offer_by_token(db: Session, token: str) -> Optional[Dict[str, Any]]:
         } if offer.resume else None
     }
 
-def confirm_offer_by_token(db: Session, token: str, action: str, reason: Optional[str] = None, 
+def confirm_offer_by_token(
+    db: Session, token: str, action: str, reason: Optional[str] = None,
+    accepted_salary: Optional[float] = None,
+    accepted_onboard_date: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    offer = resolve_public_token(db, token, "offer").resource
+    tenant_id = get_tenant_id(db)
+    offer_id, resume_id = offer.id, offer.resume_id
+    if offer.valid_until and datetime.utcnow() > offer.valid_until:
+        db.execute(
+            update(Offer).where(
+                Offer.id == offer_id,
+                Offer.tenant_id == tenant_id,
+                Offer.status == OfferStatus.SENT,
+            ).values(status=OfferStatus.EXPIRED)
+        )
+        revoke_public_tokens(db, tenant_id, "offer", offer_id)
+        db.commit()
+        return {"success": False, "error": "Offer expired"}
+
+    if action == "accept":
+        values = {"status": OfferStatus.ACCEPTED, "accepted_at": datetime.utcnow()}
+        if accepted_salary is not None:
+            values["salary_monthly"] = accepted_salary
+        if accepted_onboard_date is not None:
+            values["onboard_date"] = accepted_onboard_date
+        resume_status, action_name = ResumeStatus.OFFER_ACCEPTED, "accepted"
+    elif action == "reject":
+        values = {
+            "status": OfferStatus.REJECTED,
+            "rejected_at": datetime.utcnow(),
+            "rejected_reason": reason,
+        }
+        resume_status, action_name = ResumeStatus.OFFER_REJECTED, "rejected"
+    else:
+        return {"success": False, "error": "Invalid action"}
+
+    transition = db.execute(
+        update(Offer).where(
+            Offer.id == offer_id,
+            Offer.tenant_id == tenant_id,
+            Offer.status == OfferStatus.SENT,
+        ).values(**values)
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    db.execute(
+        update(Resume).where(
+            Resume.id == resume_id, Resume.tenant_id == tenant_id
+        ).values(status=resume_status)
+    )
+    revoke_public_tokens(db, tenant_id, "offer", offer_id)
+    db.commit()
+    return {"success": True, "action": action_name, "message": "Offer response recorded"}
+
+
+def _confirm_offer_by_token_legacy(db: Session, token: str, action: str, reason: Optional[str] = None,
                            accepted_salary: Optional[float] = None, accepted_onboard_date: Optional[datetime] = None) -> Dict[str, Any]:
-    offer = db.query(Offer).filter(Offer.token == token).first()
+    offer = resolve_public_token(db, token, "offer").resource
     if not offer:
         return {"success": False, "error": "无效的确认链接"}
     

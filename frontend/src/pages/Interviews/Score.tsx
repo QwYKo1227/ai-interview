@@ -5,6 +5,7 @@ import { EditOutlined, DeleteOutlined, PlusOutlined, SaveOutlined, CloseOutlined
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
+import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -14,6 +15,7 @@ const InterviewScore: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [interview, setInterview] = useState<any>(null);
+  const protectedResumeFile = useAuthenticatedFileUrl(interview?.resume?.file_path);
   const [loading, setLoading] = useState(false);
   const [questions, setQuestions] = useState<any[]>([]);
   const [editingIndex, setEditingIndex] = useState<number>(-1);
@@ -154,7 +156,7 @@ const InterviewScore: React.FC = () => {
             navigate(`/interviews/${id}/result`);
           }
         } catch (error) {
-          console.error('Polling error:', error);
+          console.error('面试状态轮询失败');
         }
       }, 3000);
       
@@ -428,7 +430,7 @@ const InterviewScore: React.FC = () => {
         };
         
         recog.onerror = (event: any) => {
-          console.log('Speech recognition error:', event.error);
+          console.warn('语音识别失败');
         };
         
         recog.start();
@@ -605,7 +607,7 @@ const InterviewScore: React.FC = () => {
           }
           setRecordingUploaded(true);
         } catch (e) {
-          console.error('上传录音失败', e);
+          console.error('上传录音失败');
         } finally {
           setUploadingRecording(false);
         }
@@ -653,10 +655,8 @@ const InterviewScore: React.FC = () => {
     }
   };
 
-  const fileUrl = interview?.resume?.file_path
-    ? (interview.resume.file_path.startsWith('/') ? interview.resume.file_path : `/${interview.resume.file_path}`)
-    : '';
-  const isPdf = fileUrl.toLowerCase().endsWith('.pdf');
+  const fileUrl = protectedResumeFile.url;
+  const isPdf = protectedResumeFile.contentType === 'application/pdf';
   const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(fileUrl) : '';
 
   if (loading && !interview) {

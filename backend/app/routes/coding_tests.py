@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 
-from app.config.database import get_db
+from app.config.database import get_unscoped_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.core.security import check_roles
 from app.models.models import User, UserRole, CodingTestStatus
 from app.routes.auth import get_current_user
@@ -40,7 +41,12 @@ from app.services.coding_test_service import (
     submit_essay_answers,
     get_public_submission,
     generate_questions_from_bank,
+    reissue_coding_test_public_token,
 )
+from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
+from app.services.public_token_service import hash_token
+from app.core.rate_limit import enforce_rate_limit
+from app.core.proxy import resolve_request_host
 
 
 router = APIRouter(prefix="/coding-tests", tags=["coding-tests"])
@@ -49,7 +55,7 @@ router = APIRouter(prefix="/coding-tests", tags=["coding-tests"])
 @router.post("", response_model=CodingTestResponse)
 def create_coding_test_route(
     payload: CodingTestCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     return create_coding_test(db, payload, current_user.id)
@@ -59,7 +65,7 @@ def create_coding_test_route(
 def list_coding_tests_route(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     return list_coding_tests(db, skip=skip, limit=limit)
@@ -78,7 +84,7 @@ def generate_questions_route(
     question_bank_id: UUID,
     test_type: str,
     count: int = 10,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     questions = generate_questions_from_bank(db, question_bank_id, test_type, count)
@@ -92,7 +98,7 @@ def generate_questions_for_test_route(
     test_type: str,
     count: int = 10,
     background_tasks: BackgroundTasks = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_test = get_coding_test(db, coding_test_id)
@@ -105,6 +111,7 @@ def generate_questions_for_test_route(
     from app.services.coding_test_service import generate_questions_background
     background_tasks.add_task(
         generate_questions_background,
+        db_test.tenant_id,
         coding_test_id,
         question_bank_id,
         test_type,
@@ -117,7 +124,7 @@ def generate_questions_for_test_route(
 @router.get("/{coding_test_id}", response_model=CodingTestResponse)
 def get_coding_test_route(
     coding_test_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_test = get_coding_test(db, coding_test_id)
@@ -130,7 +137,7 @@ def get_coding_test_route(
 def update_coding_test_route(
     coding_test_id: UUID,
     payload: CodingTestUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_test = update_coding_test(db, coding_test_id, payload)
@@ -142,7 +149,7 @@ def update_coding_test_route(
 @router.delete("/{coding_test_id}")
 def delete_coding_test_route(
     coding_test_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     ok = delete_coding_test(db, coding_test_id)
@@ -154,7 +161,7 @@ def delete_coding_test_route(
 @router.post("/{coding_test_id}/publish", response_model=CodingTestResponse)
 def publish_coding_test_route(
     coding_test_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_test = publish_coding_test(db, coding_test_id)
@@ -166,7 +173,7 @@ def publish_coding_test_route(
 @router.post("/{coding_test_id}/close", response_model=CodingTestResponse)
 def close_coding_test_route(
     coding_test_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_test = close_coding_test(db, coding_test_id)
@@ -175,12 +182,21 @@ def close_coding_test_route(
     return db_test
 
 
+@router.post("/{coding_test_id}/public-token")
+def reissue_coding_test_public_token_route(
+    coding_test_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    return {"public_token": reissue_coding_test_public_token(db, coding_test_id)}
+
+
 @router.get("/{coding_test_id}/submissions", response_model=List[CodingSubmissionResponse])
 def list_coding_test_submissions_route(
     coding_test_id: UUID,
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_test = get_coding_test(db, coding_test_id)
@@ -192,7 +208,7 @@ def list_coding_test_submissions_route(
 @router.get("/submissions/{submission_id}", response_model=CodingSubmissionResponse)
 def get_coding_submission_route(
     submission_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     db_sub = get_coding_submission(db, submission_id)
@@ -204,8 +220,16 @@ def get_coding_submission_route(
 public_router = APIRouter(prefix="/public/coding-tests", tags=["public-coding-tests"])
 
 
+def _validate_public_request(db: Session, token: str, request: Request) -> None:
+    resolved = resolve_public_token(db, token, "coding_test")
+    enforce_public_request_tenant(
+        db, request_host=resolve_request_host(request), tenant_id=resolved.tenant_id
+    )
+
+
 @public_router.get("/{token}", response_model=PublicCodingTestResponse)
-def get_public_coding_test_route(token: str, db: Session = Depends(get_db)):
+def get_public_coding_test_route(token: str, request: Request, db: Session = Depends(get_unscoped_db)):
+    _validate_public_request(db, token, request)
     db_test = get_public_coding_test(db, token)
     if not db_test or db_test.status != CodingTestStatus.PUBLISHED:
         raise HTTPException(status_code=404, detail="Coding test not found")
@@ -232,7 +256,14 @@ def get_public_coding_test_route(token: str, db: Session = Depends(get_db)):
 
 
 @public_router.post("/{token}/run", response_model=CodingRunResponse)
-def run_public_code_route(token: str, payload: CodingRunRequest, db: Session = Depends(get_db)):
+def run_public_code_route(
+    token: str,
+    payload: CodingRunRequest,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    enforce_rate_limit(request, "public_code_run", hash_token(token))
+    _validate_public_request(db, token, request)
     run = run_public_code(db, token, payload.code, payload.language or "javascript")
     return CodingRunResponse(
         passed=run.get("passed", False),
@@ -248,8 +279,11 @@ def submit_public_code_route(
     token: str,
     payload: CodingSubmitRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
 ):
+    enforce_rate_limit(request, "public_code_submit", hash_token(token))
+    _validate_public_request(db, token, request)
     db_sub = submit_public_code(
         db,
         background_tasks,
@@ -276,8 +310,10 @@ def submit_public_code_route(
 def submit_choice_route(
     token: str,
     payload: ChoiceSubmitRequest,
-    db: Session = Depends(get_db),
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
 ):
+    _validate_public_request(db, token, request)
     answers = [a.dict() for a in payload.answers]
     db_sub = submit_choice_answers(
         db,
@@ -303,8 +339,11 @@ def submit_essay_route(
     token: str,
     payload: EssaySubmitRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
 ):
+    enforce_rate_limit(request, "public_essay_submit", hash_token(token))
+    _validate_public_request(db, token, request)
     answers = [a.dict() for a in payload.answers]
     db_sub = submit_essay_answers(
         db,
@@ -327,7 +366,13 @@ def submit_essay_route(
 
 
 @public_router.get("/{token}/submissions/{submission_id}", response_model=PublicCodingSubmissionResponse)
-def get_public_submission_route(token: str, submission_id: UUID, db: Session = Depends(get_db)):
+def get_public_submission_route(
+    token: str,
+    submission_id: UUID,
+    request: Request,
+    db: Session = Depends(get_unscoped_db),
+):
+    _validate_public_request(db, token, request)
     db_sub = get_public_submission(db, token, submission_id)
     if not db_sub:
         raise HTTPException(status_code=404, detail="Submission not found")

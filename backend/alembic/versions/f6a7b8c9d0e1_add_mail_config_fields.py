@@ -16,6 +16,11 @@ depends_on = None
 
 
 def upgrade():
+    # Fresh Alembic installs create system_configs in h8i9j0k1l2m3, which
+    # already contains these fields. This earlier revision only upgrades
+    # legacy databases whose table was created by SQLAlchemy metadata.
+    if not sa.inspect(op.get_bind()).has_table('system_configs'):
+        return
     # 添加邮件服务配置字段
     op.add_column('system_configs', sa.Column('smtp_host', sa.String(), nullable=True))
     op.add_column('system_configs', sa.Column('smtp_port', sa.Integer(), nullable=True, server_default='465'))
@@ -27,6 +32,8 @@ def upgrade():
 
 
 def downgrade():
+    if not sa.inspect(op.get_bind()).has_table('system_configs'):
+        return
     op.drop_column('system_configs', 'mail_enabled')
     op.drop_column('system_configs', 'mail_from_name')
     op.drop_column('system_configs', 'mail_from')

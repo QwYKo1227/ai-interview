@@ -2,12 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from uuid import UUID
-from app.config.database import get_db
+from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.offer_template import (
     OfferTemplateCreate, OfferTemplateUpdate, OfferTemplateResponse, OfferTemplateListResponse
 )
 from app.services import offer_template_service
-from app.core.security import get_current_user_dep
+from app.core.tenant_dependencies import get_current_user_dep
 from app.models.models import User
 
 router = APIRouter(
@@ -19,7 +19,7 @@ router = APIRouter(
 @router.post("", response_model=OfferTemplateResponse)
 def create_template(
     template_data: OfferTemplateCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     template = offer_template_service.create_template(db, template_data, current_user.id)
@@ -29,7 +29,7 @@ def create_template(
 def list_templates(
     position_id: Optional[UUID] = None,
     include_inactive: bool = False,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     items = offer_template_service.get_templates(db, position_id, include_inactive)
@@ -38,7 +38,7 @@ def list_templates(
 @router.get("/default/{position_id}", response_model=OfferTemplateResponse)
 def get_default_template(
     position_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     template = offer_template_service.get_default_template_for_position(db, position_id)
@@ -49,7 +49,7 @@ def get_default_template(
 @router.get("/{template_id}", response_model=OfferTemplateResponse)
 def get_template(
     template_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     template = offer_template_service.get_template(db, template_id)
@@ -61,7 +61,7 @@ def get_template(
 def update_template(
     template_id: UUID,
     template_data: OfferTemplateUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     template = offer_template_service.update_template(db, template_id, template_data)
@@ -72,7 +72,7 @@ def update_template(
 @router.delete("/{template_id}")
 def delete_template(
     template_id: UUID,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep)
 ):
     success = offer_template_service.delete_template(db, template_id)

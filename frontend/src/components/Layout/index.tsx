@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Menu, Button, Avatar, Space, Dropdown, Grid, theme } from 'antd';
+import { Layout, Menu, Button, Avatar, Space, Dropdown, Grid } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -10,7 +10,6 @@ import {
   LogoutOutlined,
   BellOutlined,
   SettingOutlined,
-  SolutionOutlined,
   FileAddOutlined,
   ApartmentOutlined
 } from '@ant-design/icons';
@@ -22,13 +21,10 @@ const { Header, Sider, Content } = Layout;
 const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { logout, user } = useAuth();
+  const { logout, user, companyName } = useAuth();
   const screens = Grid.useBreakpoint();
   const isLaptop = !screens.xxl;
   const siderWidth = isLaptop ? 80 : 240;
-  const {
-    token: { colorBgContainer, borderRadiusLG },
-  } = theme.useToken();
   const role = (user as any)?.role?.value ?? (user as any)?.role;
 
   const handleLogout = () => {
@@ -190,9 +186,16 @@ const AppLayout: React.FC = () => {
           background: 'rgba(255, 255, 255, 0.8)',
           backdropFilter: 'blur(12px)'
         }}>
-          <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: '#0F172A' }}>
-            {pageTitle}
-          </h2>
+          <Space size="middle" style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: '#0F172A' }}>
+              {pageTitle}
+            </h2>
+            {companyName && (
+              <span className="app-company-name" aria-label="当前公司">
+                {companyName}
+              </span>
+            )}
+          </Space>
           <Space size="large">
             <Button type="text" icon={<BellOutlined style={{ fontSize: '18px', color: '#64748B' }} />} />
             <Dropdown menu={userMenu}>

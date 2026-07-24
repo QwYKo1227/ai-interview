@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Form, Input, Select, Upload, Tooltip, Typography, Drawer, Divider, Spin } from 'antd';
 import { PlusOutlined, UploadOutlined, DeleteOutlined, EyeOutlined, DownloadOutlined, FileWordOutlined, FileTextOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import mammoth from 'mammoth';
+import { authenticatedApiPath } from '../../hooks/useAuthenticatedFileUrl';
 
 const { Title, Text } = Typography;
 
@@ -23,8 +24,29 @@ const QuestionBanksList: React.FC = () => {
   // File Preview State
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewType, setPreviewType] = useState('');
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [docxHtml, setDocxHtml] = useState<string>('');
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const previewUrlRef = useRef('');
+  const previewGenerationRef = useRef(0);
+
+  const disposePreview = () => {
+    previewGenerationRef.current += 1;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = '';
+  };
+
+  const clearPreview = () => {
+    disposePreview();
+    setPreviewUrl('');
+    setPreviewType('');
+    setFileContent(null);
+    setDocxHtml('');
+  };
 
   const fetchQuestionBanks = async () => {
     setLoading(true);
@@ -55,41 +77,48 @@ const QuestionBanksList: React.FC = () => {
   useEffect(() => {
     if (isDrawerVisible && viewingRecord?.source_file) {
       loadFile(viewingRecord.source_file);
+    } else {
+      clearPreview();
     }
   }, [isDrawerVisible, viewingRecord]);
 
+  useEffect(() => () => disposePreview(), []);
+
   const loadFile = async (filePath: string) => {
+    clearPreview();
+    const generation = previewGenerationRef.current;
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
     setPreviewLoading(true);
     setPreviewError(null);
-    setDocxHtml('');
-    const ext = filePath.split('.').pop()?.toLowerCase();
-    const url = `/${filePath}`;
-    
     try {
-      if (ext === 'md' || ext === 'txt') {
-        const res = await fetch(url);
-        if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`);
-        }
-        const text = await res.text();
-        setFileContent(text);
-      } else if (ext === 'docx') {
-        const res = await fetch(url);
-        if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`);
-        }
-        const arrayBuffer = await res.arrayBuffer();
+      const blob = await request.get(authenticatedApiPath(filePath), {
+        responseType: 'blob', signal: controller.signal,
+      }) as Blob;
+      const objectUrl = URL.createObjectURL(blob);
+      if (controller.signal.aborted || generation !== previewGenerationRef.current) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      previewUrlRef.current = objectUrl;
+      setPreviewUrl(objectUrl);
+      setPreviewType(blob.type);
+      if (blob.type.startsWith('text/')) {
+        const text = await blob.text();
+        if (generation === previewGenerationRef.current) setFileContent(text);
+      } else if (blob.type.includes('wordprocessingml')) {
+        const arrayBuffer = await blob.arrayBuffer();
         const result = await mammoth.convertToHtml({ arrayBuffer });
+        if (generation !== previewGenerationRef.current) return;
         setDocxHtml(result.value);
-        if (result.messages.length > 0) {
-          console.log('Mammoth warnings:', result.messages);
-        }
+        if (result.messages.length > 0) console.warn('题库文档转换存在警告');
       }
     } catch (err) {
-      console.error('File load error:', err);
-      setPreviewError(`文件加载失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      if (controller.signal.aborted || generation !== previewGenerationRef.current) return;
+      console.error('题库文件预览失败');
+      setPreviewError('文件加载失败，请稍后重试');
     } finally {
-      setPreviewLoading(false);
+      if (generation === previewGenerationRef.current) setPreviewLoading(false);
     }
   };
 
@@ -281,7 +310,11 @@ const QuestionBanksList: React.FC = () => {
   const renderFilePreview = (fileUrl: string) => {
     if (!fileUrl) return <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8' }}>暂无文件</div>;
     
-    const ext = fileUrl.split('.').pop()?.toLowerCase();
+    const ext = previewType === 'application/pdf' ? 'pdf'
+      : previewType.includes('wordprocessingml') ? 'docx'
+      : previewType === 'application/msword' ? 'doc'
+      : previewType.includes('markdown') ? 'md'
+      : previewType.startsWith('text/') ? 'txt' : '';
     
     if (previewLoading) {
       return (
@@ -579,7 +612,7 @@ const QuestionBanksList: React.FC = () => {
                   </div>
                 </div>
                 {viewingRecord.source_file && (
-                   <Button icon={<DownloadOutlined />} href={`/${viewingRecord.source_file}`} download>
+                   <Button icon={<DownloadOutlined />} href={previewUrl} download>
                      下载原文件
                    </Button>
                 )}
@@ -591,7 +624,7 @@ const QuestionBanksList: React.FC = () => {
             <Title level={5} style={{ marginBottom: 16 }}>文件预览</Title>
             
             <div style={{ border: '1px solid #E2E8F0', borderRadius: '8px', overflow: 'hidden' }}>
-              {renderFilePreview(viewingRecord.source_file ? `/${viewingRecord.source_file}` : '')}
+              {renderFilePreview(previewUrl)}
             </div>
           </div>
         )}

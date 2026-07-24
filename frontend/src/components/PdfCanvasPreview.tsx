@@ -26,6 +26,7 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({ url }) => {
   const [containerWidth, setContainerWidth] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [errorDetail, setErrorDetail] = useState('')
 
   useEffect(() => {
     const element = containerRef.current
@@ -43,6 +44,7 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({ url }) => {
     const loadingTask = getDocument(url)
     setLoading(true)
     setError(false)
+    setErrorDetail('')
     setPageNumber(1)
     setDocument(null)
 
@@ -51,8 +53,11 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({ url }) => {
         loadedDocument = pdf
         if (active) setDocument(pdf)
       })
-      .catch(() => {
-        if (active) setError(true)
+      .catch(reason => {
+        if (active) {
+          setErrorDetail(reason instanceof Error ? reason.message : String(reason))
+          setError(true)
+        }
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -91,7 +96,10 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({ url }) => {
         return task.promise
       })
       .catch(reason => {
-        if (active && reason?.name !== 'RenderingCancelledException') setError(true)
+        if (active && reason?.name !== 'RenderingCancelledException') {
+          setErrorDetail(reason instanceof Error ? reason.message : String(reason))
+          setError(true)
+        }
       })
 
     return () => {
@@ -107,7 +115,9 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({ url }) => {
     >
       {error ? (
         <div style={{ minHeight: 240, display: 'grid', placeItems: 'center', padding: 24 }}>
-          <Text type="secondary">简历预览加载失败，请下载原件查看</Text>
+          <Text type="secondary" data-error-detail={errorDetail}>
+            简历预览加载失败，请下载原件查看
+          </Text>
         </div>
       ) : loading || !document ? (
         <div style={{ minHeight: 240, display: 'grid', placeItems: 'center' }}>

@@ -84,6 +84,6 @@ describe('PdfCanvasPreview', () => {
 
     expect(await screen.findByText(
       '简历预览加载失败，请下载原件查看',
-    )).toBeInTheDocument()
+    )).toHaveAttribute('data-error-detail', 'invalid pdf')
   })
 })

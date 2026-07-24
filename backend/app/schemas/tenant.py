@@ -149,13 +149,4 @@ class TenantOnboardingRequest(BaseModel):
     @field_validator("admin_password")
     @classmethod
     def validate_admin_password(cls, value: str) -> str:
-        password_bytes = len(value.encode("utf-8"))
-        if password_bytes < 12:
-            raise ValueError("密码必须至少为 12 个 UTF-8 字节")
-        if password_bytes > 72:
-            raise ValueError("密码最多为 72 个 UTF-8 字节")
-        if not any(character.isalpha() for character in value):
-            raise ValueError("password must include a letter")
-        if not any(character.isdigit() for character in value):
-            raise ValueError("password must include a digit")
-        return value
+        return validate_password_policy(value)

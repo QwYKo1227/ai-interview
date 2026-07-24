@@ -152,6 +152,11 @@ def test_onboarding_password_rejects_values_outside_utf8_byte_range(password):
         make_onboarding_request(admin_password=password)
 
 
+def test_onboarding_password_rejects_non_decimal_unicode_number():
+    with pytest.raises(ValidationError):
+        make_onboarding_request(admin_password="PasswordPass²")
+
+
 def test_duplicate_domain_returns_fixed_conflict_without_partial_rows(
     db, platform_admin
 ):

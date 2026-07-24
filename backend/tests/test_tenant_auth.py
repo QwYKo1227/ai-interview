@@ -370,6 +370,23 @@ def test_change_password_rejects_password_shorter_than_twelve_utf8_bytes(
     assert response.status_code == 400
 
 
+def test_change_password_accepts_unicode_letters_under_shared_policy(
+    client, db, tenant_a
+):
+    user = create_user(db, tenant_a.id, "member@example.com", "Password123")
+
+    response = client.post(
+        "/api/auth/change-password",
+        headers=auth_header(user),
+        json={
+            "current_password": "Password123",
+            "new_password": "密码密码密码密码1",
+        },
+    )
+
+    assert response.status_code == 200
+
+
 def test_auth_me_returns_only_the_jwt_tenants_company_summary(
     client, db, tenant_a, tenant_b
 ):

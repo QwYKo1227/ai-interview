@@ -122,6 +122,16 @@ class TestHiringManagerOptions:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
+    def test_forbids_interviewer_access(
+        self, client: TestClient, interviewer_auth_headers: dict
+    ):
+        response = client.get(
+            "/api/positions/hiring-managers",
+            headers=interviewer_auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
 
 class TestPositionDepartmentAndUrgencyFilters:
     def test_combines_department_urgency_manager_status_and_title(
@@ -190,6 +200,7 @@ class TestPositionDepartmentOptions:
         create_position(db, "Frontend", manager, department="Engineering")
         create_position(db, "Recruiter", manager, department="People")
         create_position(db, "Unassigned Department", manager, department=None)
+        create_position(db, "Whitespace Department", manager, department="   ")
 
         response = client.get("/api/positions/departments", headers=auth_headers)
 

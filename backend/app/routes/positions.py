@@ -61,7 +61,7 @@ def get_positions_route(
 @router.get("/hiring-managers", response_model=List[HiringManagerOption])
 def get_hiring_managers_route(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     return get_hiring_managers(db)
 

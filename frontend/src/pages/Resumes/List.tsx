@@ -4,7 +4,7 @@ import { PlusOutlined, EyeOutlined, TeamOutlined, DeleteOutlined, UploadOutlined
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
 import type { RcFile } from 'antd/es/upload/interface';
-import { createLatestRequestCoordinator } from '../../utils/latestRequest';
+import { createLatestRequestCoordinator, startSerialPolling } from '../../utils/latestRequest';
 import {
   buildCurrentResumeListParams,
   createEmptyResumeListFilters,
@@ -62,7 +62,6 @@ const ResumesList: React.FC = () => {
   const [positions, setPositions] = useState<PositionOption[]>([]);
   const [questionBanks, setQuestionBanks] = useState<QuestionBankOption[]>([]);
   const [pollingEnabled, setPollingEnabled] = useState(false);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -118,23 +117,9 @@ const ResumesList: React.FC = () => {
 
   // 轮询检查解析状态
   useEffect(() => {
-    if (pollingEnabled) {
-      pollingRef.current = setInterval(() => {
-        fetchResumes(true);
-      }, 3000);
-    } else {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    }
+    if (!pollingEnabled) return undefined;
 
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
+    return startSerialPolling(() => fetchResumes(true), 3000);
   }, [fetchResumes, pollingEnabled]);
 
   const fetchPositions = useCallback(async () => {

@@ -68,7 +68,7 @@ def get_hiring_managers(db: Session) -> List[User]:
 def get_position_departments(db: Session) -> List[str]:
     rows = (
         db.query(Position.department)
-        .filter(Position.department.isnot(None), Position.department != "")
+        .filter(Position.department.isnot(None), func.trim(Position.department) != "")
         .distinct()
         .order_by(Position.department.asc())
         .all()

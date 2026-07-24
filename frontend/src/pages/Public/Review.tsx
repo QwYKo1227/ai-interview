@@ -10,6 +10,7 @@ import request from '../../utils/request';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
+type LoadError = 'expired' | 'not_found' | null;
 
 interface ResumeData {
   id: string;
@@ -36,7 +37,8 @@ const PublicReview: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [resume, setResume] = useState<ResumeData | null>(null);
-  const [existingReview, setExistingReview] = useState<any>(null);
+  const [completed, setCompleted] = useState(false);
+  const [loadError, setLoadError] = useState<LoadError>(null);
 
   const [technicalScore, setTechnicalScore] = useState<number>(0);
   const [experienceScore, setExperienceScore] = useState<number>(0);
@@ -51,9 +53,15 @@ const PublicReview: React.FC = () => {
   const fetchResume = async () => {
     setLoading(true);
     try {
+      setLoadError(null);
       const res = await request.get(`/public/review/${token}`);
+      if (res.completed) {
+        setCompleted(true);
+        setResume(null);
+        return;
+      }
+      setCompleted(false);
       setResume(res.resume);
-      setExistingReview(res.existing_review);
 
       if (res.existing_review) {
         setTechnicalScore(res.existing_review.technical_score || 0);
@@ -63,7 +71,9 @@ const PublicReview: React.FC = () => {
         setComment(res.existing_review.comment || '');
       }
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '获取简历信息失败');
+      setCompleted(false);
+      setResume(null);
+      setLoadError(e?.response?.status === 410 ? 'expired' : 'not_found');
     } finally {
       setLoading(false);
     }
@@ -85,10 +95,7 @@ const PublicReview: React.FC = () => {
         comment,
       });
       message.success('审核已提交');
-      setExistingReview((current: any) => ({
-        ...(current || {}),
-        is_completed: true,
-      }));
+      setCompleted(true);
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败');
     } finally {
@@ -104,15 +111,19 @@ const PublicReview: React.FC = () => {
     );
   }
 
-  if (!resume) {
+  if (loadError === 'expired') {
     return (
       <div style={{ padding: 40 }}>
-        <Result status="404" title="简历不存在" subTitle="该简历可能已被删除或链接无效" />
+        <Result
+          status="warning"
+          title="评审链接已过期"
+          subTitle="该链接已超过 14 天有效期，请联系招聘负责人。"
+        />
       </div>
     );
   }
 
-  if (existingReview?.is_completed) {
+  if (completed) {
     return (
       <div style={{ padding: 40, maxWidth: 800, margin: '0 auto' }}>
         <Result
@@ -120,11 +131,19 @@ const PublicReview: React.FC = () => {
           title="审核已完成"
           subTitle="您已完成该简历的审核，感谢您的参与！"
           extra={[
-            <Button type="primary" key="back" onClick={() => navigate('/')}>
-              返回首页
+            <Button type="primary" key="resumes" onClick={() => navigate('/resumes')}>
+              返回简历管理
             </Button>,
           ]}
         />
+      </div>
+    );
+  }
+
+  if (!resume) {
+    return (
+      <div style={{ padding: 40 }}>
+        <Result status="404" title="简历不存在" subTitle="该简历可能已被删除或链接无效" />
       </div>
     );
   }

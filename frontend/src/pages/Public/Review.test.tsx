@@ -9,6 +9,7 @@ vi.mock('../../utils/request', () => ({
 }))
 
 const reviewPayload = {
+  completed: false,
   resume: {
     id: 'resume-1',
     candidate_name: '测试候选人',
@@ -42,6 +43,7 @@ const renderReview = () => render(
   <MemoryRouter initialEntries={['/public/review/public-token']}>
     <Routes>
       <Route path="/public/review/:token" element={<PublicReview />} />
+      <Route path="/resumes" element={<div>简历管理模块</div>} />
     </Routes>
   </MemoryRouter>,
 )
@@ -57,7 +59,7 @@ describe('PublicReview', () => {
 
   afterEach(() => cleanup())
 
-  it('shows completion without refetching the revoked public token', async () => {
+  it('shows completion without refetching the public token', async () => {
     renderReview()
 
     await screen.findByText('测试候选人')
@@ -73,6 +75,8 @@ describe('PublicReview', () => {
       comment: '',
     })
     await waitFor(() => expect(request.get).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: '返回简历管理' }))
+    expect(await screen.findByText('简历管理模块')).toBeInTheDocument()
   })
 
   it('uses semantic border colors for every recommendation option', async () => {
@@ -88,5 +92,23 @@ describe('PublicReview', () => {
     expect(screen.getByRole('button', { name: 'clock-circle待定' })).toHaveStyle({
       borderColor: '#faad14',
     })
+  })
+
+  it('renders the same completed receipt when an unexpired link is reopened', async () => {
+    vi.mocked(request.get).mockResolvedValueOnce({ completed: true })
+    renderReview()
+
+    await screen.findByText('审核已完成')
+    fireEvent.click(screen.getByRole('button', { name: '返回简历管理' }))
+    expect(await screen.findByText('简历管理模块')).toBeInTheDocument()
+    expect(request.get).toHaveBeenCalledWith('/public/review/public-token')
+  })
+
+  it('shows an explicit expired-link result for HTTP 410', async () => {
+    vi.mocked(request.get).mockRejectedValueOnce({ response: { status: 410 } })
+    renderReview()
+
+    expect(await screen.findByText('评审链接已过期')).toBeInTheDocument()
+    expect(screen.queryByText('简历审核')).not.toBeInTheDocument()
   })
 })

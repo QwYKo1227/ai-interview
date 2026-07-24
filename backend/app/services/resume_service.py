@@ -564,6 +564,26 @@ def get_public_review_payload(db: Session, review: DepartmentReview) -> Dict[str
     }
 
 
+def get_public_review_file(db: Session, review: DepartmentReview) -> StoredFile:
+    if review.is_completed:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    resume = db.query(Resume).filter(
+        Resume.id == review.resume_id,
+        Resume.tenant_id == review.tenant_id,
+    ).first()
+    if resume is None or resume.file_id is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    record = db.query(StoredFile).filter(
+        StoredFile.id == resume.file_id,
+        StoredFile.tenant_id == review.tenant_id,
+        StoredFile.resource_type == "resume",
+        StoredFile.resource_id == resume.id,
+    ).first()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+    return record
+
+
 def submit_public_department_review(
     db: Session, review: DepartmentReview, *, technical_score: int | None,
     experience_score: int | None, overall_score: int | None,

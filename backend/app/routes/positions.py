@@ -7,15 +7,16 @@ from app.schemas.position import (
     PositionCreate, PositionUpdate, PositionResponse,
     PositionWithStats, PositionStats, JDGenerateRequest,
     JDGenerateResponse, PositionDetailResponse, QuestionBankBrief,
-    JDChatRequest
+    JDChatRequest, HiringManagerOption
 )
 from app.services.position_service import (
     create_position, get_positions, get_positions_with_stats,
     get_position, update_position, delete_position,
-    get_position_stats, get_linked_question_banks, generate_position_jd
+    get_position_stats, get_linked_question_banks, generate_position_jd,
+    get_hiring_managers, get_position_departments
 )
 from app.services.ai_service import generate_jd_stream, chat_jd_stream
-from app.models.models import User, UserRole
+from app.models.models import PositionUrgency, User, UserRole
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from app.services.public_token_service import resolve_public_tenant
@@ -42,10 +43,38 @@ def get_positions_route(
     limit: int = 100,
     status: str = None,
     title: str = None,
+    hiring_manager_id: UUID = None,
+    department: str = None,
+    urgency: PositionUrgency = None,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_positions_with_stats(db, skip=skip, limit=limit, status=status, title=title)
+    return get_positions_with_stats(
+        db,
+        skip=skip,
+        limit=limit,
+        status=status,
+        title=title,
+        hiring_manager_id=hiring_manager_id,
+        department=department,
+        urgency=urgency,
+    )
+
+
+@router.get("/hiring-managers", response_model=List[HiringManagerOption])
+def get_hiring_managers_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    return get_hiring_managers(db)
+
+
+@router.get("/departments", response_model=List[str])
+def get_position_departments_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_position_departments(db)
 
 @router.get("/public", response_model=List[PositionResponse])
 def get_public_positions_route(
@@ -181,8 +210,6 @@ def delete_position_route(
     if not db_position:
         raise HTTPException(status_code=404, detail="Position not found")
     return db_position
-
-
 public_router = APIRouter(prefix="/public", tags=["public-positions"])
 
 

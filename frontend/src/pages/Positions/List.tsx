@@ -1,10 +1,18 @@
-import React, { useEffect, useState } from 'react';
-import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Spin, Popconfirm } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined, ThunderboltOutlined, DeleteFilled } from '@ant-design/icons';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Card } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import {
+  buildCurrentPositionListParams,
+  createEmptyPositionListFilters,
+  type PositionListFilters,
+  reconcileDepartmentSelection,
+  reconcileHiringManagerSelection,
+} from './filters';
+import { createLatestRequestCoordinator } from '../../utils/latestRequest';
 
 const { Title, Text } = Typography;
 
@@ -45,6 +53,12 @@ interface Position {
   linked_question_banks?: QuestionBankBrief[];
 }
 
+interface HiringManagerOption {
+  id: string;
+  full_name: string | null;
+  email: string;
+}
+
 const urgencyConfig: Record<string, { color: string; text: string }> = {
   low: { color: 'default', text: '低' },
   medium: { color: 'warning', text: '中' },
@@ -68,43 +82,93 @@ const PositionsList: React.FC = () => {
   const [viewingRecord, setViewingRecord] = useState<Position | null>(null);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<HiringManagerOption[]>([]);
+  const [hiringManagers, setHiringManagers] = useState<HiringManagerOption[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
   const [jdModalVisible, setJdModalVisible] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
-  const [searchTitle, setSearchTitle] = useState<string>('');
-  const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
+  const [filters, setFilters] = useState<PositionListFilters>(createEmptyPositionListFilters);
+  const positionListFiltersRef = useRef(filters);
+  positionListFiltersRef.current = filters;
+  const [positionRequestCoordinator] = useState(createLatestRequestCoordinator);
+  const [hiringManagerRequestCoordinator] = useState(createLatestRequestCoordinator);
+  const [departmentRequestCoordinator] = useState(createLatestRequestCoordinator);
 
-  const fetchPositions = async () => {
-    setLoading(true);
-    try {
-      const res = await request.get('/positions', {
-          params: {
-              title: searchTitle,
-              status: searchStatus
-          }
-      });
-      setData(res);
-    } catch (error) {
-      message.error('获取岗位列表失败');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchPositions = useCallback(async () => {
+    await positionRequestCoordinator.run<Position[]>(
+      () => request.get('/positions', {
+          params: buildCurrentPositionListParams(positionListFiltersRef),
+      }),
+      {
+        onStart: () => setLoading(true),
+        onSuccess: setData,
+        onError: () => message.error('获取岗位列表失败'),
+        onSettled: () => setLoading(false),
+      },
+    );
+  }, [positionRequestCoordinator]);
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       const res = await request.get('/auth/users');
       setUsers(res);
-    } catch (error) {
+    } catch {
       console.error('Failed to fetch users');
     }
-  };
+  }, []);
+
+  const fetchHiringManagers = useCallback(async () => {
+    await hiringManagerRequestCoordinator.run<HiringManagerOption[]>(
+      () => request.get('/positions/hiring-managers'),
+      {
+        onSuccess: (res) => {
+          setHiringManagers(res);
+          setFilters((current) => ({
+            ...current,
+            hiringManagerId: reconcileHiringManagerSelection(
+              current.hiringManagerId,
+              res,
+            ),
+          }));
+        },
+        onError: () => message.error('获取招聘负责人列表失败'),
+      },
+    );
+  }, [hiringManagerRequestCoordinator]);
+
+  const fetchDepartments = useCallback(async () => {
+    await departmentRequestCoordinator.run<string[]>(
+      () => request.get('/positions/departments'),
+      {
+        onSuccess: (res) => {
+          setDepartments(res);
+          setFilters((current) => ({
+            ...current,
+            department: reconcileDepartmentSelection(current.department, res),
+          }));
+        },
+        onError: () => message.error('获取部门列表失败'),
+      },
+    );
+  }, [departmentRequestCoordinator]);
 
   useEffect(() => {
-    fetchPositions();
-    fetchUsers();
-  }, [searchTitle, searchStatus]);
+    void fetchUsers();
+    void fetchHiringManagers();
+    void fetchDepartments();
+  }, [fetchDepartments, fetchHiringManagers, fetchUsers]);
+
+  useEffect(() => {
+    void fetchPositions();
+  }, [
+    fetchPositions,
+    filters.department,
+    filters.hiringManagerId,
+    filters.status,
+    filters.title,
+    filters.urgency,
+  ]);
 
   const handleAdd = () => {
     setEditingId(null);
@@ -119,7 +183,7 @@ const PositionsList: React.FC = () => {
       const res = await request.get(`/positions/${record.id}`);
       form.setFieldsValue(res);
       setIsModalVisible(true);
-    } catch (error) {
+    } catch {
       message.error('获取岗位详情失败');
     }
   };
@@ -129,7 +193,7 @@ const PositionsList: React.FC = () => {
       const res = await request.get(`/positions/${record.id}`);
       setViewingRecord(res);
       setIsDrawerVisible(true);
-    } catch (error) {
+    } catch {
       message.error('获取岗位详情失败');
     }
   };
@@ -145,8 +209,10 @@ const PositionsList: React.FC = () => {
         try {
           await request.delete(`/positions/${id}`);
           message.success('删除成功');
-          fetchPositions();
-        } catch (error) {
+          void fetchPositions();
+          void fetchHiringManagers();
+          void fetchDepartments();
+        } catch {
           message.error('删除失败');
         }
       },
@@ -169,8 +235,10 @@ const PositionsList: React.FC = () => {
           await Promise.all(selectedRowKeys.map(id => request.delete(`/positions/${id}`)));
           message.success(`成功删除 ${selectedRowKeys.length} 个岗位`);
           setSelectedRowKeys([]);
-          fetchPositions();
-        } catch (error) {
+          void fetchPositions();
+          void fetchHiringManagers();
+          void fetchDepartments();
+        } catch {
           message.error('批量删除失败');
         }
       },
@@ -193,7 +261,7 @@ const PositionsList: React.FC = () => {
           message.success(`成功${publish ? '发布' : '下架'} ${selectedRowKeys.length} 个岗位`);
           setSelectedRowKeys([]);
           fetchPositions();
-        } catch (error) {
+        } catch {
           message.error('操作失败');
         }
       },
@@ -205,7 +273,7 @@ const PositionsList: React.FC = () => {
       await request.put(`/positions/${id}`, { status: publish ? 'published' : 'closed' });
       message.success(publish ? '岗位已发布' : '岗位已下架');
       fetchPositions();
-    } catch (error) {
+    } catch {
       message.error('操作失败');
     }
   };
@@ -228,7 +296,7 @@ const PositionsList: React.FC = () => {
       try {
         document.execCommand('copy');
         message.success('岗位链接已复制');
-      } catch (err) {
+      } catch {
         message.error('复制失败');
       }
       document.body.removeChild(textArea);
@@ -267,8 +335,10 @@ const PositionsList: React.FC = () => {
         message.success('创建成功');
       }
       setIsModalVisible(false);
-      fetchPositions();
-    } catch (error) {
+      void fetchPositions();
+      void fetchHiringManagers();
+      void fetchDepartments();
+    } catch {
       // Validation error
     } finally {
       setSubmitting(false);
@@ -314,15 +384,19 @@ const PositionsList: React.FC = () => {
       render: (text: string) => <span style={{ fontWeight: 500, color: '#0F172A' }}>{text}</span>
     },
     { title: '部门', dataIndex: 'department', key: 'department', width: 120, render: (v: string) => v || '-' },
-    { 
-      title: '类型', 
-      dataIndex: 'position_type', 
-      key: 'position_type',
+    {
+      title: '招聘人数',
+      dataIndex: 'headcount',
+      key: 'headcount',
       width: 100,
-      render: (type: string) => {
-        const config = positionTypeConfig[type] || { color: 'default', text: type };
-        return <Tag color={config.color} style={{ border: 'none' }}>{config.text}</Tag>;
-      }
+      render: (value: number) => `${value || 1} 人`,
+    },
+    {
+      title: '招聘负责人',
+      dataIndex: 'hiring_manager_name',
+      key: 'hiring_manager_name',
+      width: 180,
+      render: (value: string | null) => value || '-',
     },
     { 
       title: '紧急度', 
@@ -356,7 +430,7 @@ const PositionsList: React.FC = () => {
       title: '招聘进度', 
       key: 'stats',
       width: 160,
-      render: (_: any, record: Position) => renderStats(record.stats)
+      render: (_: unknown, record: Position) => renderStats(record.stats)
     },
     { 
       title: '创建时间', 
@@ -370,7 +444,7 @@ const PositionsList: React.FC = () => {
       key: 'action',
       width: 200,
       fixed: 'right' as const,
-      render: (_: any, record: Position) => (
+      render: (_: unknown, record: Position) => (
         <Space size="small">
           <Tooltip title="查看详情">
             <Button type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => handleView(record)} />
@@ -410,40 +484,111 @@ const PositionsList: React.FC = () => {
         <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd} size="large" style={{ borderRadius: '8px' }}>新增岗位</Button>
       </div>
       
-      <div className="positions-filter-bar" style={{ marginBottom: 24, padding: '24px', background: '#fff', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <Input 
-              placeholder="搜索岗位名称" 
-              prefix={<EyeOutlined style={{ color: '#94A3B8' }} />} 
-              style={{ width: 300 }} 
+      <Card className="positions-filter-bar" style={{ marginBottom: 24, borderRadius: '8px' }} bodyStyle={{ padding: '24px' }}>
+        <Form layout="inline">
+          <Form.Item label="岗位名称">
+            <Input
+              placeholder="请输入岗位名称"
+              prefix={<EyeOutlined style={{ color: '#94A3B8' }} />}
+              style={{ width: 200 }}
               allowClear
-              onChange={(e) => setSearchTitle(e.target.value)}
-          />
-          <Select
-              placeholder="岗位状态"
-              style={{ width: 150 }}
+              value={filters.title}
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                title: event.target.value,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="部门">
+            <Select
+              placeholder="请选择部门"
+              style={{ width: 180 }}
               allowClear
-              onChange={(value) => setSearchStatus(value)}
-          >
+              showSearch
+              value={filters.department}
+              options={departments.map((department) => ({
+                value: department,
+                label: department,
+              }))}
+              onChange={(department) => setFilters((current) => ({
+                ...current,
+                department,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="招聘负责人">
+            <Select
+              placeholder="请选择招聘负责人"
+              style={{ width: 220 }}
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={hiringManagers.map((manager) => ({
+                value: manager.id,
+                label: manager.full_name
+                  ? `${manager.full_name} (${manager.email})`
+                  : manager.email,
+              }))}
+              value={filters.hiringManagerId}
+              onChange={(hiringManagerId) => setFilters((current) => ({
+                ...current,
+                hiringManagerId,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="紧急度">
+            <Select
+              placeholder="请选择紧急度"
+              style={{ width: 140 }}
+              allowClear
+              value={filters.urgency}
+              onChange={(urgency) => setFilters((current) => ({
+                ...current,
+                urgency,
+              }))}
+            >
+              <Select.Option value="low">低</Select.Option>
+              <Select.Option value="medium">中</Select.Option>
+              <Select.Option value="high">高</Select.Option>
+              <Select.Option value="urgent">紧急</Select.Option>
+            </Select>
+          </Form.Item>
+          <Form.Item label="状态">
+            <Select
+              placeholder="请选择状态"
+              style={{ width: 140 }}
+              allowClear
+              value={filters.status}
+              onChange={(status) => setFilters((current) => ({
+                ...current,
+                status,
+              }))}
+            >
               <Select.Option value="open">待发布</Select.Option>
               <Select.Option value="published">招聘中</Select.Option>
               <Select.Option value="closed">已关闭</Select.Option>
-          </Select>
+            </Select>
+          </Form.Item>
           {selectedRowKeys.length > 0 && (
-            <Space>
-              <span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span>
-              <Button onClick={() => handleBatchPublish(true)} type="primary" ghost>批量发布</Button>
-              <Button onClick={() => handleBatchPublish(false)}>批量下架</Button>
-              <Button danger onClick={handleBatchDelete}>批量删除</Button>
-              <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
-            </Space>
+            <>
+              <Form.Item><span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span></Form.Item>
+              <Form.Item><Button onClick={() => handleBatchPublish(true)} type="primary" ghost>批量发布</Button></Form.Item>
+              <Form.Item><Button onClick={() => handleBatchPublish(false)}>批量下架</Button></Form.Item>
+              <Form.Item><Button danger onClick={handleBatchDelete}>批量删除</Button></Form.Item>
+              <Form.Item><Button onClick={() => setSelectedRowKeys([])}>取消选择</Button></Form.Item>
+            </>
           )}
-      </div>
+          <Form.Item>
+            <Button onClick={() => setFilters(createEmptyPositionListFilters())}>重置</Button>
+          </Form.Item>
+        </Form>
+      </Card>
       
       <Table 
         className="positions-table"
         columns={columns} 
         dataSource={data} 
-        scroll={{ x: 1180 }}
+        scroll={{ x: 1360 }}
         loading={loading} 
         rowKey="id" 
         pagination={{ pageSize: 10, showSizeChanger: true }}

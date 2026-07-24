@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import Login from './index';
 import request from '../../utils/request';
 
@@ -34,7 +34,14 @@ vi.mock('../../utils/request', () => ({
 const mockGet = vi.mocked(request.get);
 const mockPost = vi.mocked(request.post);
 
-const renderLogin = () => render(<MemoryRouter><Login /></MemoryRouter>);
+const renderLogin = () => render(
+  <MemoryRouter initialEntries={['/login']}>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/platform/login" element={<div>平台登录页面</div>} />
+    </Routes>
+  </MemoryRouter>,
+);
 
 describe('Login', () => {
   afterEach(() => {
@@ -88,6 +95,17 @@ describe('Login', () => {
     expect(company).toBeEnabled();
     expect(company).toHaveValue('');
     expect(screen.queryByText(/当前专属域名已锁定公司/)).not.toBeInTheDocument();
+  });
+
+  it('opens platform login without showing the management-purpose description', async () => {
+    mockGet.mockResolvedValueOnce([]);
+    const user = userEvent.setup();
+
+    renderLogin();
+
+    expect(screen.queryByText('用于公司开通、域名与企业管理员管理')).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('link', { name: '平台管理员入口' }));
+    expect(await screen.findByText('平台登录页面')).toBeInTheDocument();
   });
 
 });

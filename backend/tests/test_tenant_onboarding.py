@@ -463,6 +463,7 @@ def test_platform_and_tenant_tokens_are_mutually_rejected(
         user_id=user.id,
         tenant_id=tenant.id,
         role=user.role.value,
+        credential_version=user.credential_version,
     )
 
     platform_response = platform_client.post(

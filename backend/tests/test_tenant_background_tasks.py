@@ -400,6 +400,7 @@ def test_task_status_http_endpoint_masks_another_tenants_known_task(
             user_id=user.id,
             tenant_id=user.tenant_id,
             role=user.role.value,
+            credential_version=user.credential_version,
         )
         return {"Authorization": f"Bearer {token}"}
 

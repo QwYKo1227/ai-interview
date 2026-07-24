@@ -30,6 +30,7 @@ class AccessTokenClaims:
     user_id: UUID
     tenant_id: UUID
     role: str
+    credential_version: int
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -45,6 +46,7 @@ def create_access_token(
     user_id: UUID,
     tenant_id: UUID,
     role: str,
+    credential_version: int,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     if not isinstance(user_id, UUID):
@@ -53,6 +55,8 @@ def create_access_token(
         raise TypeError("tenant_id must be a UUID")
     if not isinstance(role, str) or not role:
         raise TypeError("role must be a non-empty string")
+    if isinstance(credential_version, bool) or not isinstance(credential_version, int) or credential_version < 1:
+        raise TypeError("credential_version must be a positive integer")
 
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=15)
@@ -61,6 +65,7 @@ def create_access_token(
         "sub": str(user_id),
         "tenant_id": str(tenant_id),
         "role": role,
+        "credential_version": credential_version,
         "token_type": "tenant",
         "exp": expire,
     }
@@ -78,6 +83,7 @@ def decode_access_token(token: str) -> AccessTokenClaims:
     subject = payload.get("sub")
     tenant_id = payload.get("tenant_id")
     role = payload.get("role")
+    credential_version = payload.get("credential_version")
     token_type = payload.get("token_type")
     expiration = payload.get("exp")
     if not isinstance(subject, str):
@@ -86,6 +92,12 @@ def decode_access_token(token: str) -> AccessTokenClaims:
         raise JWTError("tenant_id must be a UUID string")
     if not isinstance(role, str) or not role:
         raise JWTError("role must be a non-empty string")
+    if (
+        isinstance(credential_version, bool)
+        or not isinstance(credential_version, int)
+        or credential_version < 1
+    ):
+        raise JWTError("credential_version must be a positive integer")
     if token_type != "tenant":
         raise JWTError("token_type must be tenant")
     if isinstance(expiration, bool) or not isinstance(expiration, (int, float)):
@@ -102,6 +114,7 @@ def decode_access_token(token: str) -> AccessTokenClaims:
         user_id=user_id_value,
         tenant_id=tenant_id_value,
         role=role_value,
+        credential_version=credential_version,
     )
 
 

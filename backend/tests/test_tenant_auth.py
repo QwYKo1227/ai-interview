@@ -6,7 +6,13 @@ from jose import jwt
 from sqlalchemy.orm import sessionmaker
 
 from app.routes import auth as auth_routes
-from app.core.security import ALGORITHM, SECRET_KEY, create_access_token, get_password_hash
+from app.core.security import (
+    ALGORITHM,
+    SECRET_KEY,
+    create_access_token,
+    decode_access_token,
+    get_password_hash,
+)
 from app.core.tenant_context import TenantContext
 from app.config.tenant_session import TenantSession
 from app.models.models import User, UserRole
@@ -239,6 +245,7 @@ def test_create_access_token_uses_tenant_scoped_identity_claims(tenant_a):
         user_id=user_id,
         tenant_id=tenant_a.id,
         role=UserRole.ADMIN.value,
+        credential_version=3,
         expires_delta=timedelta(minutes=5),
     )
 
@@ -246,6 +253,8 @@ def test_create_access_token_uses_tenant_scoped_identity_claims(tenant_a):
     assert claims["sub"] == str(user_id)
     assert claims["tenant_id"] == str(tenant_a.id)
     assert claims["role"] == UserRole.ADMIN.value
+    assert claims["credential_version"] == 3
+    assert decode_access_token(token).credential_version == 3
     assert isinstance(claims["exp"], int)
 
 
@@ -284,6 +293,7 @@ def auth_header(user, *, tenant_id=None, role=None):
         user_id=user.id,
         tenant_id=tenant_id or user.tenant_id,
         role=role or user.role.value,
+        credential_version=user.credential_version,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -293,6 +303,7 @@ def raw_token(**overrides):
         "sub": str(uuid4()),
         "tenant_id": str(uuid4()),
         "role": UserRole.HR.value,
+        "credential_version": 1,
         "token_type": "tenant",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
@@ -309,6 +320,37 @@ def test_valid_token_authenticates_user_with_uuid_subject(
 
     assert response.status_code == 200
     assert response.json()["id"] == str(user.id)
+
+
+def test_old_credential_version_is_rejected(client, db, tenant_a):
+    user = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    headers = auth_header(user)
+    user.credential_version += 1
+    db.add(user)
+    db.commit()
+
+    response = client.get("/api/auth/me", headers=headers)
+
+    assert response.status_code == 401
+
+
+def test_change_password_invalidates_the_token_used_for_the_change(
+    client, db, tenant_a
+):
+    user = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    headers = auth_header(user)
+
+    changed = client.post(
+        "/api/auth/change-password",
+        headers=headers,
+        json={
+            "current_password": "Password123",
+            "new_password": "Replacement123",
+        },
+    )
+
+    assert changed.status_code == 200
+    assert client.get("/api/auth/me", headers=headers).status_code == 401
 
 
 def test_auth_me_returns_only_the_jwt_tenants_company_summary(

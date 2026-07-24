@@ -347,6 +347,7 @@ def auth_headers(test_user: User) -> dict:
         user_id=test_user.id,
         tenant_id=test_user.tenant_id,
         role=test_user.role.value,
+        credential_version=test_user.credential_version,
     )
     return {"Authorization": f"Bearer {access_token}"}
 
@@ -366,6 +367,7 @@ def admin_auth_headers(test_admin: User, db: Session) -> dict:
         user_id=test_admin.id,
         tenant_id=test_admin.tenant_id,
         role=test_admin.role.value,
+        credential_version=test_admin.credential_version,
     )
     return {"Authorization": f"Bearer {access_token}"}
 
@@ -379,6 +381,7 @@ def interviewer_auth_headers(test_interviewer: User) -> dict:
         user_id=test_interviewer.id,
         tenant_id=test_interviewer.tenant_id,
         role=test_interviewer.role.value,
+        credential_version=test_interviewer.credential_version,
     )
     return {"Authorization": f"Bearer {access_token}"}
 

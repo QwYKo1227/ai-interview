@@ -936,6 +936,7 @@ def test_real_http_file_routes_enforce_tenant_host_token_and_path_isolation(
             user_id=users[tenant_id],
             tenant_id=tenant_id,
             role=UserRole.ADMIN.value,
+            credential_version=1,
             expires_delta=timedelta(minutes=15),
         )
         for tenant_id in (tenant_a, tenant_b)

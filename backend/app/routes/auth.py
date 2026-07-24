@@ -107,6 +107,7 @@ def _token_for_user(tenant: Tenant, user: User) -> Token:
         user_id=user.id,
         tenant_id=tenant.id,
         role=user.role.value,
+        credential_version=user.credential_version,
         expires_delta=access_token_expires,
     )
     return Token(access_token=access_token, token_type="bearer")
@@ -248,6 +249,7 @@ def change_password(
     # 验证新密码强度
     validate_password_strength(payload.new_password)
     current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.credential_version += 1
     db.add(current_user)
     db.commit()
     return {"success": True}

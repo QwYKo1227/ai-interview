@@ -9,12 +9,13 @@ from uuid import uuid4
 import pytest
 from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import Interview, InterviewPanel, Resume, User, UserRole
+from app.models.models import CodingTest, Interview, InterviewPanel, Resume, User, UserRole
 from app.models.tenant_models import PublicAccessToken, TenantDomain
 from app.routes import files
 from app.schemas.interview import InterviewScore
@@ -724,21 +725,59 @@ def test_delete_resume_revokes_download_and_unlinks_file(
 ):
     from app.services import resume_service
 
-    stored = save_upload_file(
-        _upload(), tenant_a.id, "resumes", root=tmp_path,
-        resource_type="resume", resource_id=test_resume.id,
-    )
-    path = resolve_object_path(tmp_path, tenant_a.id, stored.object_key)
-    test_resume.file_id = stored.id
-    test_resume.file_path = f"/api/files/{stored.id}"
-    db.add(stored)
+    db.execute(text("PRAGMA foreign_keys=ON"))
+    try:
+        stored = save_upload_file(
+            _upload(), tenant_a.id, "resumes", root=tmp_path,
+            resource_type="resume", resource_id=test_resume.id,
+        )
+        path = resolve_object_path(tmp_path, tenant_a.id, stored.object_key)
+        test_resume.file_id = stored.id
+        test_resume.file_path = f"/api/files/{stored.id}"
+        db.add(stored)
+        db.commit()
+        monkeypatch.setattr(resume_service, "UPLOAD_ROOT", tmp_path)
+        resume_service.delete_resume(db, test_resume.id)
+        assert db.query(Resume).filter(Resume.id == test_resume.id).first() is None
+        assert db.query(StoredFile).filter(StoredFile.id == stored.id).first() is None
+        assert not path.exists()
+        with TestClient(_app(db, tenant_a, tmp_path)) as client:
+            assert client.get(f"/api/files/{stored.id}").status_code == 404
+    finally:
+        db.rollback()
+        db.execute(text("PRAGMA foreign_keys=OFF"))
+        db.commit()
+
+
+def test_delete_resume_preserves_and_detaches_coding_test(db, tenant_a, test_resume):
+    from app.services import resume_service
+
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS question_banks ("
+        "id CHAR(32) PRIMARY KEY, tenant_id CHAR(32) NOT NULL, "
+        "UNIQUE (tenant_id, id))"
+    ))
     db.commit()
-    monkeypatch.setattr(resume_service, "UPLOAD_ROOT", tmp_path)
-    resume_service.delete_resume(db, test_resume.id)
-    assert db.query(StoredFile).filter(StoredFile.id == stored.id).first() is None
-    assert not path.exists()
-    with TestClient(_app(db, tenant_a, tmp_path)) as client:
-        assert client.get(f"/api/files/{stored.id}").status_code == 404
+    try:
+        coding_test = CodingTest(
+            tenant_id=tenant_a.id,
+            title="Preserved assessment",
+            public_token=f"preserved-{uuid4().hex}",
+            resume_id=test_resume.id,
+        )
+        db.add(coding_test)
+        db.commit()
+        coding_test_id = coding_test.id
+
+        resume_service.delete_resume(db, test_resume.id)
+
+        db.expire_all()
+        preserved = db.query(CodingTest).filter(CodingTest.id == coding_test_id).one()
+        assert preserved.resume_id is None
+    finally:
+        db.rollback()
+        db.execute(text("DROP TABLE IF EXISTS question_banks"))
+        db.commit()
 
 
 def test_delete_interview_revokes_all_audio_files(

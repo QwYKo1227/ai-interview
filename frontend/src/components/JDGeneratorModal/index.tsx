@@ -192,7 +192,7 @@ const JDGeneratorModal: React.FC<JDGeneratorModalProps> = ({
                 }
                 setChatMessages((prev) => [
                   ...prev,
-                  { role: 'assistant', content: '已根据您的要求更新了岗位描述，请查看下方内容。' },
+                  { role: 'assistant', content: '已根据您的要求更新了上方岗位描述。' },
                 ]);
               }
               if (data.error) {

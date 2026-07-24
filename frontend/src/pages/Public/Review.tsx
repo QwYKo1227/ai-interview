@@ -85,7 +85,10 @@ const PublicReview: React.FC = () => {
         comment,
       });
       message.success('审核已提交');
-      fetchResume();
+      setExistingReview((current: any) => ({
+        ...(current || {}),
+        is_completed: true,
+      }));
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败');
     } finally {
@@ -205,6 +208,10 @@ const PublicReview: React.FC = () => {
                 danger={recommendation === 'not_recommend'}
                 icon={<CloseCircleOutlined />}
                 onClick={() => setRecommendation('not_recommend')}
+                style={{
+                  backgroundColor: recommendation === 'not_recommend' ? '#ff4d4f' : undefined,
+                  borderColor: '#ff4d4f',
+                }}
               >
                 不推荐
               </Button>
@@ -212,6 +219,11 @@ const PublicReview: React.FC = () => {
                 type={recommendation === 'pending' ? 'primary' : 'default'}
                 icon={<ClockCircleOutlined />}
                 onClick={() => setRecommendation('pending')}
+                style={{
+                  backgroundColor: recommendation === 'pending' ? '#faad14' : undefined,
+                  borderColor: '#faad14',
+                  color: recommendation === 'pending' ? '#262626' : undefined,
+                }}
               >
                 待定
               </Button>

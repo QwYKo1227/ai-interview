@@ -5,7 +5,11 @@ import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { buildPositionListParams } from './filters';
+import {
+  buildPositionListParams,
+  createLatestRequestCoordinator,
+  reconcileHiringManagerSelection,
+} from './filters';
 
 const { Title, Text } = Typography;
 
@@ -83,24 +87,26 @@ const PositionsList: React.FC = () => {
   const [searchTitle, setSearchTitle] = useState<string>('');
   const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
   const [searchHiringManagerId, setSearchHiringManagerId] = useState<string | undefined>();
+  const [positionRequestCoordinator] = useState(createLatestRequestCoordinator);
+  const [hiringManagerRequestCoordinator] = useState(createLatestRequestCoordinator);
 
   const fetchPositions = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await request.get('/positions', {
+    await positionRequestCoordinator.run<Position[]>(
+      () => request.get('/positions', {
           params: buildPositionListParams({
             title: searchTitle,
             status: searchStatus,
             hiringManagerId: searchHiringManagerId,
           }),
-      });
-      setData(res);
-    } catch {
-      message.error('获取岗位列表失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [searchHiringManagerId, searchStatus, searchTitle]);
+      }),
+      {
+        onStart: () => setLoading(true),
+        onSuccess: setData,
+        onError: () => message.error('获取岗位列表失败'),
+        onSettled: () => setLoading(false),
+      },
+    );
+  }, [positionRequestCoordinator, searchHiringManagerId, searchStatus, searchTitle]);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -112,13 +118,19 @@ const PositionsList: React.FC = () => {
   }, []);
 
   const fetchHiringManagers = useCallback(async () => {
-    try {
-      const res = await request.get('/positions/hiring-managers');
-      setHiringManagers(res);
-    } catch {
-      message.error('获取招聘负责人列表失败');
-    }
-  }, []);
+    await hiringManagerRequestCoordinator.run<HiringManagerOption[]>(
+      () => request.get('/positions/hiring-managers'),
+      {
+        onSuccess: (res) => {
+          setHiringManagers(res);
+          setSearchHiringManagerId((selectedId) => (
+            reconcileHiringManagerSelection(selectedId, res)
+          ));
+        },
+        onError: () => message.error('获取招聘负责人列表失败'),
+      },
+    );
+  }, [hiringManagerRequestCoordinator]);
 
   useEffect(() => {
     void fetchUsers();
@@ -168,7 +180,8 @@ const PositionsList: React.FC = () => {
         try {
           await request.delete(`/positions/${id}`);
           message.success('删除成功');
-          fetchPositions();
+          void fetchPositions();
+          void fetchHiringManagers();
         } catch {
           message.error('删除失败');
         }
@@ -192,7 +205,8 @@ const PositionsList: React.FC = () => {
           await Promise.all(selectedRowKeys.map(id => request.delete(`/positions/${id}`)));
           message.success(`成功删除 ${selectedRowKeys.length} 个岗位`);
           setSelectedRowKeys([]);
-          fetchPositions();
+          void fetchPositions();
+          void fetchHiringManagers();
         } catch {
           message.error('批量删除失败');
         }
@@ -290,7 +304,8 @@ const PositionsList: React.FC = () => {
         message.success('创建成功');
       }
       setIsModalVisible(false);
-      fetchPositions();
+      void fetchPositions();
+      void fetchHiringManagers();
     } catch {
       // Validation error
     } finally {
@@ -445,6 +460,7 @@ const PositionsList: React.FC = () => {
                   ? `${manager.full_name} (${manager.email})`
                   : manager.email,
               }))}
+              value={searchHiringManagerId}
               onChange={setSearchHiringManagerId}
           />
           <Select

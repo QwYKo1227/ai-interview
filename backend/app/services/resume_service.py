@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 from app.models.models import (
-    Resume, Position, Interview, InterviewPanel, DepartmentReview, User, Offer,
+    Resume, Position, Interview, InterviewPanel, DepartmentReview, User, Offer, CodingTest,
     ResumeStatus, ScreeningResult, RejectReasonCategory, ReviewRecommendation, PositionStatus
 )
 from app.schemas.resume import (
@@ -450,7 +450,6 @@ def delete_resume(db: Session, resume_id: UUID):
         file_records.extend(tenant_resource_files(
             db, tenant_id, "interview", interview_id, "interview_audio"
         ))
-    file_locations = stage_file_deletions(db, file_records)
 
     # Delete associated interview panels first (due to foreign key constraint)
     if interview_ids:
@@ -473,12 +472,23 @@ def delete_resume(db: Session, resume_id: UUID):
     for offer in offers:
         db.delete(offer)
 
+    # Preserve assessments while removing their reference to the deleted resume.
+    coding_tests = db.query(CodingTest).filter(
+        CodingTest.tenant_id == tenant_id,
+        CodingTest.resume_id == resume_id,
+    ).all()
+    for coding_test in coding_tests:
+        coding_test.resume_id = None
+
     # Solution: Eager load position before deletion, so it's in memory.
     # Re-query with options
     db_resume = db.query(Resume).options(joinedload(Resume.position)).filter(Resume.id == resume_id).first()
 
     db.delete(db_resume)
     try:
+        # Remove all business references before deleting their stored-file metadata.
+        db.flush()
+        file_locations = stage_file_deletions(db, file_records)
         db.commit()
     except Exception:
         db.rollback()

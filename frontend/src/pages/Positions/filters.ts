@@ -14,6 +14,10 @@ export const buildPositionListParams = ({
   ...(hiringManagerId ? { hiring_manager_id: hiringManagerId } : {}),
 });
 
+export const buildCurrentPositionListParams = (
+  filtersRef: { readonly current: PositionListFilters },
+) => buildPositionListParams(filtersRef.current);
+
 interface LatestRequestCallbacks<T> {
   onStart?: () => void;
   onSuccess: (data: T) => void;

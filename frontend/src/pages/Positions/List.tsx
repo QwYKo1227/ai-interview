@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
@@ -6,7 +6,7 @@ import JDGeneratorModal from '../../components/JDGeneratorModal';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  buildPositionListParams,
+  buildCurrentPositionListParams,
   createLatestRequestCoordinator,
   reconcileHiringManagerSelection,
 } from './filters';
@@ -87,17 +87,23 @@ const PositionsList: React.FC = () => {
   const [searchTitle, setSearchTitle] = useState<string>('');
   const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
   const [searchHiringManagerId, setSearchHiringManagerId] = useState<string | undefined>();
+  const positionListFiltersRef = useRef({
+    title: searchTitle,
+    status: searchStatus,
+    hiringManagerId: searchHiringManagerId,
+  });
+  positionListFiltersRef.current = {
+    title: searchTitle,
+    status: searchStatus,
+    hiringManagerId: searchHiringManagerId,
+  };
   const [positionRequestCoordinator] = useState(createLatestRequestCoordinator);
   const [hiringManagerRequestCoordinator] = useState(createLatestRequestCoordinator);
 
   const fetchPositions = useCallback(async () => {
     await positionRequestCoordinator.run<Position[]>(
       () => request.get('/positions', {
-          params: buildPositionListParams({
-            title: searchTitle,
-            status: searchStatus,
-            hiringManagerId: searchHiringManagerId,
-          }),
+          params: buildCurrentPositionListParams(positionListFiltersRef),
       }),
       {
         onStart: () => setLoading(true),
@@ -106,7 +112,7 @@ const PositionsList: React.FC = () => {
         onSettled: () => setLoading(false),
       },
     );
-  }, [positionRequestCoordinator, searchHiringManagerId, searchStatus, searchTitle]);
+  }, [positionRequestCoordinator]);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -139,7 +145,7 @@ const PositionsList: React.FC = () => {
 
   useEffect(() => {
     void fetchPositions();
-  }, [fetchPositions]);
+  }, [fetchPositions, searchHiringManagerId, searchStatus, searchTitle]);
 
   const handleAdd = () => {
     setEditingId(null);

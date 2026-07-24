@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCurrentPositionListParams,
   buildPositionListParams,
   createLatestRequestCoordinator,
   reconcileHiringManagerSelection,
@@ -31,6 +32,31 @@ describe('buildPositionListParams', () => {
       title: 'Backend',
       status: 'published',
       hiring_manager_id: 'manager-id',
+    });
+  });
+});
+
+describe('buildCurrentPositionListParams', () => {
+  it('lets a stable refresh read the latest filters at invocation time', () => {
+    const filtersRef = {
+      current: {
+        title: 'Filter A',
+        status: 'open',
+        hiringManagerId: 'manager-a',
+      },
+    };
+    const stableRefresh = () => buildCurrentPositionListParams(filtersRef);
+
+    filtersRef.current = {
+      title: 'Filter B',
+      status: 'published',
+      hiringManagerId: 'manager-b',
+    };
+
+    expect(stableRefresh()).toEqual({
+      title: 'Filter B',
+      status: 'published',
+      hiring_manager_id: 'manager-b',
     });
   });
 });

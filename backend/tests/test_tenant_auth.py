@@ -353,6 +353,23 @@ def test_change_password_invalidates_the_token_used_for_the_change(
     assert client.get("/api/auth/me", headers=headers).status_code == 401
 
 
+def test_change_password_rejects_password_shorter_than_twelve_utf8_bytes(
+    client, db, tenant_a
+):
+    user = create_user(db, tenant_a.id, "member@example.com", "Password123")
+
+    response = client.post(
+        "/api/auth/change-password",
+        headers=auth_header(user),
+        json={
+            "current_password": "Password123",
+            "new_password": "Abcdefg1",
+        },
+    )
+
+    assert response.status_code == 400
+
+
 def test_auth_me_returns_only_the_jwt_tenants_company_summary(
     client, db, tenant_a, tenant_b
 ):

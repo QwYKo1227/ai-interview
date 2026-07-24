@@ -36,10 +36,15 @@ def validate_password_strength(password: str) -> None:
     - 必须包含字母
     - 必须包含数字
     """
-    if len(password) < 8:
+    if len(password.encode("utf-8")) < 12:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="密码长度至少8位"
+        )
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码最多为 72 个 UTF-8 字节",
         )
     if not re.search(r'[A-Za-z]', password):
         raise HTTPException(

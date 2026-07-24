@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Menu, Button, Avatar, Space, Dropdown, theme, Badge } from 'antd';
+import { Layout, Menu, Button, Avatar, Space, Dropdown, Grid, theme } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -23,6 +23,9 @@ const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { logout, user } = useAuth();
+  const screens = Grid.useBreakpoint();
+  const isLaptop = !screens.xxl;
+  const siderWidth = isLaptop ? 80 : 240;
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
@@ -33,64 +36,66 @@ const AppLayout: React.FC = () => {
     navigate('/login');
   };
 
-  const menuItems = [
+  const rawMenuItems = [
     {
       key: '/dashboard',
-      icon: <DashboardOutlined />,
+      icon: <DashboardOutlined aria-hidden="true" />,
       label: '仪表盘',
     },
     {
       key: '/positions',
-      icon: <UserOutlined />,
+      icon: <UserOutlined aria-hidden="true" />,
       label: '岗位管理',
       roles: ['admin', 'hr'],
     },
     {
       key: '/question-banks',
-      icon: <BankOutlined />,
+      icon: <BankOutlined aria-hidden="true" />,
       label: '题库管理',
       roles: ['admin', 'hr'],
     },
     {
       key: '/resumes',
-      icon: <FileTextOutlined />,
+      icon: <FileTextOutlined aria-hidden="true" />,
       label: '简历管理',
     },
     {
       key: '/interviews',
-      icon: <TeamOutlined />,
+      icon: <TeamOutlined aria-hidden="true" />,
       label: '面试管理',
     },
     {
       key: '/coding-tests',
-      icon: <CodeOutlined />,
+      icon: <CodeOutlined aria-hidden="true" />,
       label: '笔试管理',
       roles: ['admin', 'hr'],
     },
     {
       key: '/offers',
-      icon: <FileAddOutlined />,
+      icon: <FileAddOutlined aria-hidden="true" />,
       label: 'Offer管理',
       roles: ['admin', 'hr'],
     },
     {
       key: '/offers/templates',
-      icon: <FileTextOutlined />,
+      icon: <FileTextOutlined aria-hidden="true" />,
       label: 'Offer模板',
       roles: ['admin', 'hr'],
     },
     {
       key: '/workflows',
-      icon: <ApartmentOutlined />,
+      icon: <ApartmentOutlined aria-hidden="true" />,
       label: '工作流',
     },
     {
       key: '/settings/users',
-      icon: <SettingOutlined />,
+      icon: <SettingOutlined aria-hidden="true" />,
       label: '用户管理',
       roles: ['admin'],
     },
   ];
+
+  const menuItems = rawMenuItems;
 
   const filteredMenuItems = menuItems.filter(item => {
     if (!item.roles) return true;
@@ -139,7 +144,10 @@ const AppLayout: React.FC = () => {
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider 
-        collapsible 
+        className="app-sider"
+        collapsed={isLaptop}
+        collapsedWidth={80}
+        trigger={null}
         width={240}
         theme="light"
         style={{
@@ -151,7 +159,7 @@ const AppLayout: React.FC = () => {
           zIndex: 100
         }}
       >
-        <div style={{ 
+        <div className="app-brand" style={{
           height: 64, 
           display: 'flex', 
           alignItems: 'center', 
@@ -162,20 +170,20 @@ const AppLayout: React.FC = () => {
           letterSpacing: '-0.025em',
           borderBottom: '1px solid #f0f0f0'
         }}>
-          <span style={{ color: '#3B82F6' }}>AI</span> Interview
+          <span style={{ color: '#3B82F6' }}>AI</span>{!isLaptop && ' Interview'}
         </div>
         <Menu
           theme="light"
           mode="inline"
           selectedKeys={[location.pathname]}
           items={filteredMenuItems}
+          tooltip={{ placement: 'right', trigger: ['hover', 'focus'] }}
           onClick={({ key }) => navigate(key)}
           style={{ padding: '16px 8px', borderRight: 0 }}
         />
       </Sider>
-      <Layout style={{ marginLeft: 240 }}>
-        <Header style={{ 
-          padding: '0 32px', 
+      <Layout className="app-main-layout" style={{ marginLeft: siderWidth }}>
+        <Header className={isLaptop ? 'app-header app-header-compact' : 'app-header'} style={{
           display: 'flex', 
           justifyContent: 'space-between', 
           alignItems: 'center',
@@ -190,12 +198,12 @@ const AppLayout: React.FC = () => {
             <Dropdown menu={userMenu}>
               <Space style={{ cursor: 'pointer' }}>
                 <Avatar style={{ backgroundColor: '#3B82F6' }} icon={<UserOutlined />} />
-                <span style={{ fontWeight: 500, color: '#0F172A' }}>{user?.full_name || user?.email}</span>
+                <span className="app-user-name" style={{ fontWeight: 500, color: '#0F172A' }}>{user?.full_name || user?.email}</span>
               </Space>
             </Dropdown>
           </Space>
         </Header>
-        <Content style={{ margin: '32px', minHeight: 280 }}>
+        <Content className="app-content" style={{ margin: '32px', minHeight: 280 }}>
           <div className="page-container">
             <Outlet />
           </div>

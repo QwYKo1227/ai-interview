@@ -1,0 +1,67 @@
+import { render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import PositionsList from './List'
+import request from '../../utils/request'
+
+vi.mock('../../utils/request', () => ({
+  default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
+}))
+
+vi.mock('../../components/JDGeneratorModal', () => ({ default: () => null }))
+
+const position = {
+  id: 'position-1',
+  title: 'Senior Frontend Engineer',
+  description: 'Build responsive hiring workflows.',
+  requirements: 'React and TypeScript',
+  salary_range: '20k-30k',
+  location: 'Shanghai',
+  department: 'Engineering',
+  status: 'open',
+  urgency: 'medium',
+  position_type: 'full_time',
+  headcount: 1,
+  hiring_manager_id: 'manager-1',
+  hiring_manager_name: 'Hiring Manager',
+  created_at: '2026-07-23T00:00:00.000Z',
+  updated_at: '2026-07-23T00:00:00.000Z',
+  stats: {
+    total_resumes: 0,
+    pending_screening: 0,
+    pending_interview: 0,
+    interview_completed: 0,
+    offer_pending: 0,
+    offer_accepted: 0,
+    rejected: 0,
+  },
+}
+
+describe('PositionsList responsive table', () => {
+  let getComputedStyleSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    const nativeGetComputedStyle = window.getComputedStyle.bind(window)
+    // Ant Design probes pseudo-elements; JSDOM cannot implement that overload.
+    getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => nativeGetComputedStyle(element))
+  })
+
+  afterEach(() => {
+    getComputedStyleSpy.mockRestore()
+  })
+
+  it('contains horizontal overflow and fixes the action column to the right', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [position] : [])
+    const { container } = render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+
+    const actionHeader = screen.getByRole('columnheader', { name: '操作' })
+    expect(actionHeader).toHaveClass('ant-table-cell-fix-end')
+    const actionCell = container.querySelector('.ant-table-tbody .ant-table-cell-fix-end')
+    expect(actionCell).toBeInTheDocument()
+    expect(actionCell).toHaveClass('ant-table-cell-fix-end')
+    expect(container.querySelector('.positions-table')).toBeInTheDocument()
+    expect(container.querySelector('.ant-table-content')).toHaveStyle({ overflowX: 'auto' })
+  })
+})

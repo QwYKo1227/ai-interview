@@ -48,6 +48,106 @@ code {
   min-height: 100vh;
 }
 
+.app-main-layout {
+  min-width: 0;
+  transition: margin-left 0.2s ease;
+}
+
+.app-content {
+  min-width: 0;
+}
+
+.resume-detail-split,
+.resume-detail-pane {
+  min-width: 0;
+}
+
+.resume-detail-pane {
+  flex: 1 1 0;
+}
+
+.resume-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  margin-bottom: 16px;
+}
+
+.resume-detail-candidate {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.resume-detail-summary {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.resume-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.resume-preview-header {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.resume-preview-header .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.positions-page-header,
+.positions-filter-bar {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.positions-table {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.positions-table .ant-table-cell-fix-right,
+.positions-table .ant-table-cell-fix-end {
+  background: var(--surface-color);
+}
+
+.app-user-name {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+@media (max-width: 1599px) {
+  .app-content {
+    margin: 20px !important;
+  }
+
+  .resume-detail-split {
+    gap: 16px !important;
+  }
+
+  .resume-detail-heading {
+    flex-wrap: wrap;
+  }
+
+  .resume-detail-actions {
+    justify-content: flex-start;
+  }
+}
+
 /* Ant Design Overrides */
 
 /* Layout */
@@ -102,6 +202,11 @@ code {
   position: sticky;
   top: 0;
   z-index: 100;
+}
+
+.app-header.app-header-compact.ant-layout-header {
+  padding-left: 20px !important;
+  padding-right: 20px !important;
 }
 
 /* Cards */

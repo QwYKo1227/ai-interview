@@ -1,35 +1,81 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Typography, Form, Select, Upload, Input, DatePicker, InputNumber, Card, Row, Col, Checkbox } from 'antd';
-import { PlusOutlined, EyeOutlined, TeamOutlined, DeleteOutlined, UploadOutlined, ReloadOutlined, CloseCircleOutlined, SearchOutlined, UndoOutlined, SolutionOutlined, SyncOutlined } from '@ant-design/icons';
+import { PlusOutlined, EyeOutlined, TeamOutlined, DeleteOutlined, UploadOutlined, ReloadOutlined, CloseCircleOutlined, UndoOutlined, SolutionOutlined, SyncOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
+import type { RcFile } from 'antd/es/upload/interface';
+import { createLatestRequestCoordinator } from '../../utils/latestRequest';
+import {
+  buildCurrentResumeListParams,
+  createEmptyResumeListFilters,
+  type ResumeListFilters,
+} from './filters';
 
 const { Title, Text } = Typography;
 
 import { useAuth } from '../../contexts/AuthContext';
 
+interface PositionOption {
+  id: string;
+  title: string;
+}
+
+interface QuestionBankOption {
+  id: string;
+  name: string;
+}
+
+interface InterviewerOption {
+  id: string;
+  full_name?: string | null;
+  email: string;
+}
+
+interface ResumeRecord {
+  id: string;
+  position_id: string;
+  status: string;
+  match_score: number;
+  parse_status?: string;
+  parse_error?: string;
+}
+
+interface InterviewSummary {
+  id: string;
+  resume_id: string;
+  status: string;
+  result?: string;
+  round?: number;
+}
+
+interface EmailPreview {
+  subject: string;
+  content: string;
+  to_email: string;
+  candidate_name: string;
+}
+
 const ResumesList: React.FC = () => {
   const { user } = useAuth();
-  const [data, setData] = useState([]);
+  const [data, setData] = useState<ResumeRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [positions, setPositions] = useState([]);
-  const [questionBanks, setQuestionBanks] = useState([]);
+  const [positions, setPositions] = useState<PositionOption[]>([]);
+  const [questionBanks, setQuestionBanks] = useState<QuestionBankOption[]>([]);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [interviewModalVisible, setInterviewModalVisible] = useState(false);
-  const [interviewRecord, setInterviewRecord] = useState<any>(null);
-  const [existingInterviews, setExistingInterviews] = useState<any[]>([]);
+  const [interviewRecord, setInterviewRecord] = useState<ResumeRecord | null>(null);
+  const [existingInterviews, setExistingInterviews] = useState<InterviewSummary[]>([]);
   const [emailPreviewVisible, setEmailPreviewVisible] = useState(false);
-  const [emailContent, setEmailContent] = useState<any>(null);
-  const [createdInterviewId, setCreatedInterviewId] = useState<string | null>(null);
+  const [emailContent, setEmailContent] = useState<EmailPreview | null>(null);
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailForm] = Form.useForm();
-  const [pendingInterviewData, setPendingInterviewData] = useState<any>(null);
+  const [pendingInterviewData, setPendingInterviewData] = useState<Record<string, unknown>>({});
 
-  const [fileList, setFileList] = useState<any[]>([]);
+  const [fileList, setFileList] = useState<RcFile[]>([]);
   const [submitting, setSubmitting] = useState(false);
   
   const [form] = Form.useForm();
@@ -37,33 +83,38 @@ const ResumesList: React.FC = () => {
   
   const navigate = useNavigate();
 
-  const [searchName, setSearchName] = useState('');
-  const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
+  const [filters, setFilters] = useState<ResumeListFilters>(createEmptyResumeListFilters);
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+  const userRef = useRef(user);
+  userRef.current = user;
+  const [requestCoordinator] = useState(createLatestRequestCoordinator);
 
-  const fetchResumes = async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      const params: any = {};
-      if (searchName) params.candidate_name = searchName;
-      if (searchStatus) params.status = searchStatus;
+  const fetchResumes = useCallback(async (silent = false) => {
+    const currentUser = userRef.current;
+    const reviewerId = currentUser?.role === 'interviewer'
+      ? currentUser.id
+      : undefined;
 
-      // 如果是面试官，只显示被指派给自己的简历
-      if (user?.role === 'interviewer') {
-        params.reviewer_id = user.id;
-      }
-
-      const res = await request.get('/resumes', { params });
-      setData(res);
-
-      // 检查是否有正在解析中的简历
-      const hasProcessing = res.some((r: any) => r.parse_status === 'processing');
-      setPollingEnabled(hasProcessing);
-    } catch (error) {
-      if (!silent) message.error('获取简历列表失败');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  };
+    await requestCoordinator.run<ResumeRecord[]>(
+      () => request.get('/resumes', {
+        params: buildCurrentResumeListParams(filtersRef, reviewerId),
+      }),
+      {
+        onStart: () => {
+          if (!silent) setLoading(true);
+        },
+        onSuccess: (res) => {
+          setData(res);
+          setPollingEnabled(res.some((resume) => resume.parse_status === 'processing'));
+        },
+        onError: () => {
+          if (!silent) message.error('获取简历列表失败');
+        },
+        onSettled: () => setLoading(false),
+      },
+    );
+  }, [requestCoordinator]);
 
   // 轮询检查解析状态
   useEffect(() => {
@@ -84,81 +135,76 @@ const ResumesList: React.FC = () => {
         pollingRef.current = null;
       }
     };
-  }, [pollingEnabled]);
+  }, [fetchResumes, pollingEnabled]);
 
-  const fetchPositions = async () => {
+  const fetchPositions = useCallback(async () => {
     try {
       const res = await request.get('/positions');
       setPositions(res);
-    } catch (error) {
+    } catch {
       console.error('获取岗位列表失败');
     }
-  };
+  }, []);
 
-  const fetchQuestionBanks = async () => {
+  const fetchQuestionBanks = useCallback(async () => {
     try {
       const res = await request.get('/question-banks');
       setQuestionBanks(res);
-    } catch (error) {
+    } catch {
       console.error('获取题库列表失败');
     }
-  };
+  }, []);
 
-  const [interviewers, setInterviewers] = useState([]);
+  const [interviewers, setInterviewers] = useState<InterviewerOption[]>([]);
 
-  const fetchInterviewers = async () => {
+  const fetchInterviewers = useCallback(async () => {
     try {
       const res = await request.get('/auth/interviewers');
       setInterviewers(res);
-    } catch (error) {
+    } catch {
       console.error('获取面试官列表失败');
     }
-  };
-
-  useEffect(() => {
-    fetchResumes();
-    fetchPositions();
-    fetchQuestionBanks();
-    fetchInterviewers();
   }, []);
 
-  const handleSearch = () => {
-    fetchResumes();
-  };
+  useEffect(() => {
+    void fetchPositions();
+    void fetchQuestionBanks();
+    void fetchInterviewers();
+  }, [fetchInterviewers, fetchPositions, fetchQuestionBanks]);
 
-  const handleReset = () => {
-    setSearchName('');
-    setSearchStatus(undefined);
-    setLoading(true);
-    request.get('/resumes')
-      .then(res => {
-        setData(res);
-        const hasProcessing = res.some((r: any) => r.parse_status === 'processing');
-        setPollingEnabled(hasProcessing);
-      })
-      .catch(() => message.error('获取简历列表失败'))
-      .finally(() => setLoading(false));
-  };
+  useEffect(() => {
+    void fetchResumes();
+  }, [
+    fetchResumes,
+    filters.candidateName,
+    filters.positionId,
+    filters.status,
+    user?.id,
+    user?.role,
+  ]);
 
-  const handleCreateInterviewClick = async (record: any) => {
+  const handleCreateInterviewClick = async (record: ResumeRecord) => {
     setInterviewRecord(record);
     interviewForm.resetFields();
 
     // 获取该候选人已有的面试记录
     try {
-      const allInterviews = await request.get('/interviews') as any[];
-      const resumeInterviews = allInterviews.filter((i: any) => i.resume_id === record.id);
+      const allInterviews = await request.get('/interviews') as InterviewSummary[];
+      const resumeInterviews = allInterviews.filter((interview) => interview.resume_id === record.id);
       setExistingInterviews(resumeInterviews);
 
       // 检查是否已被录用
-      const hiredInterview = resumeInterviews.find((i: any) => i.result === 'hired');
+      const hiredInterview = resumeInterviews.find((interview) => interview.result === 'hired');
       if (hiredInterview) {
         message.warning('该候选人已被录用，无法安排下一轮面试');
         return;
       }
 
       // 自动设置下一轮轮次
-      const maxRound = resumeInterviews.reduce((max: number, i: any) => Math.max(max, i.round || 1), 0);
+      const maxRound = resumeInterviews.reduce(
+        (max, interview) => Math.max(max, interview.round || 1),
+        0,
+      );
       interviewForm.setFieldsValue({
         question_count: 5,
         interview_type: 'onsite',
@@ -178,6 +224,11 @@ const ResumesList: React.FC = () => {
   };
 
   const handleInterviewOk = async () => {
+    if (!interviewRecord) {
+      message.error('请选择候选人');
+      return;
+    }
+
     try {
       const values = await interviewForm.validateFields();
       setSubmitting(true);
@@ -233,7 +284,7 @@ const ResumesList: React.FC = () => {
         message.success('面试安排成功');
         navigate(`/interviews/${res.id}/score`);
       }
-    } catch (error) {
+    } catch {
       message.error('安排面试失败');
     } finally {
       setSubmitting(false);
@@ -251,8 +302,6 @@ const ResumesList: React.FC = () => {
         skip_email: true  // 稍后手动发送
       });
 
-      setCreatedInterviewId(res.id);
-
       // 如果勾选发送邮件，则发送
       if (values.send_email && res.id) {
         try {
@@ -261,7 +310,7 @@ const ResumesList: React.FC = () => {
             content: values.content
           });
           message.success('面试安排成功，邮件已发送');
-        } catch (error) {
+        } catch {
           message.warning('面试安排成功，但邮件发送失败');
         }
       } else {
@@ -270,7 +319,7 @@ const ResumesList: React.FC = () => {
 
       setEmailPreviewVisible(false);
       navigate(`/interviews/${res.id}/score`);
-    } catch (error) {
+    } catch {
       message.error('安排面试失败');
     } finally {
       setSendingEmail(false);
@@ -295,7 +344,7 @@ const ResumesList: React.FC = () => {
           await request.put(`/resumes/${id}`, { status: 'rejected' });
           message.success('已标记为淘汰');
           fetchResumes();
-        } catch (error) {
+        } catch {
           message.error('操作失败');
         }
       },
@@ -314,7 +363,7 @@ const ResumesList: React.FC = () => {
           await request.delete(`/resumes/${id}`);
           message.success('删除成功');
           fetchResumes();
-        } catch (error) {
+        } catch {
           message.error('删除失败');
         }
       },
@@ -338,7 +387,7 @@ const ResumesList: React.FC = () => {
           message.success(`成功删除 ${selectedRowKeys.length} 份简历`);
           setSelectedRowKeys([]);
           fetchResumes();
-        } catch (error) {
+        } catch {
           message.error('批量删除失败');
         }
       },
@@ -366,14 +415,14 @@ const ResumesList: React.FC = () => {
           message.success(`成功淘汰 ${selectedRowKeys.length} 份简历`);
           setSelectedRowKeys([]);
           fetchResumes();
-        } catch (error) {
+        } catch {
           message.error('批量淘汰失败');
         }
       },
     });
   };
 
-  const handleReparse = (record: any) => {
+  const handleReparse = (record: ResumeRecord) => {
     Modal.confirm({
       title: '重新解析简历',
       content: '将重新调用 AI 解析该简历，并覆盖现有解析结果。',
@@ -384,7 +433,7 @@ const ResumesList: React.FC = () => {
           await request.post(`/resumes/${record.id}/reparse`);
           message.success('已开始重新解析');
           fetchResumes();
-        } catch (error) {
+        } catch {
           message.error('重新解析失败');
         }
       },
@@ -402,7 +451,7 @@ const ResumesList: React.FC = () => {
           await request.put(`/resumes/${id}`, { status: 'pending_review' });
           message.success('已恢复简历状态');
           fetchResumes();
-        } catch (error) {
+        } catch {
           message.error('操作失败');
         }
       },
@@ -452,7 +501,7 @@ const ResumesList: React.FC = () => {
 
       setIsModalVisible(false);
       fetchResumes();
-    } catch (error) {
+    } catch {
       message.error('上传失败');
     } finally {
       setSubmitting(false);
@@ -460,7 +509,7 @@ const ResumesList: React.FC = () => {
   };
 
   const uploadProps = {
-    onRemove: (file: any) => {
+    onRemove: (file: RcFile) => {
       setFileList((prev) => {
         const index = prev.indexOf(file);
         const newFileList = prev.slice();
@@ -468,7 +517,7 @@ const ResumesList: React.FC = () => {
         return newFileList;
       });
     },
-    beforeUpload: (file: any) => {
+    beforeUpload: (file: RcFile) => {
       const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
       if (!isPdf) {
         message.error('只允许上传 PDF 格式的文件');
@@ -495,7 +544,7 @@ const ResumesList: React.FC = () => {
       title: '匹配度', 
       dataIndex: 'match_score', 
       key: 'match_score', 
-      sorter: (a: any, b: any) => a.match_score - b.match_score,
+      sorter: (a: ResumeRecord, b: ResumeRecord) => a.match_score - b.match_score,
       render: (score: number) => (
         <span style={{ 
           color: score >= 80 ? '#10B981' : score >= 60 ? '#F59E0B' : '#EF4444',
@@ -509,7 +558,7 @@ const ResumesList: React.FC = () => {
       title: '状态', 
       dataIndex: 'status', 
       key: 'status',
-      render: (status: string, record: any) => {
+      render: (status: string, record: ResumeRecord) => {
         if (record?.parse_status === 'failed') {
           const tag = <Tag color="error">解析失败</Tag>;
           return record?.parse_error ? <Tooltip title={record.parse_error}>{tag}</Tooltip> : tag;
@@ -543,7 +592,7 @@ const ResumesList: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      render: (_, record: any) => {
+      render: (_: unknown, record: ResumeRecord) => {
         // 面试官只能查看和评审
         if (user?.role === 'interviewer') {
           return (
@@ -641,17 +690,43 @@ const ResumesList: React.FC = () => {
             <Form.Item label="候选人">
               <Input
                 placeholder="请输入姓名"
-                value={searchName}
-                onChange={e => setSearchName(e.target.value)}
+                value={filters.candidateName}
+                onChange={(event) => setFilters((current) => ({
+                  ...current,
+                  candidateName: event.target.value,
+                }))}
                 style={{ width: 200 }}
                 allowClear
               />
             </Form.Item>
+            <Form.Item label="应聘岗位">
+              <Select
+                placeholder="请选择应聘岗位"
+                value={filters.positionId}
+                onChange={(positionId) => setFilters((current) => ({
+                  ...current,
+                  positionId,
+                }))}
+                style={{ width: 220 }}
+                allowClear
+                showSearch
+                optionFilterProp="children"
+              >
+                {positions.map((position) => (
+                  <Select.Option key={position.id} value={position.id}>
+                    {position.title}
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
             <Form.Item label="状态">
               <Select
                 placeholder="请选择状态"
-                value={searchStatus}
-                onChange={val => setSearchStatus(val)}
+                value={filters.status}
+                onChange={(status) => setFilters((current) => ({
+                  ...current,
+                  status,
+                }))}
                 style={{ width: 150 }}
                 allowClear
               >
@@ -689,10 +764,7 @@ const ResumesList: React.FC = () => {
               </>
             )}
             <Form.Item>
-              <Space>
-                <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>搜索</Button>
-                <Button onClick={handleReset}>重置</Button>
-              </Space>
+              <Button onClick={() => setFilters(createEmptyResumeListFilters())}>重置</Button>
             </Form.Item>
           </Form>
         </Card>
@@ -734,7 +806,7 @@ const ResumesList: React.FC = () => {
             rules={[{ required: true, message: '请选择应聘岗位' }]}
           >
             <Select placeholder="请选择应聘岗位" size="large">
-              {positions.map((pos: any) => (
+              {positions.map((pos) => (
                 <Select.Option key={pos.id} value={pos.id}>{pos.title}</Select.Option>
               ))}
             </Select>
@@ -771,7 +843,7 @@ const ResumesList: React.FC = () => {
           <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 8 }}>
             <Text strong>该候选人已有 {existingInterviews.length} 轮面试：</Text>
             <div style={{ marginTop: 8 }}>
-              {existingInterviews.map((i: any) => (
+              {existingInterviews.map((i) => (
                 <Tag key={i.id} color={i.status === 'completed' ? 'green' : 'blue'}>
                   第{i.round || 1}轮 - {i.status === 'completed' ? '已完成' : '待面试'}
                 </Tag>
@@ -844,7 +916,7 @@ const ResumesList: React.FC = () => {
               size="large"
               style={{ width: '100%' }}
             >
-              {interviewers.map((user: any) => (
+              {interviewers.map((user) => (
                 <Select.Option key={user.id} value={user.id}>{user.full_name || user.email}</Select.Option>
               ))}
             </Select>
@@ -913,7 +985,7 @@ const ResumesList: React.FC = () => {
                       size="large"
                       style={{ width: '100%' }}
                     >
-                      {questionBanks.map((qb: any) => (
+                      {questionBanks.map((qb) => (
                         <Select.Option key={qb.id} value={qb.id}>{qb.name}</Select.Option>
                       ))}
                     </Select>

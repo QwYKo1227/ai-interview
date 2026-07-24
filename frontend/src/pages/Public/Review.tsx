@@ -4,9 +4,11 @@ import {
   Card, Descriptions, Button, Rate, Input, message, Spin, Result, Space, Tag, Typography, Divider
 } from 'antd';
 import {
-  CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined
+  CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined, DownloadOutlined, FileWordOutlined
 } from '@ant-design/icons';
 import request from '../../utils/request';
+import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
+import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -21,6 +23,7 @@ interface ResumeData {
   ai_review: string;
   resume_markdown: string;
   parsed_data: any;
+  file_available: boolean;
   position: {
     id: string;
     title: string;
@@ -45,6 +48,13 @@ const PublicReview: React.FC = () => {
   const [overallScore, setOverallScore] = useState<number>(0);
   const [recommendation, setRecommendation] = useState<string>('');
   const [comment, setComment] = useState<string>('');
+  const resumeFile = useAuthenticatedFileUrl(
+    resume?.file_available && token
+      ? `/api/public/review/${token}/resume-file`
+      : undefined,
+  );
+  const isPdf = resumeFile.contentType === 'application/pdf';
+  const pdfPreviewUrl = isPdf ? getMaximizedPdfPreviewUrl(resumeFile.url) : '';
 
   useEffect(() => {
     fetchResume();
@@ -149,8 +159,46 @@ const PublicReview: React.FC = () => {
   }
 
   return (
-    <div style={{ padding: 40, maxWidth: 1000, margin: '0 auto' }}>
-      <Card>
+    <div className="public-review-page">
+      <div className="public-review-layout">
+        <section className="public-review-preview" aria-label="简历原件预览">
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: '#fff' }}>
+            <Title level={5} style={{ margin: 0 }}>简历原件预览</Title>
+            {resumeFile.url && (
+              <Button type="primary" icon={<DownloadOutlined />} href={resumeFile.url} download>
+                下载原件
+              </Button>
+            )}
+          </div>
+          <div style={{ height: 'calc(100% - 65px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {resumeFile.loading ? (
+              <Space direction="vertical" align="center">
+                <Spin />
+                <Text type="secondary">加载预览中...</Text>
+              </Space>
+            ) : resumeFile.error ? (
+              <Text type="secondary">简历原件加载失败</Text>
+            ) : resumeFile.url ? (
+              isPdf ? (
+                <iframe
+                  src={pdfPreviewUrl}
+                  style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: '#fff' }}
+                  title="Resume Preview"
+                />
+              ) : (
+                <Space direction="vertical" align="center" style={{ padding: 32, textAlign: 'center' }}>
+                  <FileWordOutlined style={{ fontSize: 64, color: '#3b82f6' }} />
+                  <Text type="secondary">该文件格式暂不支持在线预览，请下载后查看</Text>
+                </Space>
+              )
+            ) : (
+              <Text type="secondary">暂无简历原件</Text>
+            )}
+          </div>
+        </section>
+
+        <main className="public-review-content">
+          <Card>
         <Title level={3}>简历审核</Title>
         <Text type="secondary">请仔细阅读简历信息并给出您的评审意见</Text>
 
@@ -266,7 +314,9 @@ const PublicReview: React.FC = () => {
             提交审核
           </Button>
         </div>
-      </Card>
+          </Card>
+        </main>
+      </div>
     </div>
   );
 };

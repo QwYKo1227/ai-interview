@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PublicReview from './Review'
 import request from '../../utils/request'
+import publicReviewCss from '../../index.css?inline'
 
 vi.mock('../../utils/request', () => ({
   default: { get: vi.fn(), post: vi.fn() },
@@ -19,6 +20,7 @@ const reviewPayload = {
     ai_review: '',
     resume_markdown: '',
     parsed_data: {},
+    file_available: true,
     position: {
       id: 'position-1',
       title: '测试工程师',
@@ -50,7 +52,21 @@ const renderReview = () => render(
 
 describe('PublicReview', () => {
   beforeEach(() => {
-    vi.mocked(request.get).mockReset().mockResolvedValue(reviewPayload)
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:resume-preview'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.mocked(request.get).mockReset().mockImplementation(async (url: string) => {
+      if (url === '/public/review/public-token') return reviewPayload
+      if (url === '/public/review/public-token/resume-file') {
+        return new Blob(['pdf'], { type: 'application/pdf' })
+      }
+      throw new Error(`Unexpected GET ${url}`)
+    })
     vi.mocked(request.post).mockReset().mockResolvedValue({
       message: 'Review submitted',
       review_id: 'review-1',
@@ -74,7 +90,12 @@ describe('PublicReview', () => {
       recommendation: 'recommend',
       comment: '',
     })
-    await waitFor(() => expect(request.get).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      const reviewLoads = vi.mocked(request.get).mock.calls.filter(
+        ([url]) => url === '/public/review/public-token',
+      )
+      expect(reviewLoads).toHaveLength(1)
+    })
     fireEvent.click(screen.getByRole('button', { name: '返回简历管理' }))
     expect(await screen.findByText('简历管理模块')).toBeInTheDocument()
   })
@@ -110,5 +131,61 @@ describe('PublicReview', () => {
 
     expect(await screen.findByText('评审链接已过期')).toBeInTheDocument()
     expect(screen.queryByText('简历审核')).not.toBeInTheDocument()
+  })
+
+  it('renders a PDF preview and download action in the left pane', async () => {
+    const { container } = renderReview()
+
+    await screen.findByText('测试候选人')
+    const layout = container.querySelector('.public-review-layout')
+    expect(layout).toBeInTheDocument()
+    expect(layout?.firstElementChild).toHaveClass('public-review-preview')
+    expect(container.querySelector('iframe[title="Resume Preview"]')).toHaveAttribute(
+      'src', expect.stringContaining('blob:resume-preview'),
+    )
+    expect(screen.getByRole('link', { name: /下载原件/ })).toHaveAttribute(
+      'href', 'blob:resume-preview',
+    )
+    expect(publicReviewCss).toMatch(/\.public-review-layout\s*{[^}]*display:\s*flex;/s)
+    expect(publicReviewCss).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.public-review-layout\s*{[^}]*flex-direction:\s*column;/)
+  })
+
+  it('uses download-only fallback for a non-PDF resume', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/public/review/public-token') return reviewPayload
+      return new Blob(['docx'], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+    })
+    renderReview()
+
+    expect(await screen.findByText('该文件格式暂不支持在线预览，请下载后查看')).toBeInTheDocument()
+    expect(screen.queryByTitle('Resume Preview')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /下载原件/ })).toBeInTheDocument()
+  })
+
+  it('shows an unavailable state without requesting file bytes', async () => {
+    vi.mocked(request.get).mockResolvedValueOnce({
+      ...reviewPayload,
+      resume: { ...reviewPayload.resume, file_available: false },
+    })
+    renderReview()
+
+    expect(await screen.findByText('暂无简历原件')).toBeInTheDocument()
+    expect(request.get).not.toHaveBeenCalledWith(
+      '/public/review/public-token/resume-file',
+      expect.anything(),
+    )
+  })
+
+  it('keeps the review form usable when the original file fails to load', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/public/review/public-token') return reviewPayload
+      throw new Error('file unavailable')
+    })
+    renderReview()
+
+    expect(await screen.findByText('简历原件加载失败')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '提交审核' })).toBeEnabled()
   })
 })

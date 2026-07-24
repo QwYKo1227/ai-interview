@@ -860,6 +860,9 @@ def test_platform_cannot_reset_non_admin_or_cross_tenant_account(
         is_active=True,
     )
     db.add(hr)
+    db.flush()
+    hr_id = hr.id
+    db.expunge(hr)
     db.commit()
 
     cross_tenant = platform_client.patch(
@@ -868,13 +871,13 @@ def test_platform_cannot_reset_non_admin_or_cross_tenant_account(
         json={"new_password": "Replacement123"},
     )
     non_admin = platform_client.patch(
-        f"/api/platform/tenants/{tenant_b_id}/admins/{hr.id}/password",
+        f"/api/platform/tenants/{tenant_b_id}/admins/{hr_id}/password",
         headers=headers,
         json={"new_password": "Replacement123"},
     )
 
-    assert cross_tenant.status_code == 404
-    assert non_admin.status_code == 404
+    assert cross_tenant.status_code == 404, cross_tenant.text
+    assert non_admin.status_code == 404, non_admin.text
 
 
 def test_platform_domain_maintenance_is_audited(

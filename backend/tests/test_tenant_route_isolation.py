@@ -980,6 +980,7 @@ def test_active_user_dependency_rejects_disabled_user(
         user_id=test_user.id,
         tenant_id=test_user.tenant_id,
         role=test_user.role.value,
+        credential_version=test_user.credential_version,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -997,6 +998,7 @@ def test_active_user_dependency_rejects_deleted_user(
         user_id=test_user.id,
         tenant_id=test_user.tenant_id,
         role=test_user.role.value,
+        credential_version=test_user.credential_version,
     )
     db.delete(test_user)
     db.commit()

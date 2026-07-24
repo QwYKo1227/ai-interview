@@ -7,6 +7,13 @@ export interface PlatformDomain {
   created_at: string;
 }
 
+export interface PlatformTenantAdmin {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  is_active: boolean;
+}
+
 export interface PlatformTenant {
   id: string;
   code: string;
@@ -20,6 +27,7 @@ export interface PlatformTenant {
 
 export interface PlatformTenantDetail extends PlatformTenant {
   domains: PlatformDomain[];
+  admins: PlatformTenantAdmin[];
 }
 
 export interface PlatformLoginPayload { email: string; password: string }

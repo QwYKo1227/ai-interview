@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import Login from './index';
 import request from '../../utils/request';
-import { resolveTenantSelection } from '../../utils/tenantRouting';
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -32,13 +31,8 @@ vi.mock('../../utils/request', () => ({
   default: { get: vi.fn(), post: vi.fn() },
 }));
 
-vi.mock('../../utils/tenantRouting', () => ({
-  resolveTenantSelection: vi.fn(),
-}));
-
 const mockGet = vi.mocked(request.get);
 const mockPost = vi.mocked(request.post);
-const mockResolveTenantSelection = vi.mocked(resolveTenantSelection);
 
 const renderLogin = () => render(<MemoryRouter><Login /></MemoryRouter>);
 
@@ -84,27 +78,16 @@ describe('Login', () => {
     expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
-  it('automatically selects and disables the company on a dedicated domain', async () => {
+  it('keeps company selection manual when the login host matches a company domain', async () => {
     const tenant = { id: '1', code: 'careray', name: '凯锐招聘', primary_domain: 'interview.careray.com' };
     mockGet.mockResolvedValueOnce([tenant]);
-    mockResolveTenantSelection.mockReturnValueOnce(tenant);
-
-    renderLogin();
-
-    const company = await screen.findByLabelText('公司');
-    expect(company).toHaveValue('careray');
-    expect(company).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('当前专属域名已锁定公司：凯锐招聘');
-  });
-
-  it.each(['未知域名', 'localhost'])('keeps company selectable for %s', async () => {
-    mockGet.mockResolvedValueOnce([{ id: '1', code: 'careray', name: '凯锐招聘' }]);
-    mockResolveTenantSelection.mockReturnValueOnce(undefined);
 
     renderLogin();
 
     const company = await screen.findByLabelText('公司');
     expect(company).toBeEnabled();
     expect(company).toHaveValue('');
+    expect(screen.queryByText(/当前专属域名已锁定公司/)).not.toBeInTheDocument();
   });
+
 });

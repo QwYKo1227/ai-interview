@@ -5,7 +5,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import type { LoginPayload, TenantSummary } from '../../types/tenant';
 import request from '../../utils/request';
-import { resolveTenantSelection } from '../../utils/tenantRouting';
 
 const { Title, Text } = Typography;
 
@@ -17,7 +16,6 @@ const Login: React.FC = () => {
   const [tenants, setTenants] = React.useState<TenantSummary[]>([]);
   const [tenantsLoading, setTenantsLoading] = React.useState(true);
   const [tenantsError, setTenantsError] = React.useState(false);
-  const [lockedTenant, setLockedTenant] = React.useState<TenantSummary>();
 
   React.useEffect(() => {
     if (!authLoading && isAuthenticated) {
@@ -32,12 +30,8 @@ const Login: React.FC = () => {
       const response = await request.get('/auth/tenants') as TenantSummary[];
       const nextTenants = Array.isArray(response) ? response : [];
       setTenants(nextTenants);
-      const matchedTenant = resolveTenantSelection(window.location.hostname, nextTenants);
-      setLockedTenant(matchedTenant);
-      if (matchedTenant) form.setFieldValue('tenant_code', matchedTenant.code);
     } catch {
       setTenants([]);
-      setLockedTenant(undefined);
       setTenantsError(true);
     } finally {
       setTenantsLoading(false);
@@ -86,19 +80,13 @@ const Login: React.FC = () => {
           <Form.Item label="公司" name="tenant_code" rules={[{ required: true, message: '请选择公司' }]}>
             <select
               aria-label="公司"
-              disabled={tenantsLoading || Boolean(lockedTenant)}
+              disabled={tenantsLoading}
               style={{ width: '100%', minHeight: 40, padding: '6px 12px', border: '1px solid var(--border-color)', borderRadius: 'var(--border-radius-sm)', background: 'var(--surface-color)', color: 'var(--text-primary)' }}
             >
               <option value="">{tenantsLoading ? '正在加载公司…' : '请选择公司'}</option>
               {tenants.map((tenant) => <option key={tenant.id} value={tenant.code}>{tenant.name}</option>)}
             </select>
           </Form.Item>
-
-          {lockedTenant && (
-            <div role="status" style={{ marginTop: -8, marginBottom: 16, padding: '8px 12px', borderRadius: 'var(--border-radius-sm)', color: '#1D4ED8', background: '#EFF6FF', fontSize: 13 }}>
-              当前专属域名已锁定公司：{lockedTenant.name}
-            </div>
-          )}
 
           <Form.Item label="邮箱" name="email" rules={[{ required: true, message: '请输入邮箱' }]}>
             <Input prefix={<UserOutlined />} placeholder="admin@example.com" autoComplete="email" />

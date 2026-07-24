@@ -12,10 +12,10 @@ from app.core.tenant_dependencies import get_current_user_dep, get_tenant_contex
 from app.core.tenant_context import TenantContext
 from app.core.rate_limit import enforce_rate_limit
 from app.core.host_policy import resolve_request_origin
+from app.core.password_policy import validate_password_policy
 from sqlalchemy.exc import IntegrityError
 from datetime import timedelta
 from typing import List
-import re
 
 
 LOGIN_ERROR = "公司、账号或密码错误"
@@ -30,27 +30,13 @@ router = APIRouter(
 get_current_user = get_current_user_dep
 
 def validate_password_strength(password: str) -> None:
-    """
-    验证密码强度
-    - 至少8个字符
-    - 必须包含字母
-    - 必须包含数字
-    """
-    if len(password) < 8:
+    try:
+        validate_password_policy(password)
+    except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码长度至少8位"
-        )
-    if not re.search(r'[A-Za-z]', password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码必须包含字母"
-        )
-    if not re.search(r'\d', password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码必须包含数字"
-        )
+            detail=str(error),
+        ) from None
 
 def _login_error() -> HTTPException:
     return HTTPException(
@@ -107,6 +93,7 @@ def _token_for_user(tenant: Tenant, user: User) -> Token:
         user_id=user.id,
         tenant_id=tenant.id,
         role=user.role.value,
+        credential_version=user.credential_version,
         expires_delta=access_token_expires,
     )
     return Token(access_token=access_token, token_type="bearer")
@@ -248,6 +235,7 @@ def change_password(
     # 验证新密码强度
     validate_password_strength(payload.new_password)
     current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.credential_version += 1
     db.add(current_user)
     db.commit()
     return {"success": True}

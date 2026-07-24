@@ -431,6 +431,39 @@
   border-bottom: 1px solid var(--platform-line);
 }
 
+.platform-tenant-detail__admins-heading {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__admins-heading .platform-eyebrow {
+  margin-bottom: 6px;
+}
+
+.platform-tenant-detail__admins {
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--platform-line);
+}
+
+.platform-tenant-detail__admins .ant-list-item {
+  padding: 14px 4px;
+}
+
+.platform-tenant-detail__admins .ant-list-item-meta-title {
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+}
+
+.platform-tenant-detail__admin-alert {
+  margin: 12px 0;
+  border-radius: 0 !important;
+}
+
+.platform-tenant-detail__modal-description {
+  color: var(--platform-muted);
+  font-size: 13px;
+}
+
 .platform-tenant-detail__domains-heading .platform-eyebrow {
   margin-bottom: 6px;
 }

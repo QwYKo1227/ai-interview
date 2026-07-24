@@ -52,6 +52,9 @@ const tenant = {
     { id: 'domain-primary', domain: 'interview.careray.com', is_primary: true, created_at: '2026-07-01T00:00:00Z' },
     { id: 'domain-secondary', domain: 'careers.careray.com', is_primary: false, created_at: '2026-07-02T00:00:00Z' },
   ],
+  admins: [
+    { id: 'admin-1', email: 'admin@careray.com', full_name: '企业管理员', is_active: true },
+  ],
 };
 
 const domainActions = (domain: string) => {
@@ -81,6 +84,117 @@ describe('TenantDetailDrawer', () => {
     expect(screen.getAllByRole('button', { name: '删除' })).toHaveLength(1);
     expect(screen.getByText('DNS、Hosts 和 Caddy 配置需要另行维护。')).toBeInTheDocument();
     expect(mockGet).toHaveBeenCalledWith('/platform/tenants/tenant-careray');
+  });
+
+  it('shows the tenant admin and resets its password', async () => {
+    mockGet.mockResolvedValueOnce(tenant);
+    mockPatch.mockResolvedValueOnce({ success: true });
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+
+    expect(await screen.findByText('admin@careray.com')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), 'Replacement123');
+    await user.type(screen.getByLabelText('确认新密码'), 'Replacement123');
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
+      '/platform/tenants/tenant-careray/admins/admin-1/password',
+      { new_password: 'Replacement123' },
+    ));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '重置企业管理员密码' })).not.toBeInTheDocument());
+  });
+
+  it('does not submit mismatched administrator passwords', async () => {
+    mockGet.mockResolvedValueOnce(tenant);
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await user.click(await screen.findByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), 'Replacement123');
+    await user.type(screen.getByLabelText('确认新密码'), 'DifferentPass123');
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    expect(await screen.findByText('两次输入的密码不一致')).toBeInTheDocument();
+    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the password modal open when reset fails', async () => {
+    mockGet.mockResolvedValueOnce(tenant);
+    mockPatch.mockRejectedValueOnce(new Error('network unavailable'));
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await user.click(await screen.findByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), 'Replacement123');
+    await user.type(screen.getByLabelText('确认新密码'), 'Replacement123');
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    expect(await screen.findByText('密码重置失败，请稍后重试')).toBeInTheDocument();
+    expect(screen.getByLabelText('新密码')).toBeInTheDocument();
+  });
+
+  it('accepts a Unicode letter password that satisfies the backend policy', async () => {
+    mockGet.mockResolvedValueOnce({ ...tenant, admins: [tenant.admins[0]] });
+    mockPatch.mockResolvedValueOnce({ success: true });
+    const user = userEvent.setup();
+    const unicodePassword = '密码密码密码密码1';
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await user.click(await screen.findByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), unicodePassword);
+    await user.type(screen.getByLabelText('确认新密码'), unicodePassword);
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
+      '/platform/tenants/tenant-careray/admins/admin-1/password',
+      { new_password: unicodePassword },
+    ));
+  });
+
+  it('rejects a Unicode number that is not a decimal digit', async () => {
+    mockGet.mockResolvedValueOnce({ ...tenant, admins: [tenant.admins[0]] });
+    const user = userEvent.setup();
+    const nonDecimalPassword = '密码密码密码Ⅳ';
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await user.click(await screen.findByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), nonDecimalPassword);
+    await user.type(screen.getByLabelText('确认新密码'), nonDecimalPassword);
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    expect(await screen.findByText('密码须为 12–72 个 UTF-8 字节，并包含字母和数字')).toBeInTheDocument();
+    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
+  it('does not let an older reset request close a newly opened admin modal', async () => {
+    mockGet.mockResolvedValueOnce({
+      ...tenant,
+      admins: [
+        ...tenant.admins,
+        { id: 'admin-2', email: 'backup-admin@careray.com', full_name: '备用管理员', is_active: true },
+      ],
+    });
+    let resolveReset: ((value: { success: boolean }) => void) | undefined;
+    mockPatch.mockReturnValueOnce(new Promise((resolve) => { resolveReset = resolve; }));
+    const user = userEvent.setup();
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await screen.findByText('admin@careray.com');
+    await user.click(screen.getAllByRole('button', { name: '重置密码' })[0]);
+    await user.type(screen.getByLabelText('新密码'), 'Replacement123');
+    await user.type(screen.getByLabelText('确认新密码'), 'Replacement123');
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+    await user.click(screen.getByRole('button', { name: /取\s*消/ }));
+    await user.click(screen.getAllByRole('button', { name: '重置密码' })[1]);
+    expect(screen.getByText('目标账号：backup-admin@careray.com')).toBeInTheDocument();
+
+    resolveReset?.({ success: true });
+    await Promise.resolve();
+
+    expect(screen.getByText('目标账号：backup-admin@careray.com')).toBeInTheDocument();
+    expect(screen.getByLabelText('新密码')).toBeInTheDocument();
   });
 
   it('adds a normalized domain then refreshes the detail and parent list', async () => {

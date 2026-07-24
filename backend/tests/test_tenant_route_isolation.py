@@ -241,6 +241,7 @@ def tenant_b_headers(tenant_b_user: User) -> dict[str, str]:
         user_id=tenant_b_user.id,
         tenant_id=tenant_b_user.tenant_id,
         role=tenant_b_user.role.value,
+        credential_version=tenant_b_user.credential_version,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -268,6 +269,7 @@ def tenant_b_admin_headers(tenant_b_admin: User) -> dict[str, str]:
         user_id=tenant_b_admin.id,
         tenant_id=tenant_b_admin.tenant_id,
         role=tenant_b_admin.role.value,
+        credential_version=tenant_b_admin.credential_version,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -978,6 +980,7 @@ def test_active_user_dependency_rejects_disabled_user(
         user_id=test_user.id,
         tenant_id=test_user.tenant_id,
         role=test_user.role.value,
+        credential_version=test_user.credential_version,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -995,6 +998,7 @@ def test_active_user_dependency_rejects_deleted_user(
         user_id=test_user.id,
         tenant_id=test_user.tenant_id,
         role=test_user.role.value,
+        credential_version=test_user.credential_version,
     )
     db.delete(test_user)
     db.commit()

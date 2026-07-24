@@ -81,6 +81,8 @@ def get_current_user_dep(
     )
     if user is None:
         raise _credentials_exception()
+    if user.credential_version != claims.credential_version:
+        raise _credentials_exception()
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

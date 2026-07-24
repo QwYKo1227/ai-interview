@@ -47,6 +47,7 @@ class User(TenantScopedMixin, Base):
     full_name = Column(String)
     role = Column(Enum(UserRole), default=UserRole.HR)
     is_active = Column(Boolean, default=True)
+    credential_version = Column(Integer, nullable=False, default=1, server_default="1")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

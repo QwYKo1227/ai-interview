@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.password_policy import validate_password_policy
 from app.models.tenant_models import TenantDomain, TenantStatus
 
 
@@ -64,8 +65,18 @@ class TenantDomainResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TenantAdminResponse(BaseModel):
+    id: UUID
+    email: EmailStr
+    full_name: Optional[str] = None
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TenantDetailResponse(TenantResponse):
     domains: list[TenantDomainResponse]
+    admins: list[TenantAdminResponse]
 
 
 class PlatformLoginRequest(BaseModel):
@@ -84,6 +95,17 @@ class TenantStatusUpdate(BaseModel):
     status: TenantStatus
 
     model_config = ConfigDict(extra="forbid")
+
+
+class TenantAdminPasswordResetRequest(BaseModel):
+    new_password: str
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return validate_password_policy(value)
 
 
 class TenantOnboardingRequest(BaseModel):
@@ -127,13 +149,4 @@ class TenantOnboardingRequest(BaseModel):
     @field_validator("admin_password")
     @classmethod
     def validate_admin_password(cls, value: str) -> str:
-        password_bytes = len(value.encode("utf-8"))
-        if password_bytes < 12:
-            raise ValueError("密码必须至少为 12 个 UTF-8 字节")
-        if password_bytes > 72:
-            raise ValueError("密码最多为 72 个 UTF-8 字节")
-        if not any(character.isalpha() for character in value):
-            raise ValueError("password must include a letter")
-        if not any(character.isdigit() for character in value):
-            raise ValueError("password must include a digit")
-        return value
+        return validate_password_policy(value)

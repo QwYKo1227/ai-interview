@@ -16,6 +16,7 @@ from app.models.tenant_models import PlatformUser
 from app.models.tenant_models import Tenant, TenantDomain
 from app.schemas.tenant import (
     PlatformLoginRequest,
+    TenantAdminPasswordResetRequest,
     TenantDetailResponse,
     TenantDomainCreate,
     TenantDomainResponse,
@@ -32,12 +33,15 @@ from app.services.tenant_service import (
     TENANT_NOT_FOUND_MESSAGE,
     TENANT_ONBOARDING_MESSAGE,
     TenantActorError,
+    TenantAdminNotFoundError,
     TenantConflictError,
     TenantNotFoundError,
     TenantOnboardingError,
     add_tenant_domain,
     create_tenant_with_admin,
     delete_tenant_domain,
+    get_tenant_detail as get_tenant_detail_service,
+    reset_tenant_admin_password,
     set_tenant_status,
     update_tenant_domain,
 )
@@ -157,22 +161,49 @@ def list_tenants(
 @router.get("/tenants/{tenant_id}", response_model=TenantDetailResponse)
 def get_tenant_detail(
     tenant_id: str,
-    _claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
+    claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
     db: Session = Depends(get_unscoped_db),
 ):
-    tenant = db.query(Tenant).filter(Tenant.id == _parse_tenant_id(tenant_id)).first()
-    if tenant is None:
-        raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE)
-    _attach_primary_domain(db, tenant)
-    return TenantDetailResponse.model_validate(
-        {
-            **TenantResponse.model_validate(tenant).model_dump(),
-            "domains": db.query(TenantDomain)
-            .filter(TenantDomain.tenant_id == tenant.id)
-            .order_by(TenantDomain.created_at, TenantDomain.domain)
-            .all(),
-        }
-    )
+    try:
+        return get_tenant_detail_service(
+            db,
+            tenant_id=_parse_tenant_id(tenant_id),
+            actor_id=claims.user_id,
+        )
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
+    except TenantActorError:
+        raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
+    except TenantOnboardingError:
+        raise HTTPException(status_code=500, detail=TENANT_ONBOARDING_MESSAGE) from None
+
+
+@router.patch("/tenants/{tenant_id}/admins/{user_id}/password")
+def patch_tenant_admin_password(
+    tenant_id: str,
+    user_id: str,
+    payload: TenantAdminPasswordResetRequest,
+    claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
+    db: Session = Depends(get_unscoped_db),
+):
+    try:
+        reset_tenant_admin_password(
+            db,
+            tenant_id=_parse_tenant_id(tenant_id),
+            user_id=_parse_tenant_id(user_id),
+            payload=payload,
+            actor_id=claims.user_id,
+        )
+        return {"success": True}
+    except (TenantAdminNotFoundError, TenantNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Tenant administrator not found",
+        ) from None
+    except TenantActorError:
+        raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
+    except TenantOnboardingError:
+        raise HTTPException(status_code=500, detail=TENANT_ONBOARDING_MESSAGE) from None
 
 
 @router.post(

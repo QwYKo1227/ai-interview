@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from app.config.tenant_session import (
@@ -17,9 +18,14 @@ from app.models.tenant_models import (
     TenantStatus,
 )
 from app.schemas.tenant import (
+    TenantAdminPasswordResetRequest,
+    TenantAdminResponse,
+    TenantDetailResponse,
     TenantDomainCreate,
+    TenantDomainResponse,
     TenantDomainUpdate,
     TenantOnboardingRequest,
+    TenantResponse,
 )
 
 
@@ -43,10 +49,15 @@ class TenantNotFoundError(TenantServiceError):
     pass
 
 
+class TenantAdminNotFoundError(TenantServiceError):
+    pass
+
+
 TENANT_CONFLICT_MESSAGE = "Tenant code or domain already exists"
 TENANT_ACTOR_MESSAGE = "Platform actor is not authorized"
 TENANT_ONBOARDING_MESSAGE = "Tenant onboarding failed"
 TENANT_NOT_FOUND_MESSAGE = "Tenant not found"
+TENANT_ADMIN_NOT_FOUND_MESSAGE = "Tenant administrator not found"
 PRIMARY_DOMAIN_MESSAGE = "Primary domain must be replaced before removal"
 DOMAIN_CONFLICT_MESSAGE = "Domain already exists"
 
@@ -197,6 +208,126 @@ def set_tenant_status(
         raise
     except Exception:
         raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
+
+
+def get_tenant_detail(
+    db: TenantCapableSession,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+) -> TenantDetailResponse:
+    bound_tenant_id = None
+    try:
+        with db.begin():
+            _require_platform_actor(db, actor_id)
+            tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+            if tenant is None:
+                raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
+            domains = (
+                db.query(TenantDomain)
+                .filter(TenantDomain.tenant_id == tenant_id)
+                .order_by(TenantDomain.created_at, TenantDomain.domain)
+                .all()
+            )
+            tenant.primary_domain = next(
+                (domain.domain for domain in domains if domain.is_primary), None
+            )
+            set_tenant_context(db, tenant_id)
+            bound_tenant_id = tenant_id
+            admin_rows = (
+                db.query(User.id, User.email, User.full_name, User.is_active)
+                .filter(
+                    User.tenant_id == tenant_id,
+                    User.role == UserRole.ADMIN,
+                )
+                .order_by(User.email)
+                .all()
+            )
+            response = TenantDetailResponse.model_validate(
+                {
+                    **TenantResponse.model_validate(tenant).model_dump(),
+                    "domains": [
+                        TenantDomainResponse.model_validate(domain)
+                        for domain in domains
+                    ],
+                    "admins": [
+                        TenantAdminResponse(
+                            id=row.id,
+                            email=row.email,
+                            full_name=row.full_name,
+                            is_active=row.is_active,
+                        )
+                        for row in admin_rows
+                    ],
+                }
+            )
+        return response
+    except (TenantActorError, TenantNotFoundError):
+        raise
+    except Exception:
+        raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
+    finally:
+        if bound_tenant_id is not None:
+            _release_platform_onboarding_context(db, bound_tenant_id)
+
+
+def reset_tenant_admin_password(
+    db: TenantCapableSession,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    payload: TenantAdminPasswordResetRequest,
+    actor_id: UUID,
+) -> None:
+    bound_tenant_id = None
+    try:
+        with db.begin():
+            _require_platform_actor(db, actor_id)
+            if db.query(Tenant.id).filter(Tenant.id == tenant_id).first() is None:
+                raise TenantNotFoundError(TENANT_NOT_FOUND_MESSAGE)
+            set_tenant_context(db, tenant_id)
+            bound_tenant_id = tenant_id
+            password_hash = get_password_hash(payload.new_password)
+            target = db.execute(
+                update(User)
+                .where(
+                    User.id == user_id,
+                    User.tenant_id == tenant_id,
+                    User.role == UserRole.ADMIN,
+                )
+                .values(
+                    hashed_password=password_hash,
+                    credential_version=User.credential_version + 1,
+                )
+                .returning(User.email, User.credential_version)
+                .execution_options(synchronize_session=False)
+            ).first()
+            if target is None:
+                raise TenantAdminNotFoundError(TENANT_ADMIN_NOT_FOUND_MESSAGE)
+            db.add(
+                PlatformAuditLog(
+                    actor_id=actor_id,
+                    action="tenant.admin_password_reset",
+                    target_tenant_id=tenant_id,
+                    details={
+                        "target_user_id": str(user_id),
+                        "target_email": target.email,
+                        "credential_version": target.credential_version,
+                    },
+                )
+            )
+            db.flush()
+    except (
+        TenantActorError,
+        TenantAdminNotFoundError,
+        TenantNotFoundError,
+    ):
+        raise
+    except Exception:
+        raise TenantOnboardingError(TENANT_ONBOARDING_MESSAGE) from None
+    finally:
+        if bound_tenant_id is not None:
+            _release_platform_onboarding_context(db, bound_tenant_id)
 
 
 def add_tenant_domain(

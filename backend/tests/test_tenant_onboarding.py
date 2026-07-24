@@ -152,6 +152,11 @@ def test_onboarding_password_rejects_values_outside_utf8_byte_range(password):
         make_onboarding_request(admin_password=password)
 
 
+def test_onboarding_password_rejects_non_decimal_unicode_number():
+    with pytest.raises(ValidationError):
+        make_onboarding_request(admin_password="PasswordPass²")
+
+
 def test_duplicate_domain_returns_fixed_conflict_without_partial_rows(
     db, platform_admin
 ):
@@ -463,6 +468,7 @@ def test_platform_and_tenant_tokens_are_mutually_rejected(
         user_id=user.id,
         tenant_id=tenant.id,
         role=user.role.value,
+        credential_version=user.credential_version,
     )
 
     platform_response = platform_client.post(
@@ -690,7 +696,7 @@ def test_status_change_for_missing_tenant_returns_fixed_404(
 
 
 def test_platform_can_list_and_inspect_tenants_with_domains(
-    platform_client, platform_admin
+    platform_client, db, platform_admin
 ):
     headers = platform_login(platform_client, platform_admin)
     created = platform_client.post(
@@ -699,6 +705,16 @@ def test_platform_can_list_and_inspect_tenants_with_domains(
         json=make_onboarding_request().model_dump(mode="json"),
     )
     tenant_id = created.json()["id"]
+    db.add(
+        User(
+            tenant_id=UUID(tenant_id),
+            email="hr@careray-cloud.example",
+            hashed_password=get_password_hash("StrongPassword123"),
+            role=UserRole.HR,
+            is_active=True,
+        )
+    )
+    db.commit()
 
     listing = platform_client.get("/api/platform/tenants", headers=headers)
     detail = platform_client.get(
@@ -708,6 +724,14 @@ def test_platform_can_list_and_inspect_tenants_with_domains(
     assert listing.status_code == 200
     assert [item["id"] for item in listing.json()] == [tenant_id]
     assert detail.status_code == 200
+    assert detail.json()["admins"] == [
+        {
+            "id": detail.json()["admins"][0]["id"],
+            "email": "admin@careray-cloud.example",
+            "full_name": None,
+            "is_active": True,
+        }
+    ]
     assert detail.json()["domains"] == [
         {
             "id": detail.json()["domains"][0]["id"],
@@ -716,6 +740,179 @@ def test_platform_can_list_and_inspect_tenants_with_domains(
             "created_at": detail.json()["domains"][0]["created_at"],
         }
     ]
+
+
+def test_platform_reset_tenant_admin_password_invalidates_old_credentials(
+    platform_client, db, platform_admin
+):
+    platform_headers = platform_login(platform_client, platform_admin)
+    tenant_id = platform_client.post(
+        "/api/platform/tenants",
+        headers=platform_headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()["id"]
+    detail = platform_client.get(
+        f"/api/platform/tenants/{tenant_id}", headers=platform_headers
+    ).json()
+    admin_id = detail["admins"][0]["id"]
+    old_login = platform_client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": "careray-cloud",
+            "email": "admin@careray-cloud.example",
+            "password": "StrongPassword123",
+        },
+    )
+    old_headers = {
+        "Authorization": f"Bearer {old_login.json()['access_token']}"
+    }
+
+    reset = platform_client.patch(
+        f"/api/platform/tenants/{tenant_id}/admins/{admin_id}/password",
+        headers=platform_headers,
+        json={"new_password": "Replacement123"},
+    )
+
+    assert reset.status_code == 200
+    assert reset.json() == {"success": True}
+    assert platform_client.get("/api/auth/me", headers=old_headers).status_code == 401
+    assert platform_client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": "careray-cloud",
+            "email": "admin@careray-cloud.example",
+            "password": "StrongPassword123",
+        },
+    ).status_code == 401
+    assert platform_client.post(
+        "/api/auth/login",
+        json={
+            "tenant_code": "careray-cloud",
+            "email": "admin@careray-cloud.example",
+            "password": "Replacement123",
+        },
+    ).status_code == 200
+    audit = (
+        db.query(PlatformAuditLog)
+        .filter(PlatformAuditLog.action == "tenant.admin_password_reset")
+        .one()
+    )
+    assert audit.actor_id == platform_admin.id
+    assert audit.target_tenant_id == UUID(tenant_id)
+    assert audit.details["target_user_id"] == admin_id
+    assert "password" not in str(audit.details).lower()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"new_password": "Short1"},
+        {"new_password": "NoDigitsAllowed"},
+        {"new_password": "PasswordPass²"},
+        {"new_password": "Replacement123", "unexpected": "secret-value"},
+    ],
+)
+def test_platform_admin_password_reset_rejects_invalid_payload_without_echoing_it(
+    platform_client, platform_admin, payload
+):
+    headers = platform_login(platform_client, platform_admin)
+    tenant_id = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()["id"]
+    admin_id = platform_client.get(
+        f"/api/platform/tenants/{tenant_id}", headers=headers
+    ).json()["admins"][0]["id"]
+
+    response = platform_client.patch(
+        f"/api/platform/tenants/{tenant_id}/admins/{admin_id}/password",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid platform request"}
+    assert all(str(value) not in response.text for value in payload.values())
+
+
+def test_platform_cannot_reset_non_admin_or_cross_tenant_account(
+    platform_client, db, platform_admin
+):
+    headers = platform_login(platform_client, platform_admin)
+    tenant_a_id = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()["id"]
+    tenant_b_id = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request(
+            code="photonthix-cloud",
+            name="Photonthix Cloud",
+            primary_domain="interview.photonthix-cloud.example",
+            admin_email="admin@photonthix-cloud.example",
+        ).model_dump(mode="json"),
+    ).json()["id"]
+    tenant_a_admin_id = platform_client.get(
+        f"/api/platform/tenants/{tenant_a_id}", headers=headers
+    ).json()["admins"][0]["id"]
+    hr = User(
+        tenant_id=UUID(tenant_b_id),
+        email="hr@photonthix-cloud.example",
+        hashed_password=get_password_hash("StrongPassword123"),
+        role=UserRole.HR,
+        is_active=True,
+    )
+    db.add(hr)
+    db.flush()
+    hr_id = hr.id
+    db.expunge(hr)
+    db.commit()
+
+    cross_tenant = platform_client.patch(
+        f"/api/platform/tenants/{tenant_b_id}/admins/{tenant_a_admin_id}/password",
+        headers=headers,
+        json={"new_password": "Replacement123"},
+    )
+    non_admin = platform_client.patch(
+        f"/api/platform/tenants/{tenant_b_id}/admins/{hr_id}/password",
+        headers=headers,
+        json={"new_password": "Replacement123"},
+    )
+
+    assert cross_tenant.status_code == 404, cross_tenant.text
+    assert non_admin.status_code == 404, non_admin.text
+
+
+def test_platform_password_reset_failure_releases_tenant_context(
+    platform_client, db, platform_admin, monkeypatch
+):
+    headers = platform_login(platform_client, platform_admin)
+    tenant_id = platform_client.post(
+        "/api/platform/tenants",
+        headers=headers,
+        json=make_onboarding_request().model_dump(mode="json"),
+    ).json()["id"]
+    admin_id = platform_client.get(
+        f"/api/platform/tenants/{tenant_id}", headers=headers
+    ).json()["admins"][0]["id"]
+
+    def fail_hash(_password):
+        raise RuntimeError("hashing unavailable")
+
+    monkeypatch.setattr(tenant_service, "get_password_hash", fail_hash)
+    response = platform_client.patch(
+        f"/api/platform/tenants/{tenant_id}/admins/{admin_id}/password",
+        headers=headers,
+        json={"new_password": "Replacement123"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": TENANT_ONBOARDING_MESSAGE}
+    with pytest.raises(RuntimeError, match="tenant-scoped"):
+        get_tenant_id(db)
 
 
 def test_platform_domain_maintenance_is_audited(

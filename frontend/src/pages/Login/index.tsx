@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Button, Card, Form, Input, Typography, message } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import type { LoginPayload, TenantSummary } from '../../types/tenant';
 import request from '../../utils/request';
@@ -114,6 +114,19 @@ const Login: React.FC = () => {
             </Button>
           </Form.Item>
         </Form>
+        <div
+          style={{
+            borderTop: '1px solid var(--border-color)',
+            marginTop: 8,
+            paddingTop: 18,
+            textAlign: 'center',
+          }}
+        >
+          <Link to="/platform/login" style={{ display: 'inline-block', fontWeight: 600, padding: '4px 8px' }}>
+            平台管理员入口
+          </Link>
+          <div><Text type="secondary">用于公司开通、域名与企业管理员管理</Text></div>
+        </div>
       </Card>
     </div>
   );

@@ -10,6 +10,7 @@ import {
   createEmptyResumeListFilters,
   type ResumeListFilters,
 } from './filters';
+import { buildAuthenticatedResumeUpload } from './uploadRequest';
 
 const { Title, Text } = Typography;
 
@@ -459,30 +460,15 @@ const ResumesList: React.FC = () => {
 
       setSubmitting(true);
       
-      // Determine if single or batch upload
-      if (fileList.length === 1) {
-        const formData = new FormData();
-        formData.append('position_id', values.position_id);
-        formData.append('file', fileList[0]);
-        await request.post('/resumes', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-        message.success('简历上传成功，AI正在解析中...');
-      } else {
-        const formData = new FormData();
-        formData.append('position_id', values.position_id);
-        fileList.forEach(file => {
-          formData.append('files', file);
-        });
-        await request.post('/resumes/batch', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-        message.success(`成功上传 ${fileList.length} 份简历，AI正在解析中...`);
-      }
+      const upload = buildAuthenticatedResumeUpload(values.position_id, fileList);
+      await request.post(upload.url, upload.formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      message.success(fileList.length === 1
+        ? '简历上传成功，AI正在解析中...'
+        : `成功上传 ${fileList.length} 份简历，AI正在解析中...`);
 
       setIsModalVisible(false);
       fetchResumes();

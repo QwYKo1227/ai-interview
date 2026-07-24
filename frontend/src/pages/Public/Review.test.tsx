@@ -74,4 +74,19 @@ describe('PublicReview', () => {
     })
     await waitFor(() => expect(request.get).toHaveBeenCalledTimes(1))
   })
+
+  it('uses semantic border colors for every recommendation option', async () => {
+    renderReview()
+
+    await screen.findByText('测试候选人')
+    expect(screen.getByRole('button', { name: 'check-circle推荐' })).toHaveStyle({
+      borderColor: '#52c41a',
+    })
+    expect(screen.getByRole('button', { name: 'close-circle不推荐' })).toHaveStyle({
+      borderColor: '#ff4d4f',
+    })
+    expect(screen.getByRole('button', { name: 'clock-circle待定' })).toHaveStyle({
+      borderColor: '#faad14',
+    })
+  })
 })

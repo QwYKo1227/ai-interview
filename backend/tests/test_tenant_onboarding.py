@@ -803,6 +803,7 @@ def test_platform_reset_tenant_admin_password_invalidates_old_credentials(
     [
         {"new_password": "Short1"},
         {"new_password": "NoDigitsAllowed"},
+        {"new_password": "PasswordPass²"},
         {"new_password": "Replacement123", "unexpected": "secret-value"},
     ],
 )

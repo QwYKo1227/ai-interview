@@ -219,7 +219,7 @@ const TenantDetailDrawer = ({ tenantId, open, onClose, onChanged }: TenantDetail
       validator: (_: unknown, value?: string) => {
         if (!value) return Promise.resolve();
         const bytes = new TextEncoder().encode(value).length;
-        if (bytes < 12 || bytes > 72 || !/\p{L}/u.test(value) || !/\p{N}/u.test(value)) {
+        if (bytes < 12 || bytes > 72 || !/\p{L}/u.test(value) || !/\p{Nd}/u.test(value)) {
           return Promise.reject(new Error('密码须为 12–72 个 UTF-8 字节，并包含字母和数字'));
         }
         return Promise.resolve();

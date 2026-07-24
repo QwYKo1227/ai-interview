@@ -153,6 +153,21 @@ describe('TenantDetailDrawer', () => {
     ));
   });
 
+  it('rejects a Unicode number that is not a decimal digit', async () => {
+    mockGet.mockResolvedValueOnce({ ...tenant, admins: [tenant.admins[0]] });
+    const user = userEvent.setup();
+    const nonDecimalPassword = '密码密码密码Ⅳ';
+
+    render(<TenantDetailDrawer onChanged={vi.fn()} onClose={vi.fn()} open tenantId="tenant-careray" />);
+    await user.click(await screen.findByRole('button', { name: '重置密码' }));
+    await user.type(screen.getByLabelText('新密码'), nonDecimalPassword);
+    await user.type(screen.getByLabelText('确认新密码'), nonDecimalPassword);
+    await user.click(screen.getByRole('button', { name: '确认重置' }));
+
+    expect(await screen.findByText('密码须为 12–72 个 UTF-8 字节，并包含字母和数字')).toBeInTheDocument();
+    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
   it('does not let an older reset request close a newly opened admin modal', async () => {
     mockGet.mockResolvedValueOnce({
       ...tenant,

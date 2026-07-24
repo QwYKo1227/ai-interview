@@ -6,6 +6,6 @@ def validate_password_policy(password: str) -> str:
         raise ValueError("密码最多为 72 个 UTF-8 字节")
     if not any(character.isalpha() for character in password):
         raise ValueError("密码必须包含字母")
-    if not any(character.isdigit() for character in password):
+    if not any(character.isdecimal() for character in password):
         raise ValueError("密码必须包含数字")
     return password

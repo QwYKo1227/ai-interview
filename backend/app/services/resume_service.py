@@ -28,7 +28,7 @@ import logging
 from app.core.observability import background_task_context
 
 from app.config.tenant_session import get_tenant_id, tenant_session
-from app.services.public_token_service import issue_public_token, revoke_public_tokens
+from app.services.public_token_service import issue_public_token
 
 logger = logging.getLogger(__name__)
 
@@ -531,17 +531,22 @@ def check_duplicate_resume(db: Session, email: Optional[str], contact: Optional[
 # ==================== 部门评审 ====================
 
 def get_public_review_payload(db: Session, review: DepartmentReview) -> Dict[str, Any]:
+    if review.is_completed:
+        return {"completed": True}
+
     resume = db.query(Resume).options(joinedload(Resume.position)).filter(
         Resume.id == review.resume_id
     ).first()
     if resume is None:
         raise HTTPException(status_code=404, detail="Public resource not found")
     return {
+        "completed": False,
         "resume": {
             "id": str(resume.id), "candidate_name": resume.candidate_name,
             "email": resume.email, "contact": resume.contact,
             "match_score": resume.match_score, "ai_review": resume.ai_review,
             "resume_markdown": resume.resume_markdown, "parsed_data": resume.parsed_data,
+            "file_available": resume.file_id is not None,
             "status": resume.status.value if resume.status else None,
             "position": {
                 "id": str(resume.position.id), "title": resume.position.title,
@@ -587,7 +592,6 @@ def submit_public_department_review(
     if transition.rowcount != 1:
         db.rollback()
         raise HTTPException(status_code=404, detail="Public resource not found")
-    revoke_public_tokens(db, tenant_id, "department_review", review_id)
     incomplete = db.query(DepartmentReview).filter(
         DepartmentReview.resume_id == resume_id,
         DepartmentReview.is_completed.is_(False),

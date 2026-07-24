@@ -262,16 +262,32 @@ def test_review_public_route_uses_precreated_review_token_not_reviewer_query(db,
     assert legacy.status_code == 404
     response = client.get(f"/api/public/review/{raw}")
     assert response.status_code == 200
+    assert response.json()["completed"] is False
+    assert response.json()["resume"]["file_available"] is False
     submitted = client.post(
         f"/api/public/review/{raw}/submit",
         json={"technical_score": 8, "overall_score": 8, "recommendation": "recommend", "comment": "ok"},
     )
     assert submitted.status_code == 200
+
+    reopened = client.get(f"/api/public/review/{raw}")
+    assert reopened.status_code == 200
+    assert reopened.json() == {"completed": True}
+
     repeated = client.post(
         f"/api/public/review/{raw}/submit",
         json={"technical_score": 9, "overall_score": 9, "recommendation": "recommend"},
     )
     assert repeated.status_code == 404
+    token_record = db.query(PublicAccessToken).filter(
+        PublicAccessToken.token_hash == hash_token(raw)
+    ).one()
+    assert token_record.revoked_at is None
+
+    token_record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    expired = client.get(f"/api/public/review/{raw}")
+    assert expired.status_code == 410
 
 
 def test_public_positions_are_tenant_scoped_and_legacy_global_list_is_closed(db, tenant_a, tenant_b):

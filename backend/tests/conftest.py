@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 # 设置测试环境变量，避免连接真实数据库 - 必须在导入 app 模块之前
 os.environ["APP_ENV"] = "test"
 os.environ["DATABASE_URL"] = "sqlite:///file:test_db?mode=memory&cache=shared&uri=true"
+os.environ["UNIFIED_ENTRY_HOSTS"] = "testserver"
 
 import pytest
 from fastapi.testclient import TestClient

@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
+from app.core.security import verify_password
 from app.models.file_models import StoredFile
 from app.models.base import Base
 from app.models.tenant_catalog import COMPOSITE_TENANT_REFERENCES, TENANT_TABLES
@@ -26,6 +27,12 @@ from scripts.backfill_legacy_uploads import (
 from scripts.create_platform_admin import (
     PlatformAdminInputError,
     create_platform_admin,
+)
+from scripts.reset_platform_admin_password import (
+    PlatformAdminNotFoundError,
+    _prompt_for_password,
+    _resolve_platform_admin_email,
+    reset_platform_admin_password,
 )
 from scripts.verify_tenant_migration import run_cli, verify_tenant_integrity
 
@@ -56,6 +63,7 @@ def test_rollout_scripts_are_directly_executable_from_backend_root():
     commands = (
         ("verify_tenant_migration.py", [], 1),
         ("create_platform_admin.py", [], 1),
+        ("reset_platform_admin_password.py", [], 1),
         ("backfill_legacy_uploads.py", ["--help"], 0),
         ("snapshot_tenant_counts.py", ["--help"], 0),
         ("legacy_backfill_gate.py", ["--help"], 0),
@@ -939,6 +947,93 @@ def test_platform_admin_rejects_weak_or_bcrypt_oversized_password(db, password):
     with pytest.raises(PlatformAdminInputError):
         create_platform_admin(db, "platform@example.com", password)
     assert db.execute(text("SELECT count(*) FROM platform_users")).scalar_one() == 0
+
+
+def test_platform_admin_password_reset_normalizes_email_and_replaces_hash(db):
+    original_password = "StrongPlatformPassword123"
+    new_password = "DifferentPlatformPassword456"
+    created = create_platform_admin(db, "platform@example.com", original_password)
+    original_hash = created.user.hashed_password
+
+    reset = reset_platform_admin_password(
+        db,
+        "  PLATFORM@Example.COM ",
+        new_password,
+    )
+
+    assert reset.id == created.user.id
+    assert reset.hashed_password != original_hash
+    assert verify_password(new_password, reset.hashed_password)
+    assert not verify_password(original_password, reset.hashed_password)
+
+
+def test_platform_admin_password_reset_requires_existing_account(db):
+    with pytest.raises(PlatformAdminNotFoundError):
+        reset_platform_admin_password(
+            db,
+            "missing@example.com",
+            "StrongPlatformPassword123",
+        )
+    assert db.execute(text("SELECT count(*) FROM platform_users")).scalar_one() == 0
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["short1", "NoDigitsInThisPassword", "123456789012345", "密" * 30 + "1a"],
+)
+def test_platform_admin_password_reset_rejects_invalid_password(db, password):
+    created = create_platform_admin(
+        db,
+        "platform@example.com",
+        "StrongPlatformPassword123",
+    )
+    original_hash = created.user.hashed_password
+
+    with pytest.raises(PlatformAdminInputError):
+        reset_platform_admin_password(db, "platform@example.com", password)
+
+    db.refresh(created.user)
+    assert created.user.hashed_password == original_hash
+
+
+def test_platform_admin_password_reset_infers_the_only_account(db):
+    created = create_platform_admin(
+        db,
+        "platform@example.com",
+        "StrongPlatformPassword123",
+    )
+
+    assert _resolve_platform_admin_email(db, None) == created.user.email
+
+
+def test_platform_admin_password_reset_requires_email_for_multiple_accounts(db):
+    create_platform_admin(
+        db,
+        "first@example.com",
+        "StrongPlatformPassword123",
+    )
+    create_platform_admin(
+        db,
+        "second@example.com",
+        "StrongPlatformPassword456",
+    )
+
+    with pytest.raises(PlatformAdminInputError):
+        _resolve_platform_admin_email(db, None)
+
+
+def test_platform_admin_password_prompt_requires_matching_values():
+    answers = iter(("StrongPlatformPassword123", "DifferentPassword456"))
+
+    with pytest.raises(PlatformAdminInputError):
+        _prompt_for_password(lambda _prompt: next(answers))
+
+
+def test_platform_admin_password_prompt_returns_confirmed_value():
+    password = "StrongPlatformPassword123"
+    answers = iter((password, password))
+
+    assert _prompt_for_password(lambda _prompt: next(answers)) == password
 
 
 def _candidate(tenant_id: UUID, row_id: UUID, legacy_path: Path):

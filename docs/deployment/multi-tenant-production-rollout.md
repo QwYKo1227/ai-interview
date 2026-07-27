@@ -844,6 +844,14 @@ docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm \
 unset PLATFORM_ADMIN_PASSWORD
 ```
 
+平台管理员忘记密码时，在部署目录执行一条命令：
+
+```bash
+make reset-platform-admin-password
+```
+
+命令会自动构建包含维护脚本的后端镜像，并隐藏输入新密码两次。若系统中只有一个平台管理员，脚本会自动识别邮箱；存在多个账号时，为避免重置错误账号会安全失败。脚本不会创建账号或自动启用已停用账号。看到“平台管理员密码已修改”才视为成功。现有平台令牌最长仍可使用 60 分钟。
+
 启动后端和前端，先不开放外部流量：
 
 ```bash

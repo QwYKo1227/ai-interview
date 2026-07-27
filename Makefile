@@ -1,4 +1,4 @@
-.PHONY: db dev-backend dev-frontend test-backend build-frontend docker-prod
+.PHONY: db dev-backend dev-frontend test-backend build-frontend docker-prod reset-platform-admin-password
 
 db:
 	docker compose up -d postgres
@@ -17,3 +17,9 @@ build-frontend:
 
 docker-prod:
 	docker compose -f docker-compose.prod.yml up --build
+
+reset-platform-admin-password:
+	@docker compose --env-file .env -f docker-compose.prod.yml build backend-migrate
+	@docker compose --env-file .env -f docker-compose.prod.yml run --rm \
+		backend-migrate \
+		python scripts/reset_platform_admin_password.py

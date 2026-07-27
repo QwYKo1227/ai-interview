@@ -330,6 +330,45 @@ def test_interviewer_cannot_download_or_publish_unassigned_resume_file(
     assert db.query(PublicAccessToken).count() == 0
 
 
+@pytest.mark.parametrize("assignment", ["primary", "panel"])
+def test_assigned_interviewer_can_download_resume_file(
+    db, tenant_a, test_interview, test_interviewer, tmp_path, assignment
+):
+    test_interview.interviewer_id = (
+        test_interviewer.id if assignment == "primary" else None
+    )
+    test_interview.panel_members = (
+        [str(test_interviewer.id)] if assignment == "panel" else []
+    )
+    stored = save_upload_file(
+        _upload(content=b"assigned resume"),
+        tenant_a.id,
+        "resumes",
+        root=tmp_path,
+        resource_type="resume",
+        resource_id=test_interview.resume_id,
+    )
+    resume = db.query(Resume).filter(Resume.id == test_interview.resume_id).one()
+    resume.file_id = stored.id
+    resume.file_path = f"/api/files/{stored.id}"
+    db.add(stored)
+    db.commit()
+
+    with TestClient(
+        _app(db, tenant_a, tmp_path, current_user=test_interviewer)
+    ) as client:
+        response = client.get(f"/api/files/{stored.id}")
+        publish = client.post(
+            f"/api/files/{stored.id}/public-token",
+            json={"ttl_seconds": 120},
+        )
+
+    assert response.status_code == 200
+    assert response.content == b"assigned resume"
+    assert publish.status_code == 404
+    assert db.query(PublicAccessToken).count() == 0
+
+
 def _unassigned_interviewer(db, tenant_id):
     user = User(
         tenant_id=tenant_id,

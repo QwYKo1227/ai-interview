@@ -43,7 +43,13 @@ def _response(record: StoredFile) -> FileResponse:
     )
 
 
-def _can_access_file(db: Session, current_user: User, record: StoredFile) -> bool:
+def _can_access_file(
+    db: Session,
+    current_user: User,
+    record: StoredFile,
+    *,
+    allow_assigned_resume: bool = False,
+) -> bool:
     """Authorize the linked business resource, not merely a guessable file UUID."""
 
     if record.resource_id is None or record.resource_type is None:
@@ -76,7 +82,16 @@ def _can_access_file(db: Session, current_user: User, record: StoredFile) -> boo
         return interview is not None and can_access_interview(db, interview, current_user)
     if not resource_exists:
         return False
-    return role in {UserRole.ADMIN.value, UserRole.HR.value}
+    if role in {UserRole.ADMIN.value, UserRole.HR.value}:
+        return True
+    if record.resource_type != "resume" or not allow_assigned_resume:
+        return False
+    interviews = (
+        db.query(Interview)
+        .filter(Interview.resume_id == record.resource_id)
+        .all()
+    )
+    return any(can_access_interview(db, interview, current_user) for interview in interviews)
 
 
 @router.get("/{file_id}")
@@ -88,7 +103,9 @@ def download_file(
     record = db.query(StoredFile).filter(
         StoredFile.id == file_id, StoredFile.tenant_id == current_user.tenant_id
     ).first()
-    if record is None or not _can_access_file(db, current_user, record):
+    if record is None or not _can_access_file(
+        db, current_user, record, allow_assigned_resume=True
+    ):
         raise _not_found()
     return _response(record)
 

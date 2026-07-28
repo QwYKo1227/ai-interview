@@ -91,6 +91,20 @@ class ResumeResponse(ResumeBase):
     created_at: datetime
     position: Optional[PositionResponse] = None
     department_reviews: Optional[List["DepartmentReviewResponse"]] = None
+    duplicate_resume_count: int = 1
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DuplicateResumeSummary(BaseModel):
+    id: UUID
+    candidate_name: Optional[str] = None
+    position_id: UUID
+    position: Optional[PositionResponse] = None
+    status: ResumeStatus
+    match_score: Optional[int] = None
+    parse_status: Optional[str] = None
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -136,6 +150,10 @@ class DepartmentReviewResponse(DepartmentReviewBase):
     public_token: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DepartmentReviewLinkResponse(BaseModel):
+    public_token: str
 
 
 # HR决策相关 Schema

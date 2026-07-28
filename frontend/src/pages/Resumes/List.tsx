@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
-import { Table, Button, Space, message, Tag, Modal, Tooltip, Typography, Form, Select, Upload, Input, DatePicker, InputNumber, Card, Row, Col, Checkbox } from 'antd';
+import { Table, Button, Space, message, Tag, Modal, Tooltip, Typography, Form, Select, Upload, Input, DatePicker, InputNumber, Card, Row, Col, Checkbox, Popover, Spin } from 'antd';
 import { PlusOutlined, EyeOutlined, TeamOutlined, DeleteOutlined, UploadOutlined, ReloadOutlined, CloseCircleOutlined, UndoOutlined, SolutionOutlined, SyncOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
@@ -38,11 +38,26 @@ interface InterviewerOption {
 
 interface ResumeRecord {
   id: string;
+  candidate_name?: string;
+  contact?: string;
   position_id: string;
+  position?: PositionOption | null;
   status: string;
-  match_score: number;
+  match_score?: number | null;
   parse_status?: string;
   parse_error?: string;
+  created_at?: string;
+  duplicate_resume_count?: number;
+}
+
+interface DuplicateResumeSummary {
+  id: string;
+  candidate_name?: string;
+  position?: PositionOption | null;
+  status: string;
+  match_score?: number | null;
+  parse_status?: string;
+  created_at: string;
 }
 
 interface InterviewSummary {
@@ -59,6 +74,125 @@ interface EmailPreview {
   to_email: string;
   candidate_name: string;
 }
+
+const duplicateStatusLabels: Record<string, string> = {
+  pending_screening: '待初筛',
+  pending_review: '待评审',
+  pending_dept_review: '待部门评审',
+  pending_hr_decision: '待HR决策',
+  auto_rejected_pending_review: 'AI建议淘汰',
+  pending_interview: '待面试',
+  interview_passed: '面试通过',
+  interview_failed: '面试未通过',
+  offer_pending: 'Offer待确认',
+  offer_accepted: '已接受Offer',
+  offer_rejected: '已拒绝Offer',
+  waitlist: '备选',
+  completed: '已完成',
+  rejected: '已淘汰',
+  hired: '已录用',
+};
+
+const DuplicateResumePopover: React.FC<{
+  resume: ResumeRecord;
+  onNavigate: (resumeId: string) => void;
+}> = ({ resume, onNavigate }) => {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [duplicates, setDuplicates] = useState<DuplicateResumeSummary[]>([]);
+  const [loadError, setLoadError] = useState(false);
+
+  const loadDuplicates = async () => {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const result = await request.get(
+        `/resumes/${resume.id}/duplicates`,
+      ) as DuplicateResumeSummary[];
+      setDuplicates(result);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) {
+      void loadDuplicates();
+    }
+  };
+
+  const content = (
+    <div style={{ width: 340, maxHeight: 360, overflowY: 'auto' }}>
+      {loading && (
+        <div style={{ padding: 24, textAlign: 'center' }}>
+          <Spin size="small" />
+        </div>
+      )}
+      {!loading && loadError && (
+        <Text type="danger">加载其他简历失败，请稍后重试</Text>
+      )}
+      {!loading && !loadError && duplicates.length === 0 && (
+        <Text type="secondary">暂无其他简历</Text>
+      )}
+      {!loading && !loadError && duplicates.map((duplicate) => (
+        <Button
+          key={duplicate.id}
+          type="text"
+          block
+          onClick={() => {
+            setOpen(false);
+            onNavigate(duplicate.id);
+          }}
+          style={{
+            height: 'auto',
+            padding: '10px 8px',
+            textAlign: 'left',
+            borderBottom: '1px solid #F1F5F9',
+          }}
+        >
+          <div style={{ width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+              <Text strong>{duplicate.position?.title || '未关联岗位'}</Text>
+              <Text type="secondary">
+                {duplicate.match_score != null ? `${duplicate.match_score}分` : '-'}
+              </Text>
+            </div>
+            <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+              <Text type="secondary">
+                {new Date(duplicate.created_at).toLocaleDateString('zh-CN')}
+              </Text>
+              <Text type="secondary">
+                {duplicateStatusLabels[duplicate.status] || duplicate.status}
+              </Text>
+            </div>
+          </div>
+        </Button>
+      ))}
+    </div>
+  );
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={handleOpenChange}
+      trigger="click"
+      placement="bottomLeft"
+      title={`其他 ${Math.max((resume.duplicate_resume_count || 1) - 1, 0)} 份简历`}
+      content={content}
+    >
+      <Tag
+        color="blue"
+        style={{ marginInlineEnd: 0, cursor: 'pointer' }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {resume.duplicate_resume_count}份简历
+      </Tag>
+    </Popover>
+  );
+};
 
 const ResumesList: React.FC = () => {
   const { user } = useAuth();
@@ -92,6 +226,7 @@ const ResumesList: React.FC = () => {
   filtersRef.current = filters;
   const userRef = useRef(user);
   userRef.current = user;
+  const pendingUploadedResumeIdsRef = useRef(new Set<string>());
   const [requestCoordinator] = useState(createLatestRequestCoordinator);
 
   const fetchResumes = useCallback(async (silent = false) => {
@@ -109,6 +244,25 @@ const ResumesList: React.FC = () => {
           if (!silent) setLoading(true);
         },
         onSuccess: (res) => {
+          const finishedUploads = res.filter(
+            (resume) => (
+              pendingUploadedResumeIdsRef.current.has(resume.id)
+              && resume.parse_status !== 'processing'
+            ),
+          );
+          const duplicateCandidates = new Set(
+            finishedUploads
+              .filter((resume) => (resume.duplicate_resume_count || 1) > 1)
+              .map((resume) => `${resume.candidate_name || '未知候选人'}\u001f${resume.contact || ''}`),
+          );
+          if (duplicateCandidates.size > 0) {
+            message.warning(
+              `发现 ${duplicateCandidates.size} 名候选人存在多份简历，可点击姓名旁提示快速查看`,
+            );
+          }
+          finishedUploads.forEach((resume) => {
+            pendingUploadedResumeIdsRef.current.delete(resume.id);
+          });
           setData(res);
           setPollingEnabled(res.some((resume) => resume.parse_status === 'processing'));
         },
@@ -430,15 +584,17 @@ const ResumesList: React.FC = () => {
     });
   };
 
-  const handleRestore = (id: string) => {
+  const handleRestore = (record: ResumeRecord) => {
+    const restoredStatus = 'pending_review';
+    const restoredStatusText = '待评审';
     Modal.confirm({
       title: '确认恢复',
-      content: '确定要恢复这份简历吗？恢复后状态将变为“待评审”。',
+      content: `确定要恢复这份简历吗？恢复后状态将变为“${restoredStatusText}”。`,
       okText: '确认',
       cancelText: '取消',
       onOk: async () => {
         try {
-          await request.put(`/resumes/${id}`, { status: 'pending_review' });
+          await request.put(`/resumes/${record.id}`, { status: restoredStatus });
           message.success('已恢复简历状态');
           fetchResumes();
         } catch {
@@ -465,10 +621,13 @@ const ResumesList: React.FC = () => {
       setSubmitting(true);
       
       const upload = buildAuthenticatedResumeUpload(values.position_id, fileList);
-      await request.post(upload.url, upload.formData, {
+      const uploadedResumes = await request.post(upload.url, upload.formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+      }) as ResumeRecord[];
+      uploadedResumes.forEach((resume) => {
+        pendingUploadedResumeIdsRef.current.add(resume.id);
       });
       message.success(fileList.length === 1
         ? '简历上传成功，AI正在解析中...'
@@ -511,7 +670,17 @@ const ResumesList: React.FC = () => {
       title: '候选人', 
       dataIndex: 'candidate_name', 
       key: 'candidate_name',
-      render: (text: string) => <span style={{ fontWeight: 500, color: '#0F172A' }}>{text || '解析中...'}</span>
+      render: (text: string, record: ResumeRecord) => (
+        <Space size={6}>
+          <span style={{ fontWeight: 500, color: '#0F172A' }}>{text || '解析中...'}</span>
+          {(record.duplicate_resume_count || 1) > 1 && (
+            <DuplicateResumePopover
+              resume={record}
+              onNavigate={(resumeId) => navigate(`/resumes/${resumeId}`)}
+            />
+          )}
+        </Space>
+      )
     },
     { title: '联系方式', dataIndex: 'contact', key: 'contact' },
     { title: '应聘岗位', dataIndex: ['position', 'title'], key: 'position' },
@@ -602,9 +771,9 @@ const ResumesList: React.FC = () => {
                 <Button type="text" icon={<SolutionOutlined style={{ color: '#8B5CF6' }} />} onClick={() => navigate(`/resumes/${record.id}`)} />
               </Tooltip>
             )}
-            {record.status === 'rejected' && (
+            {['rejected', 'waitlist'].includes(record.status) && (
               <Tooltip title="恢复">
-                 <Button type="text" icon={<UndoOutlined />} onClick={() => handleRestore(record.id)} />
+                <Button type="text" icon={<UndoOutlined />} onClick={() => handleRestore(record)} />
               </Tooltip>
             )}
             {(user?.role === 'admin' || user?.role === 'hr') && (
@@ -750,7 +919,7 @@ const ResumesList: React.FC = () => {
         dataSource={data} 
         loading={loading} 
         rowKey="id" 
-        pagination={{ pageSize: 10, showSizeChanger: true }}
+        pagination={{ defaultPageSize: 10, showSizeChanger: true }}
         rowSelection={{
           selectedRowKeys,
           onChange: setSelectedRowKeys,

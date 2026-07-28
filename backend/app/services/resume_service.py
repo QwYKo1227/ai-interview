@@ -409,6 +409,88 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
     )
     return resume
 
+
+COMPLETED_PARSE_STATUSES = ("success", "completed")
+INVALID_DUPLICATE_IDENTITY_VALUES = {
+    "",
+    "-",
+    "n/a",
+    "none",
+    "unknown",
+    "未知",
+    "未填写",
+    "未识别",
+    "解析中...",
+    "解析失败",
+}
+
+
+def _duplicate_identity(resume: Resume) -> Optional[tuple[str, str]]:
+    """Return the exact, trim-only identity used for duplicate resume grouping."""
+    if resume.parse_status not in COMPLETED_PARSE_STATUSES:
+        return None
+
+    candidate_name = (resume.candidate_name or "").strip()
+    contact = (resume.contact or "").strip()
+    if (
+        candidate_name.casefold() in INVALID_DUPLICATE_IDENTITY_VALUES
+        or contact.casefold() in INVALID_DUPLICATE_IDENTITY_VALUES
+    ):
+        return None
+    return candidate_name, contact
+
+
+def _annotate_duplicate_resume_counts(
+    db: Session, resumes: List[Resume]
+) -> List[Resume]:
+    """Attach duplicate counts without expanding every row with history details."""
+    identities = {
+        (resume.tenant_id, identity[0], identity[1])
+        for resume in resumes
+        if (identity := _duplicate_identity(resume)) is not None
+    }
+    counts: Dict[tuple[UUID, str, str], int] = {}
+
+    if identities:
+        conditions = [
+            and_(
+                Resume.tenant_id == tenant_id,
+                func.trim(Resume.candidate_name) == candidate_name,
+                func.trim(Resume.contact) == contact,
+                Resume.parse_status.in_(COMPLETED_PARSE_STATUSES),
+            )
+            for tenant_id, candidate_name, contact in identities
+        ]
+        rows = (
+            db.query(
+                Resume.tenant_id,
+                func.trim(Resume.candidate_name),
+                func.trim(Resume.contact),
+                func.count(Resume.id),
+            )
+            .filter(or_(*conditions))
+            .group_by(
+                Resume.tenant_id,
+                func.trim(Resume.candidate_name),
+                func.trim(Resume.contact),
+            )
+            .all()
+        )
+        counts = {
+            (tenant_id, candidate_name, contact): count
+            for tenant_id, candidate_name, contact, count in rows
+        }
+
+    for resume in resumes:
+        identity = _duplicate_identity(resume)
+        resume.duplicate_resume_count = (
+            counts.get((resume.tenant_id, identity[0], identity[1]), 1)
+            if identity
+            else 1
+        )
+    return resumes
+
+
 def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: str = None, status: str = None, position_id: UUID = None, reviewer_id: UUID = None):
     query = db.query(Resume).options(joinedload(Resume.position))
 
@@ -428,10 +510,38 @@ def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: st
 
     query = query.order_by(Resume.created_at.desc())
 
-    return query.offset(skip).limit(limit).all()
+    resumes = query.offset(skip).limit(limit).all()
+    return _annotate_duplicate_resume_counts(db, resumes)
 
 def get_resume(db: Session, resume_id: UUID):
     return db.query(Resume).options(joinedload(Resume.position)).filter(Resume.id == resume_id).first()
+
+
+def get_duplicate_resumes(db: Session, resume_id: UUID) -> Optional[List[Resume]]:
+    """Return other parsed resumes with the same trim-only name and contact."""
+    resume = db.query(Resume).filter(Resume.id == resume_id).first()
+    if resume is None:
+        return None
+
+    identity = _duplicate_identity(resume)
+    if identity is None:
+        return []
+
+    candidate_name, contact = identity
+    return (
+        db.query(Resume)
+        .options(joinedload(Resume.position))
+        .filter(
+            Resume.id != resume.id,
+            Resume.tenant_id == resume.tenant_id,
+            func.trim(Resume.candidate_name) == candidate_name,
+            func.trim(Resume.contact) == contact,
+            Resume.parse_status.in_(COMPLETED_PARSE_STATUSES),
+        )
+        .order_by(Resume.created_at.desc())
+        .all()
+    )
+
 
 def update_resume(db: Session, resume_id: UUID, resume: ResumeUpdate):
     db_resume = db.query(Resume).filter(Resume.id == resume_id).first()
@@ -693,6 +803,62 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
         db.commit()
 
     return review
+
+
+def reassign_department_reviewer(
+    db: Session,
+    resume_id: UUID,
+    review_id: UUID,
+    reviewer_id: UUID,
+) -> DepartmentReview:
+    review = db.query(DepartmentReview).filter(
+        DepartmentReview.id == review_id,
+        DepartmentReview.resume_id == resume_id,
+    ).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="评审记录不存在")
+    if review.is_completed:
+        raise HTTPException(status_code=400, detail="已完成的评审不可修改评审人")
+
+    reviewer = db.query(User).filter(User.id == reviewer_id).first()
+    if reviewer is None:
+        raise HTTPException(status_code=404, detail="评审人不存在")
+
+    duplicate = db.query(DepartmentReview).filter(
+        DepartmentReview.resume_id == resume_id,
+        DepartmentReview.reviewer_id == reviewer_id,
+        DepartmentReview.id != review_id,
+    ).first()
+    if duplicate is not None:
+        raise HTTPException(status_code=400, detail="该评审人已被指派")
+
+    review.reviewer_id = reviewer_id
+    review.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(review)
+    review.public_token = reissue_department_review_link(db, resume_id, review_id)
+    return review
+
+
+def reissue_department_review_link(
+    db: Session,
+    resume_id: UUID,
+    review_id: UUID,
+) -> str:
+    review = db.query(DepartmentReview).filter(
+        DepartmentReview.id == review_id,
+        DepartmentReview.resume_id == resume_id,
+    ).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="评审记录不存在")
+
+    return issue_public_token(
+        db,
+        review.tenant_id,
+        "department_review",
+        review.id,
+        datetime.now(timezone.utc) + timedelta(days=14),
+    )
 
 
 def get_department_reviews(db: Session, resume_id: UUID) -> List[DepartmentReview]:
@@ -999,7 +1165,7 @@ def override_rejection(db: Session, resume_id: UUID, hr_id: UUID) -> Resume:
         raise HTTPException(status_code=400, detail="当前状态不允许此操作")
 
     # 恢复到部门评审流程
-    resume.status = ResumeStatus.PENDING_DEPT_REVIEW
+    resume.status = ResumeStatus.PENDING_REVIEW
     resume.reject_reason_category = None
     resume.reject_reason_detail = None
 

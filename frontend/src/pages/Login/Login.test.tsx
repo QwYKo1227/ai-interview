@@ -108,4 +108,31 @@ describe('Login', () => {
     expect(await screen.findByText('平台登录页面')).toBeInTheDocument();
   });
 
+  it('returns to the protected review link after login', async () => {
+    mockGet.mockResolvedValueOnce([
+      { id: '1', code: 'careray', name: '凯锐招聘' },
+    ]);
+    mockPost.mockResolvedValueOnce({ access_token: 'token' });
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={[{
+        pathname: '/login',
+        state: { from: { pathname: '/public/review/review-token' } },
+      }]}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/public/review/:token" element={<div>受保护的评审页面</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.selectOptions(await screen.findByLabelText('公司'), 'careray');
+    await user.type(screen.getByLabelText('邮箱'), 'reviewer@example.com');
+    await user.type(screen.getByLabelText('密码'), 'Password123');
+    await user.click(screen.getByRole('button', { name: /登\s*录/ }));
+
+    expect(await screen.findByText('受保护的评审页面')).toBeInTheDocument();
+  });
+
 });

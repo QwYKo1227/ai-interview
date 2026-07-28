@@ -5,7 +5,7 @@ import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import dayjs from 'dayjs';
-import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined, LinkOutlined } from '@ant-design/icons';
 import RejectReasonSelector, { REJECT_REASONS } from '../../components/RejectReasonSelector';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
@@ -55,11 +55,14 @@ const ResumeDetail: React.FC = () => {
   const [reviewers, setReviewers] = useState<any[]>([]);
   const [isDeptReviewModalVisible, setIsDeptReviewModalVisible] = useState(false);
   const [isAssignReviewerModalVisible, setIsAssignReviewerModalVisible] = useState(false);
+  const [isChangeReviewerModalVisible, setIsChangeReviewerModalVisible] = useState(false);
+  const [selectedReview, setSelectedReview] = useState<any>(null);
   const [isRejectModalVisible, setIsRejectModalVisible] = useState(false);
   const [isHRDecisionModalVisible, setIsHRDecisionModalVisible] = useState(false);
   const [isSubmitReviewModalVisible, setIsSubmitReviewModalVisible] = useState(false);
   const [myReview, setMyReview] = useState<any>(null);
   const [submitReviewForm] = Form.useForm();
+  const [changeReviewerForm] = Form.useForm();
 
   useEffect(() => {
     if (id) {
@@ -234,6 +237,25 @@ const ResumeDetail: React.FC = () => {
     });
   };
 
+  // 将备选简历恢复为待评审
+  const handleRestoreWaitlist = async () => {
+    Modal.confirm({
+      title: '恢复简历',
+      content: '确定要将此备选简历恢复到评审流程吗？',
+      okText: '确认',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await request.put(`/resumes/${id}`, { status: 'pending_review' });
+          message.success('已恢复到待评审状态');
+          fetchResume(id!);
+        } catch (error) {
+          message.error('操作失败');
+        }
+      }
+    });
+  };
+
   // 指派评审人
   const copyReviewLink = async (rawToken: string) => {
     const url = `${window.location.origin}/public/review/${rawToken}`;
@@ -284,6 +306,53 @@ const ResumeDetail: React.FC = () => {
         </Space>
       ),
     });
+  };
+
+  const openChangeReviewer = (review: any) => {
+    setSelectedReview(review);
+    changeReviewerForm.setFieldsValue({ reviewer_id: review.reviewer_id });
+    setIsChangeReviewerModalVisible(true);
+  };
+
+  const handleChangeReviewer = async () => {
+    if (!selectedReview) return;
+    try {
+      const values = await changeReviewerForm.validateFields();
+      const formData = new FormData();
+      formData.append('reviewer_id', values.reviewer_id);
+      await request.put(
+        `/resumes/${id}/department-reviews/${selectedReview.id}/reviewer`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      );
+      message.success('部门评审人已修改');
+      setIsChangeReviewerModalVisible(false);
+      setSelectedReview(null);
+      changeReviewerForm.resetFields();
+      fetchResume(id!);
+      fetchDeptReviewSummary(id!);
+    } catch (error) {
+      message.error('修改评审人失败');
+    }
+  };
+
+  const handleShowReviewLink = async (review: any) => {
+    try {
+      const result = await request.post(
+        `/resumes/${id}/department-reviews/${review.id}/review-link`,
+      );
+      if (!result?.public_token) {
+        throw new Error('missing public token');
+      }
+      showReviewLinks([{
+        reviewerId: review.reviewer_id,
+        reviewerName: review.reviewer_name || '评审人',
+        token: result.public_token,
+        link: `${window.location.origin}/public/review/${result.public_token}`,
+      }], []);
+    } catch (error) {
+      message.error('获取评审链接失败');
+    }
   };
 
   const handleAssignReviewer = async () => {
@@ -466,10 +535,15 @@ const ResumeDetail: React.FC = () => {
         <Button key="confirm-reject" danger icon={<CloseCircleOutlined />} onClick={() => setIsRejectModalVisible(true)}>确认淘汰</Button>,
         <Button key="override" type="primary" icon={<CheckCircleOutlined />} onClick={handleOverrideRejection}>恢复评审</Button>
       );
-    } else if (resume.status === 'pending_review') {
-      // 待评审状态：可以直接HR决策，指派评审人在部门评审卡片头部
+    } else if (resume.status === 'waitlist') {
       buttons.push(
-        <Button key="hr-decision" icon={<SolutionOutlined />} onClick={() => setIsHRDecisionModalVisible(true)}>直接决策</Button>
+        <Button key="restore-waitlist" type="primary" icon={<CheckCircleOutlined />} onClick={handleRestoreWaitlist}>恢复评审</Button>
+      );
+    } else if (resume.status === 'pending_review') {
+      // 待评审状态：可指派部门评测人，也可由 HR 直接决策
+      buttons.push(
+        <Button key="assign-reviewer" icon={<TeamOutlined />} onClick={() => setIsAssignReviewerModalVisible(true)}>指派部门评审人</Button>,
+        <Button key="hr-decision" icon={<SolutionOutlined />} onClick={() => setIsHRDecisionModalVisible(true)}>HR直接决策</Button>
       );
     } else if (resume.status === 'pending_hr_decision') {
       buttons.push(
@@ -500,7 +574,7 @@ const ResumeDetail: React.FC = () => {
         title={<span><TeamOutlined style={{ marginRight: 8 }} />部门评审</span>}
         style={{ marginTop: 24, borderRadius: '16px' }}
         extra={['pending_review', 'pending_dept_review'].includes(resume.status) && (userRole === 'admin' || userRole === 'hr') && (
-          <Button type="primary" size="small" onClick={() => setIsAssignReviewerModalVisible(true)}>指派评审人</Button>
+          <Button type="primary" size="small" onClick={() => setIsAssignReviewerModalVisible(true)}>指派部门评审人</Button>
         )}
       >
         {deptReviewSummary && deptReviewSummary.total_reviewers > 0 ? (
@@ -546,6 +620,20 @@ const ResumeDetail: React.FC = () => {
                             <Tag color={review.recommendation === 'recommend' ? 'green' : review.recommendation === 'not_recommend' ? 'red' : 'gold'}>
                               {review.recommendation === 'recommend' ? '推荐' : review.recommendation === 'not_recommend' ? '不推荐' : '待定'}
                             </Tag>
+                          )}
+                          {(userRole === 'admin' || userRole === 'hr') && !review.is_completed && (
+                            <Button size="small" onClick={() => openChangeReviewer(review)}>
+                              修改评审人
+                            </Button>
+                          )}
+                          {(userRole === 'admin' || userRole === 'hr') && (
+                            <Button
+                              size="small"
+                              icon={<LinkOutlined />}
+                              onClick={() => handleShowReviewLink(review)}
+                            >
+                              评审链接
+                            </Button>
                           )}
                         </Space>
                       }
@@ -851,6 +939,41 @@ const ResumeDetail: React.FC = () => {
             >
               {reviewers.map((r: any) => (
                 <Select.Option key={r.id} value={r.id}>{r.full_name || r.email}</Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 修改评审人弹窗 */}
+      <Modal
+        title="修改部门评审人"
+        open={isChangeReviewerModalVisible}
+        onOk={handleChangeReviewer}
+        onCancel={() => {
+          setIsChangeReviewerModalVisible(false);
+          setSelectedReview(null);
+          changeReviewerForm.resetFields();
+        }}
+        okText="确认修改"
+        cancelText="取消"
+      >
+        <Form form={changeReviewerForm} layout="vertical" style={{ marginTop: 24 }}>
+          <Form.Item
+            name="reviewer_id"
+            label="部门评审人"
+            rules={[{ required: true, message: '请选择部门评审人' }]}
+          >
+            <Select
+              placeholder="请选择部门评审人"
+              size="large"
+              showSearch
+              optionFilterProp="children"
+            >
+              {reviewers.map((reviewer: any) => (
+                <Select.Option key={reviewer.id} value={reviewer.id}>
+                  {reviewer.full_name || reviewer.email}
+                </Select.Option>
               ))}
             </Select>
           </Form.Item>

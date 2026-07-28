@@ -139,6 +139,24 @@ describe('PublicReview', () => {
     expect(screen.queryByText('简历审核')).not.toBeInTheDocument()
   })
 
+  it('requires login with the assigned reviewer account for HTTP 401', async () => {
+    vi.mocked(request.get).mockRejectedValueOnce({ response: { status: 401 } })
+    renderReview()
+
+    expect(await screen.findByText('请先登录')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '登录指定账号' })).toBeInTheDocument()
+    expect(screen.queryByText('简历审核')).not.toBeInTheDocument()
+  })
+
+  it('blocks a logged-in account that is not the assigned reviewer', async () => {
+    vi.mocked(request.get).mockRejectedValueOnce({ response: { status: 403 } })
+    renderReview()
+
+    expect(await screen.findByText('无权访问此评审')).toBeInTheDocument()
+    expect(screen.getByText('当前账号不是被指派的部门评审人，请切换到正确账号。')).toBeInTheDocument()
+    expect(screen.queryByText('简历审核')).not.toBeInTheDocument()
+  })
+
   it('renders a PDF preview and download action in the left pane', async () => {
     const { container } = renderReview()
 

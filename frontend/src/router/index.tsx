@@ -85,7 +85,11 @@ const router = createBrowserRouter([
   },
   {
     path: '/public/review/:token',
-    element: <PublicReview />,
+    element: (
+      <ProtectedRoute>
+        <PublicReview />
+      </ProtectedRoute>
+    ),
   },
   {
     path: '/',

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Button, Card, Form, Input, Typography, message } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import type { LoginPayload, TenantSummary } from '../../types/tenant';
 import request from '../../utils/request';
@@ -11,17 +11,24 @@ const { Title, Text } = Typography;
 const Login: React.FC = () => {
   const { login, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [form] = Form.useForm<LoginPayload>();
   const [loading, setLoading] = React.useState(false);
   const [tenants, setTenants] = React.useState<TenantSummary[]>([]);
   const [tenantsLoading, setTenantsLoading] = React.useState(true);
   const [tenantsError, setTenantsError] = React.useState(false);
+  const returnLocation = (location.state as {
+    from?: { pathname?: string; search?: string; hash?: string };
+  } | null)?.from;
+  const returnPath = returnLocation?.pathname?.startsWith('/')
+    ? `${returnLocation.pathname}${returnLocation.search || ''}${returnLocation.hash || ''}`
+    : '/dashboard';
 
   React.useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      navigate('/dashboard', { replace: true });
+      navigate(returnPath, { replace: true });
     }
-  }, [authLoading, isAuthenticated, navigate]);
+  }, [authLoading, isAuthenticated, navigate, returnPath]);
 
   const loadTenants = React.useCallback(async () => {
     setTenantsLoading(true);
@@ -49,7 +56,7 @@ const Login: React.FC = () => {
       const authenticated = await login(response.access_token);
       if (!authenticated) throw new Error('Unable to verify session');
       message.success('登录成功');
-      navigate('/dashboard', { replace: true });
+      navigate(returnPath, { replace: true });
     } catch {
       message.error('登录失败，请检查公司、邮箱和密码后重试');
     } finally {

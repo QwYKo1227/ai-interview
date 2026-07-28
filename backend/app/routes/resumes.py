@@ -5,15 +5,19 @@ from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.resume import (
     ResumeResponse, ResumeCreate, ResumeUpdate,
     DepartmentReviewCreate, DepartmentReviewUpdate, DepartmentReviewResponse,
+    DepartmentReviewLinkResponse,
     HRDecisionCreate, HRDecisionResponse,
-    DuplicateCheckRequest, DuplicateCheckResponse, DepartmentReviewSummary
+    DuplicateCheckRequest, DuplicateCheckResponse, DuplicateResumeSummary,
+    DepartmentReviewSummary
 )
 from app.services.resume_service import (
     upload_resume, upload_public_resume, get_resumes, get_resume, update_resume, delete_resume,
     batch_upload_resumes, reparse_resume,
     check_duplicate_resume, create_department_review, get_department_reviews,
-    complete_department_review, aggregate_department_reviews, submit_hr_decision,
-    confirm_rejection, override_rejection, get_resume_with_reviews, transfer_resume_position
+    complete_department_review, reassign_department_reviewer,
+    reissue_department_review_link, aggregate_department_reviews, submit_hr_decision,
+    confirm_rejection, override_rejection, get_duplicate_resumes,
+    get_resume_with_reviews, transfer_resume_position
 )
 from app.models.models import ResumeStatus, RejectReasonCategory, User, UserRole, Resume
 from app.core.security import check_roles
@@ -157,6 +161,18 @@ def batch_upload_resumes_route(
 
 # ==================== 简历详情与更新 ====================
 
+@router.get("/{resume_id}/duplicates", response_model=List[DuplicateResumeSummary])
+def get_duplicate_resumes_route(
+    resume_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    duplicates = get_duplicate_resumes(db, resume_id)
+    if duplicates is None:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    return duplicates
+
+
 @router.get("/{resume_id}", response_model=ResumeResponse)
 def get_resume_route(
     resume_id: UUID,
@@ -254,6 +270,36 @@ def complete_department_review_route(
         comment=comment
     )
     return complete_department_review(db, resume_id, review_id, reviewer_id, review_data)
+
+
+@router.put(
+    "/{resume_id}/department-reviews/{review_id}/reviewer",
+    response_model=DepartmentReviewResponse,
+)
+def reassign_department_reviewer_route(
+    resume_id: UUID,
+    review_id: UUID,
+    reviewer_id: UUID = Form(...),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    return reassign_department_reviewer(db, resume_id, review_id, reviewer_id)
+
+
+@router.post(
+    "/{resume_id}/department-reviews/{review_id}/review-link",
+    response_model=DepartmentReviewLinkResponse,
+)
+def reissue_department_review_link_route(
+    resume_id: UUID,
+    review_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    return {
+        "public_token": reissue_department_review_link(db, resume_id, review_id),
+    }
+
 
 # ==================== HR决策 ====================
 

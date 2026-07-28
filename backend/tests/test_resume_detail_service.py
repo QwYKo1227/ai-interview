@@ -1,5 +1,10 @@
+from app.models.models import ResumeStatus
 from app.schemas.resume import ResumeUpdate
-from app.services.resume_service import extract_contact_details, update_resume
+from app.services.resume_service import (
+    extract_contact_details,
+    override_rejection,
+    update_resume,
+)
 
 
 def test_extract_contact_details_falls_back_to_flat_ai_fields():
@@ -53,3 +58,12 @@ def test_update_resume_merges_editable_extracted_fields(db, test_resume):
         "recent_company": "示例科技",
         "custom_field": "保留",
     }
+
+
+def test_override_ai_rejection_restores_pending_review(db, test_resume, test_user):
+    test_resume.status = ResumeStatus.AUTO_REJECTED_PENDING_REVIEW
+    db.commit()
+
+    restored = override_rejection(db, test_resume.id, test_user.id)
+
+    assert restored.status == ResumeStatus.PENDING_REVIEW

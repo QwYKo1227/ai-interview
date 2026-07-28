@@ -34,6 +34,7 @@ function escapeHtml(value) {
 
 function renderResume([slug, name, position, headline, score, skills, summary]) {
   const email = `${slug}@talent.example`;
+  const phone = slug === "demo.liuyue" ? "13800138000" : "";
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -68,6 +69,7 @@ function renderResume([slug, name, position, headline, score, skills, summary]) 
   <div class="headline">${escapeHtml(headline)} · 应聘 ${escapeHtml(position)}</div>
   <div class="meta">
     <span>${escapeHtml(email)}</span>
+    ${phone ? `<span>${escapeHtml(phone)}</span>` : ""}
     <span>上海 / 可远程</span>
     <span>6 年工作经验</span>
     <span>AI 初筛匹配度 <span class="score">${score}/100</span></span>

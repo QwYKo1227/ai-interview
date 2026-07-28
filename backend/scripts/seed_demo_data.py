@@ -278,12 +278,17 @@ def seed_resumes(db, positions: list[Position]) -> list[Resume]:
         ("demo.fangning", "方宁", positions[3], ResumeStatus.PENDING_SCREENING, 76, "数据分析实习候选人，SQL 基础良好，有招聘分析项目经历。", 2),
         ("demo.xujiayi", "徐嘉仪", positions[3], ResumeStatus.COMPLETED, 82, "数据分析能力扎实，已确认入职实习。", 21),
         ("demo.mengfan", "孟凡", positions[3], ResumeStatus.WAITLIST, 70, "统计背景较好，业务表达仍需观察。", 6),
+        ("demo.liuyue.history", "刘悦", positions[2], ResumeStatus.REJECTED, 68, "历史投递记录：前端经验有限，未进入后续面试。", 120),
     ]
     resumes: list[Resume] = []
     for slug, name, position, status, score, review, days in candidates:
         resume = Resume(
             candidate_name=name,
-            contact=f"13{abs(hash(slug)) % 1000000000:09d}",
+            contact=(
+                "13800138000"
+                if slug in {"demo.liuyue", "demo.liuyue.history"}
+                else f"13{abs(hash(slug)) % 1000000000:09d}"
+            ),
             email=f"{slug}@{DEMO_EMAIL_DOMAIN}",
             position_id=position.id,
             # Demo records intentionally have no binary file. Real uploads are

@@ -12,7 +12,7 @@ import PdfCanvasPreview from '../../components/PdfCanvasPreview';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
-type LoadError = 'expired' | 'not_found' | null;
+type LoadError = 'expired' | 'unauthenticated' | 'forbidden' | 'not_found' | null;
 
 interface ResumeData {
   id: string;
@@ -82,7 +82,16 @@ const PublicReview: React.FC = () => {
     } catch (e: any) {
       setCompleted(false);
       setResume(null);
-      setLoadError(e?.response?.status === 410 ? 'expired' : 'not_found');
+      const status = e?.response?.status;
+      setLoadError(
+        status === 410
+          ? 'expired'
+          : status === 401
+            ? 'unauthenticated'
+            : status === 403
+              ? 'forbidden'
+              : 'not_found',
+      );
     } finally {
       setLoading(false);
     }
@@ -127,6 +136,40 @@ const PublicReview: React.FC = () => {
           status="warning"
           title="评审链接已过期"
           subTitle="该链接已超过 14 天有效期，请联系招聘负责人。"
+        />
+      </div>
+    );
+  }
+
+  if (loadError === 'unauthenticated') {
+    return (
+      <div style={{ padding: 40 }}>
+        <Result
+          status="403"
+          title="请先登录"
+          subTitle="请使用被指派的部门评审人账号登录后继续。"
+          extra={(
+            <Button
+              type="primary"
+              onClick={() => navigate('/login', {
+                state: { from: { pathname: `/public/review/${token}` } },
+              })}
+            >
+              登录指定账号
+            </Button>
+          )}
+        />
+      </div>
+    );
+  }
+
+  if (loadError === 'forbidden') {
+    return (
+      <div style={{ padding: 40 }}>
+        <Result
+          status="403"
+          title="无权访问此评审"
+          subTitle="当前账号不是被指派的部门评审人，请切换到正确账号。"
         />
       </div>
     );

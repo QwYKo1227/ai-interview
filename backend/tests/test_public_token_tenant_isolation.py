@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from app.models.models import (
 from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, TenantStatus
 from app.models.file_models import StoredFile
 from app.routes import coding_tests, files, positions, public_review, resumes
+from app.routes.auth import get_current_user
 from app.routes.offers import public_router as offer_public_router
 from app.services import offer_service, resume_service
 from app.services.public_token_service import (
@@ -187,7 +189,7 @@ def test_reissuing_resource_token_revokes_previous_link(db, tenant_a):
     assert resolve_public_token(db, second, "offer").resource_id == offer_id
 
 
-def _client(db, *routers):
+def _client(db, *routers, current_user=None):
     app = FastAPI()
     for router in routers:
         app.include_router(router, prefix="/api")
@@ -196,6 +198,8 @@ def _client(db, *routers):
         yield db
 
     app.dependency_overrides[get_unscoped_db] = override_db
+    if current_user is not None:
+        app.dependency_overrides[get_current_user] = lambda: current_user
     return TestClient(app)
 
 
@@ -257,8 +261,9 @@ def test_review_public_route_uses_precreated_review_token_not_reviewer_query(db,
     )
     resume_id = test_resume.id
     reviewer_id = test_user.id
+    authenticated_reviewer = SimpleNamespace(id=reviewer_id)
     db.expunge_all()
-    client = _client(db, public_review.router)
+    client = _client(db, public_review.router, current_user=authenticated_reviewer)
 
     legacy = client.get(f"/api/public/review/{resume_id}?reviewer_id={reviewer_id}")
     assert legacy.status_code == 404
@@ -318,9 +323,10 @@ def test_review_resume_file_is_available_only_while_review_is_active(
         db, tenant_a.id, "department_review", review.id,
         datetime.now(timezone.utc) + timedelta(days=1),
     )
+    authenticated_reviewer = SimpleNamespace(id=test_user.id)
     db.expunge_all()
     monkeypatch.setattr(files, "UPLOAD_ROOT", tmp_path)
-    client = _client(db, public_review.router)
+    client = _client(db, public_review.router, current_user=authenticated_reviewer)
 
     active = client.get(f"/api/public/review/{raw}/resume-file")
     assert active.status_code == 200
@@ -360,9 +366,10 @@ def test_review_resume_file_rejects_mismatched_stored_file(
         db, tenant_a.id, "department_review", review.id,
         datetime.now(timezone.utc) + timedelta(days=1),
     )
+    authenticated_reviewer = SimpleNamespace(id=test_user.id)
     db.expunge_all()
     monkeypatch.setattr(files, "UPLOAD_ROOT", tmp_path)
-    client = _client(db, public_review.router)
+    client = _client(db, public_review.router, current_user=authenticated_reviewer)
 
     response = client.get(f"/api/public/review/{raw}/resume-file")
     assert response.status_code == 404
@@ -530,8 +537,9 @@ def test_review_submit_validation_returns_422_without_writing(db, tenant_a, test
         datetime.now(timezone.utc) + timedelta(days=1),
     )
     review_id = review.id
+    authenticated_reviewer = SimpleNamespace(id=test_user.id)
     db.expunge_all()
-    client = _client(db, public_review.router)
+    client = _client(db, public_review.router, current_user=authenticated_reviewer)
     response = client.post(
         f"/api/public/review/{raw}/submit",
         json={"technical_score": 0, "overall_score": 11, "recommendation": "invalid", "comment": "x"},

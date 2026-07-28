@@ -198,7 +198,9 @@ def test_all_business_uploads_use_tenant_storage_and_no_direct_upload_writes():
     resume_source = (app_root / "services" / "resume_service.py").read_text(encoding="utf-8")
     bank_source = (app_root / "services" / "question_bank_service.py").read_text(encoding="utf-8")
     interview_source = (app_root / "routes" / "interviews.py").read_text(encoding="utf-8")
-    assert 'save_upload_file(file, tenant_id, "resumes"' in resume_source
+    assert 'save_upload_file(' in resume_source
+    assert '"resumes",' in resume_source
+    assert "max_size=MAX_RESUME_UPLOAD_SIZE" in resume_source
     assert 'save_upload_file(file, tenant_id, "question_banks"' in bank_source
     assert interview_source.count("stored = save_upload_file(") == 3
     assert 'f"uploads/' not in interview_source

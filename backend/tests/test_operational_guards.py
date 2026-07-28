@@ -548,6 +548,7 @@ def test_production_access_logs_cannot_record_public_token_urls():
     assert "header_up X-Forwarded-For {remote_host}" in caddy
     assert "map $request_uri $loggable_request" in nginx
     assert "map $uri $loggable_request" not in nginx
+    assert "client_max_body_size 101m;" in nginx
     assert "access_log /var/log/nginx/access.log main if=$loggable_request;" in nginx
     for prefix in (
         "/api/public/",

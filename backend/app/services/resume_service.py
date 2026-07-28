@@ -32,6 +32,9 @@ from app.services.public_token_service import issue_public_token
 
 logger = logging.getLogger(__name__)
 
+MAX_RESUME_UPLOAD_SIZE_MB = 10
+MAX_RESUME_UPLOAD_SIZE = MAX_RESUME_UPLOAD_SIZE_MB * 1024 * 1024
+
 
 EXTRACTED_PROFILE_FIELDS = (
     "highest_degree",
@@ -298,7 +301,24 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
         raise HTTPException(status_code=404, detail="Position not found")
 
     tenant_id = get_tenant_id(db)
-    stored = save_upload_file(file, tenant_id, "resumes", resource_type="resume")
+    try:
+        stored = save_upload_file(
+            file,
+            tenant_id,
+            "resumes",
+            resource_type="resume",
+            max_size=MAX_RESUME_UPLOAD_SIZE,
+        )
+    except ValueError as exc:
+        if str(exc) == "uploaded file is too large":
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"单个简历文件不能超过 "
+                    f"{MAX_RESUME_UPLOAD_SIZE_MB} MB"
+                ),
+            ) from exc
+        raise
 
     # 2. Create initial record
     # 如果有应聘者填写的信息，直接使用；否则显示"解析中..."

@@ -805,6 +805,36 @@ def test_resume_batch_upload_rejects_cross_tenant_position_before_file_write(
     assert tenant_a_db.query(Resume).count() == 0
 
 
+def test_resume_upload_rejects_files_larger_than_10_mb(
+    tenant_a_db: Session,
+    test_position: Position,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, int] = {}
+
+    def reject_oversized_file(*_args, **kwargs):
+        captured["max_size"] = kwargs["max_size"]
+        raise ValueError("uploaded file is too large")
+
+    monkeypatch.setattr(
+        resume_service,
+        "save_upload_file",
+        reject_oversized_file,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resume_service.upload_resume(
+            tenant_a_db,
+            UploadFile(filename="resume.pdf", file=BytesIO(b"resume")),
+            test_position.id,
+            BackgroundTasks(),
+        )
+
+    assert captured["max_size"] == 10 * 1024 * 1024
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.detail == "单个简历文件不能超过 10 MB"
+
+
 @pytest.mark.parametrize("reference_field", ["panel_members", "question_bank_ids"])
 def test_interview_create_rejects_cross_tenant_participants_and_question_banks(
     tenant_a_db: Session,

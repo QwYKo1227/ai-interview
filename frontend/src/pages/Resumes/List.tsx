@@ -10,7 +10,11 @@ import {
   createEmptyResumeListFilters,
   type ResumeListFilters,
 } from './filters';
-import { buildAuthenticatedResumeUpload } from './uploadRequest';
+import {
+  buildAuthenticatedResumeUpload,
+  getResumeFileValidationError,
+  MAX_RESUME_FILE_SIZE_MB,
+} from './uploadRequest';
 
 const { Title, Text } = Typography;
 
@@ -489,9 +493,9 @@ const ResumesList: React.FC = () => {
       });
     },
     beforeUpload: (file: RcFile) => {
-      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-      if (!isPdf) {
-        message.error('只允许上传 PDF 格式的文件');
+      const validationError = getResumeFileValidationError(file);
+      if (validationError) {
+        message.error(validationError);
         return Upload.LIST_IGNORE;
       }
       setFileList((prev) => [...prev, file]);
@@ -787,7 +791,7 @@ const ResumesList: React.FC = () => {
             name="file"
             label="简历文件"
             rules={[{ required: true, message: '请上传简历文件' }]}
-            extra="仅支持 PDF 格式，可批量上传"
+            extra={`仅支持 PDF 格式，单个文件不超过 ${MAX_RESUME_FILE_SIZE_MB} MB，可批量上传`}
           >
             <Upload {...uploadProps} maxCount={10}>
               <Button icon={<UploadOutlined />} size="large">选择文件（可多选）</Button>

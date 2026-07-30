@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Optional, List, Dict, Any, Union
 from uuid import UUID
 from datetime import datetime
 from app.models.models import InterviewStatus, InterviewResult
@@ -19,10 +19,19 @@ class InterviewBase(BaseModel):
     meeting_link: Optional[str] = None
 
 class InterviewCreate(InterviewBase):
+    interview_time: datetime
     question_bank_ids: Optional[List[UUID]] = []
     question_count: Optional[int] = 5
     skip_ai_questions: Optional[bool] = False
     skip_email: Optional[bool] = False
+
+    @model_validator(mode="after")
+    def validate_scheduling_details(self):
+        if self.interview_type == "onsite" and not (self.interview_location or "").strip():
+            raise ValueError("现场面试必须填写面试地点")
+        if self.interview_type == "video" and not (self.meeting_link or "").strip():
+            raise ValueError("视频面试必须填写会议链接")
+        return self
 
 class InterviewUpdate(BaseModel):
     interviewer: Optional[str] = None
@@ -39,10 +48,18 @@ class InterviewScore(BaseModel):
 class InterviewPanelResponse(BaseModel):
     id: UUID
     interviewer_id: UUID
+    interviewer_name: Optional[str] = None
     scores: Optional[Dict[str, Any]] = None
     comments: Optional[Dict[str, Any]] = None
     total_score: Optional[int] = None
     is_submitted: bool
+    notes_frozen_at: Optional[datetime] = None
+    human_scores: Optional[Dict[str, int]] = None
+    human_comments: Optional[str] = None
+    human_recommendation: Optional[str] = None
+    human_review_submitted_at: Optional[datetime] = None
+    human_review_updated_at: Optional[datetime] = None
+    human_review_reminder_sent_at: Optional[datetime] = None
     
     # Custom field to indicate main interview status
     interview_status: Optional[str] = None
@@ -60,9 +77,110 @@ class InterviewResponse(InterviewBase):
     suggestion: Optional[str] = None
     status: InterviewStatus
     started_at: Optional[datetime] = None
+    lifecycle_state: str = "scheduled"
+    ended_at: Optional[datetime] = None
+    end_reason: Optional[str] = None
+    recording_session_id: Optional[UUID] = None
+    recording_owner_id: Optional[UUID] = None
+    recording_state: str = "idle"
+    recording_reservation_expires_at: Optional[datetime] = None
+    recording_heartbeat_at: Optional[datetime] = None
+    ai_analysis_status: str = "pending"
+    ai_analysis: Optional[Dict[str, Any]] = None
+    ai_analysis_error: Optional[str] = None
+    ai_analysis_version: int = 0
+    ai_analysis_started_at: Optional[datetime] = None
+    ai_analysis_completed_at: Optional[datetime] = None
+    asr_job_status: str = "pending"
+    asr_job_attempts: int = 0
+    final_decision_by: Optional[UUID] = None
+    final_decision_at: Optional[datetime] = None
+    decision_history: List[Dict[str, Any]] = Field(default_factory=list)
+    cancel_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    notes_revealed_at: Optional[datetime] = None
     created_at: datetime
     resume: Optional[ResumeResponse] = None
     position: Optional[PositionResponse] = None
     panels: Optional[List[InterviewPanelResponse]] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class InterviewDetailResponse(InterviewResponse):
+    transcripts: Optional[Dict[str, Any]] = None
+
+
+class RecordingSessionResponse(BaseModel):
+    session_id: UUID
+    owner_id: UUID
+    recording_state: str
+    lifecycle_state: str
+    reservation_expires_at: Optional[datetime] = None
+    next_chunk_index: int = 0
+
+
+class RecordingSessionRequest(BaseModel):
+    session_id: UUID
+
+
+class EndInterviewRequest(RecordingSessionRequest):
+    reason: Optional[str] = None
+
+
+class LiveNotesRequest(BaseModel):
+    notes: str = ""
+
+
+class NoteSupplementRequest(BaseModel):
+    content: str
+
+
+class HumanReviewRequest(BaseModel):
+    scores: Dict[str, int] = Field(default_factory=dict)
+    comments: str = ""
+    recommendation: str
+
+
+class FinalDecisionRequest(BaseModel):
+    decision: str
+
+
+class FinalDecisionCorrectionRequest(FinalDecisionRequest):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class CancelInterviewResponse(InterviewResponse):
+    notification_sent: bool = False
+    notification_errors: List[str] = Field(default_factory=list)
+
+
+class ReviewerReplacementRequest(BaseModel):
+    old_interviewer_id: UUID
+    new_interviewer_id: UUID
+
+
+class CorrectedTranscriptSegment(BaseModel):
+    start: float
+    end: float
+    text: str
+    speaker: Optional[Union[str, int]] = None
+
+
+class CorrectedTranscriptRequest(BaseModel):
+    segments: List[CorrectedTranscriptSegment]
+
+
+class SpeakerLabelsRequest(BaseModel):
+    labels: Dict[str, str]
+
+    @model_validator(mode="after")
+    def validate_labels(self):
+        if len(self.labels) > 20:
+            raise ValueError("At most 20 speaker labels are allowed")
+        for speaker, label in self.labels.items():
+            if not speaker.strip() or len(speaker) > 100:
+                raise ValueError("Speaker identifiers must be 1-100 characters")
+            if not label.strip() or len(label.strip()) > 100:
+                raise ValueError("Speaker labels must be 1-100 characters")
+        return self

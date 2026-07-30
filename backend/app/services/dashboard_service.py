@@ -85,7 +85,13 @@ def get_recent_activities(db: Session, limit: int = 10):
         if resume.status == ResumeStatus.REJECTED:
             status_text = "已淘汰"
             color = "#EF4444"
-        elif resume.status == ResumeStatus.PENDING_INTERVIEW:
+        elif resume.status in {
+            ResumeStatus.PENDING_INTERVIEW,
+            ResumeStatus.INTERVIEW_SCHEDULED,
+            ResumeStatus.INTERVIEW_IN_PROGRESS,
+            ResumeStatus.PENDING_INTERVIEW_RESULT,
+            ResumeStatus.PENDING_NEXT_INTERVIEW,
+        }:
             status_text = "待面试"
             color = "#F59E0B"
         elif resume.status in [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.COMPLETED]:
@@ -134,11 +140,18 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     stage_mapping = [
         ("resume_received", "简历投递", ResumeStatus),
         ("pending_screening", "待初筛", [ResumeStatus.PENDING_SCREENING]),
-        ("screening_passed", "初筛通过", [ResumeStatus.PENDING_INTERVIEW, ResumeStatus.INTERVIEW_PASSED]),
-        ("interview_scheduled", "面试安排", [ResumeStatus.PENDING_INTERVIEW]),
+        ("screening_passed", "初筛通过", [
+            ResumeStatus.PENDING_INTERVIEW, ResumeStatus.INTERVIEW_SCHEDULED,
+            ResumeStatus.INTERVIEW_IN_PROGRESS, ResumeStatus.PENDING_INTERVIEW_RESULT,
+            ResumeStatus.PENDING_NEXT_INTERVIEW, ResumeStatus.INTERVIEW_PASSED,
+        ]),
+        ("interview_scheduled", "面试安排", [
+            ResumeStatus.INTERVIEW_SCHEDULED, ResumeStatus.INTERVIEW_IN_PROGRESS,
+            ResumeStatus.PENDING_INTERVIEW_RESULT, ResumeStatus.PENDING_NEXT_INTERVIEW,
+        ]),
         ("interview_completed", "面试完成", [ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED, ResumeStatus.OFFER_PENDING]),
         ("offer_sent", "Offer发放", [ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED, ResumeStatus.OFFER_REJECTED]),
-        ("hired", "入职", [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
+        ("hired", "入职", [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.COMPLETED]),
     ]
     
     stages = []
@@ -172,10 +185,12 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     })
     
     screening_passed = db.query(Resume).filter(
-        Resume.status.in_([ResumeStatus.PENDING_INTERVIEW, ResumeStatus.INTERVIEW_PASSED,
+        Resume.status.in_([ResumeStatus.PENDING_INTERVIEW, ResumeStatus.INTERVIEW_SCHEDULED,
+                          ResumeStatus.INTERVIEW_IN_PROGRESS, ResumeStatus.PENDING_INTERVIEW_RESULT,
+                          ResumeStatus.PENDING_NEXT_INTERVIEW, ResumeStatus.INTERVIEW_PASSED,
                           ResumeStatus.INTERVIEW_FAILED, ResumeStatus.OFFER_PENDING,
                           ResumeStatus.OFFER_ACCEPTED, ResumeStatus.OFFER_REJECTED,
-                          ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+                          ResumeStatus.COMPLETED])
     ).count()
     stages.append({
         "stage": "screening_passed",
@@ -185,7 +200,12 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     })
     
     interview_scheduled = db.query(Resume).filter(
-        Resume.status == ResumeStatus.PENDING_INTERVIEW
+        Resume.status.in_([
+            ResumeStatus.INTERVIEW_SCHEDULED,
+            ResumeStatus.INTERVIEW_IN_PROGRESS,
+            ResumeStatus.PENDING_INTERVIEW_RESULT,
+            ResumeStatus.PENDING_NEXT_INTERVIEW,
+        ])
     ).count()
     stages.append({
         "stage": "interview_scheduled",
@@ -197,7 +217,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     interview_completed = db.query(Resume).filter(
         Resume.status.in_([ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED,
                           ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-                          ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+                          ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED])
     ).count()
     stages.append({
         "stage": "interview_completed",
@@ -208,7 +228,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     
     offer_sent = db.query(Resume).filter(
         Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-                          ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+                          ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED])
     ).count()
     stages.append({
         "stage": "offer_sent",
@@ -253,7 +273,13 @@ def get_position_analytics(db: Session) -> Dict[str, Any]:
             ResumeStatus.AUTO_REJECTED_PENDING_REVIEW
         ])
         
-        pending_interview = sum(1 for r in resumes if r.status == ResumeStatus.PENDING_INTERVIEW)
+        pending_interview = sum(1 for r in resumes if r.status in {
+            ResumeStatus.PENDING_INTERVIEW,
+            ResumeStatus.INTERVIEW_SCHEDULED,
+            ResumeStatus.INTERVIEW_IN_PROGRESS,
+            ResumeStatus.PENDING_INTERVIEW_RESULT,
+            ResumeStatus.PENDING_NEXT_INTERVIEW,
+        })
         
         interview_completed = sum(1 for r in resumes if r.status in [
             ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED,

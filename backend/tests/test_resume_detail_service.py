@@ -7,6 +7,23 @@ from app.services.resume_service import (
 )
 
 
+def test_resume_update_accepts_numeric_parsed_experience():
+    update = ResumeUpdate.model_validate(
+        {
+            "candidate_name": "张三",
+            "email": "zhangsan@example.com",
+            "contact": "13800138000",
+            "highest_degree": "本科",
+            "school": "测试大学",
+            "major": "计算机科学",
+            "years_of_experience": 5,
+            "recent_company": "示例科技",
+        }
+    )
+
+    assert update.years_of_experience == "5"
+
+
 def test_extract_contact_details_falls_back_to_flat_ai_fields():
     contact, email = extract_contact_details(
         {

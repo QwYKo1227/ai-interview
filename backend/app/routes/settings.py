@@ -33,6 +33,10 @@ def _get_or_create_config(db: Session) -> SystemConfig:
         "llm_base_url": os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "llm_model": os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "qwen3.5-plus",
         "llm_api_key": os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY"),
+        "asr_provider": os.getenv("ASR_PROVIDER") or "openai_compatible",
+        "asr_base_url": os.getenv("ASR_BASE_URL"),
+        "asr_model": os.getenv("ASR_MODEL") or "paraformer-offline",
+        "asr_api_key": os.getenv("ASR_API_KEY"),
     })
 
 
@@ -43,11 +47,17 @@ def get_system_settings(
 ):
     config = _get_or_create_config(db)
     api_key_set, api_key_last4 = _mask_key(config.llm_api_key)
+    asr_api_key_set, asr_api_key_last4 = _mask_key(config.asr_api_key)
     return SystemModelConfigResponse(
         llm_base_url=config.llm_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         llm_model=config.llm_model or "qwen3.5-plus",
         llm_api_key_set=api_key_set,
         llm_api_key_last4=api_key_last4,
+        asr_provider=config.asr_provider or "openai_compatible",
+        asr_base_url=config.asr_base_url,
+        asr_model=config.asr_model or "paraformer-offline",
+        asr_api_key_set=asr_api_key_set,
+        asr_api_key_last4=asr_api_key_last4,
     )
 
 
@@ -73,6 +83,22 @@ def update_system_settings(
         if api_key:
             config.llm_api_key = api_key
 
+    if "asr_provider" in data and data["asr_provider"]:
+        config.asr_provider = data["asr_provider"]
+
+    if "asr_base_url" in data:
+        config.asr_base_url = (data["asr_base_url"] or "").strip() or None
+
+    if "asr_model" in data:
+        asr_model = (data["asr_model"] or "").strip()
+        if asr_model:
+            config.asr_model = asr_model
+
+    if "asr_api_key" in data:
+        asr_api_key = (data["asr_api_key"] or "").strip()
+        if asr_api_key:
+            config.asr_api_key = asr_api_key
+
     if not config.llm_base_url:
         raise HTTPException(status_code=400, detail="请配置 Base URL")
 
@@ -82,15 +108,32 @@ def update_system_settings(
     if not config.llm_api_key:
         raise HTTPException(status_code=400, detail="请配置 API Key")
 
+    asr_fields = {"asr_provider", "asr_base_url", "asr_model", "asr_api_key"}
+    if asr_fields.intersection(data):
+        if not config.asr_base_url and config.asr_provider == "openai_compatible":
+            raise HTTPException(status_code=400, detail="请配置语音识别 Base URL")
+
+        if not config.asr_model:
+            raise HTTPException(status_code=400, detail="请配置语音识别模型")
+
+        if config.asr_provider == "dashscope" and not config.asr_api_key:
+            raise HTTPException(status_code=400, detail="DashScope 语音识别需要 API Key")
+
     db.commit()
     db.refresh(config)
 
     api_key_set, api_key_last4 = _mask_key(config.llm_api_key)
+    asr_api_key_set, asr_api_key_last4 = _mask_key(config.asr_api_key)
     return SystemModelConfigResponse(
         llm_base_url=config.llm_base_url,
         llm_model=config.llm_model or "qwen3.5-plus",
         llm_api_key_set=api_key_set,
         llm_api_key_last4=api_key_last4,
+        asr_provider=config.asr_provider or "openai_compatible",
+        asr_base_url=config.asr_base_url,
+        asr_model=config.asr_model or "paraformer-offline",
+        asr_api_key_set=asr_api_key_set,
+        asr_api_key_last4=asr_api_key_last4,
     )
 
 

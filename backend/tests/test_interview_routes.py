@@ -37,6 +37,8 @@ class TestCreateInterviewRoute:
                 "position_id": str(test_position.id),
                 "interviewer": "主面试官",
                 "interview_time": "2024-12-15T10:00:00Z",
+                "interview_location": "上海办公室",
+                "meeting_link": "https://meeting.example.com/interview",
                 "panel_members": []
             },
             headers=auth_headers
@@ -73,7 +75,10 @@ class TestCreateInterviewRoute:
             "/api/interviews",
             json={
                 "resume_id": str(test_resume.id),
-                "position_id": str(test_position.id)
+                "position_id": str(test_position.id),
+                "interview_time": "2024-12-15T10:00:00Z",
+                "interview_location": "上海办公室",
+                "meeting_link": "https://meeting.example.com/interview"
             },
             headers=interviewer_auth_headers
         )
@@ -92,6 +97,48 @@ class TestGetInterviewsRoute:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert len(data) >= 1
+
+
+    def test_realtime_session_uses_ephemeral_token_and_hides_upstream_url(
+        self,
+        client: TestClient,
+        interviewer_auth_headers: dict,
+        test_interview: Interview,
+        test_interviewer: User,
+        db: Session,
+        monkeypatch,
+    ):
+        from app.routes import interviews
+
+        session_id = uuid4()
+        test_interview.lifecycle_state = "in_progress"
+        test_interview.recording_state = "recording"
+        test_interview.recording_session_id = session_id
+        test_interview.recording_owner_id = test_interviewer.id
+        db.commit()
+        monkeypatch.setattr(interviews, "get_transcription_config", lambda _db: {"provider": "openai_compatible"})
+        monkeypatch.setattr(
+            interviews,
+            "create_realtime_session",
+            lambda _config: {
+                "token": "ephemeral-token",
+                "expires_at": "2026-07-29T12:00:00+00:00",
+                "ws_url": "ws://private-asr/v1/audio/transcriptions/stream",
+            },
+        )
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/recording/realtime-session",
+            headers=interviewer_auth_headers,
+            json={"session_id": str(session_id)},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "token": "ephemeral-token",
+            "expires_at": "2026-07-29T12:00:00+00:00",
+            "ws_path": "/asr-stream",
+        }
 
     def test_get_interviews_with_status_filter(self, client: TestClient, auth_headers: dict,
                                                 test_interview: Interview):
@@ -166,6 +213,25 @@ class TestGetInterviewRoute:
         assert "resume" in data
         assert "position" in data
 
+    def test_get_interview_includes_transcripts(self, client: TestClient, auth_headers: dict,
+                                                test_interview: Interview, db: Session):
+        test_interview.transcripts = {
+            "full_interview": "Complete interview transcript",
+            "0": "Answer to the first question",
+        }
+        db.commit()
+
+        response = client.get(
+            f"/api/interviews/{test_interview.id}",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["transcripts"] == {
+            "full_interview": "Complete interview transcript",
+            "0": "Answer to the first question",
+        }
+
 
 class TestStartInterviewRoute:
     """测试 POST /interviews/{id}/start 开始面试路由"""
@@ -212,7 +278,7 @@ class TestCancelInterviewRoute:
                                       test_interview: Interview):
         """测试成功取消面试"""
         response = client.post(
-            f"/api/interviews/{test_interview.id}/cancel",
+            f"/api/interviews/{test_interview.id}/cancel?reason=Schedule%20changed&notify=false",
             headers=auth_headers
         )
 
@@ -224,17 +290,41 @@ class TestCancelInterviewRoute:
                                           test_interview: Interview):
         """测试带原因取消面试"""
         response = client.post(
-            f"/api/interviews/{test_interview.id}/cancel?reason=候选人临时有事",
+            f"/api/interviews/{test_interview.id}/cancel?reason=候选人临时有事&notify=false",
             headers=auth_headers
         )
 
         assert response.status_code == status.HTTP_200_OK
 
+    def test_cancel_succeeds_when_notification_delivery_fails(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "app.services.mail_service.get_mail_service",
+            lambda _db: (_ for _ in ()).throw(RuntimeError("mail unavailable")),
+        )
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/cancel?reason=Schedule%20changed",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["notification_sent"] is False
+        db.refresh(test_interview)
+        assert test_interview.status == InterviewStatus.CANCELLED
+        assert test_interview.lifecycle_state == "cancelled"
+
     def test_cancel_interview_not_found(self, client: TestClient, auth_headers: dict):
         """测试取消不存在的面试"""
         fake_id = uuid4()
         response = client.post(
-            f"/api/interviews/{fake_id}/cancel",
+            f"/api/interviews/{fake_id}/cancel?reason=Schedule%20changed&notify=false",
             headers=auth_headers
         )
 
@@ -245,10 +335,12 @@ class TestConfirmInterviewRoute:
     """测试 POST /interviews/{id}/confirm 确认面试结果路由"""
 
     def test_confirm_interview_passed(self, client: TestClient, auth_headers: dict,
-                                      test_interview: Interview, db: Session):
+                                      test_interview: Interview, test_interview_panel: InterviewPanel, db: Session):
         """测试确认面试通过"""
         test_interview.status = InterviewStatus.COMPLETED
         test_interview.result = InterviewResult.PENDING
+        test_interview.lifecycle_state = "ended"
+        test_interview_panel.human_review_submitted_at = datetime.now(timezone.utc)
         db.commit()
 
         response = client.post(
@@ -262,9 +354,11 @@ class TestConfirmInterviewRoute:
         assert data["result"] == "passed"
 
     def test_confirm_interview_rejected(self, client: TestClient, auth_headers: dict,
-                                        test_interview: Interview, db: Session):
+                                        test_interview: Interview, test_interview_panel: InterviewPanel, db: Session):
         """测试确认面试未通过"""
         test_interview.status = InterviewStatus.COMPLETED
+        test_interview.lifecycle_state = "ended"
+        test_interview_panel.human_review_submitted_at = datetime.now(timezone.utc)
         db.commit()
 
         response = client.post(
@@ -384,7 +478,7 @@ class TestDeleteInterviewRoute:
         )
 
         # 根据当前实现，HR 可以删除面试
-        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert response.status_code == status.HTTP_403_FORBIDDEN
 
     def test_delete_interview_not_found(self, client: TestClient, admin_auth_headers: dict,
                                          test_admin: User, db: Session):
@@ -548,7 +642,10 @@ class TestPermissionControl:
             "/api/interviews",
             json={
                 "resume_id": str(test_resume.id),
-                "position_id": str(test_position.id)
+                "position_id": str(test_position.id),
+                "interview_time": "2024-12-15T10:00:00Z",
+                "interview_location": "上海办公室",
+                "meeting_link": "https://meeting.example.com/interview"
             },
             headers=auth_headers
         )
@@ -597,4 +694,67 @@ class TestPermissionControl:
         )
 
         # 根据当前实现，HR 可以删除面试
-        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+class TestSpeakerLabelsRoute:
+    def test_supports_more_than_two_speakers_without_changing_transcript(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+    ):
+        original_data = {
+            "text": "one two three",
+            "segments": [
+                {"start": 0, "end": 1, "speaker": "speaker_0", "text": "one"},
+                {"start": 1, "end": 2, "speaker": "speaker_1", "text": "two"},
+                {"start": 2, "end": 3, "speaker": "speaker_2", "text": "three"},
+            ],
+        }
+        test_interview.lifecycle_state = "ended"
+        test_interview.transcripts = {"full_interview_data": original_data}
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/transcript/speaker-labels",
+            json={
+                "labels": {
+                    "speaker_0": "候选人",
+                    "speaker_1": "面试官张三",
+                    "speaker_2": "面试官李四",
+                }
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["transcripts"]["speaker_labels"]["speaker_2"] == "面试官李四"
+        assert data["transcripts"]["full_interview_data"] == original_data
+
+
+class TestInterviewerDisplayNames:
+    def test_result_and_frozen_notes_include_interviewer_name(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        test_interview_panel: InterviewPanel,
+        test_interviewer: User,
+        db: Session,
+    ):
+        test_interviewer.full_name = "面试官王老师"
+        test_interview.lifecycle_state = "ended"
+        test_interview.panel_members = [str(test_interviewer.id)]
+        test_interview_panel.live_notes = "候选人解释了架构取舍。"
+        db.commit()
+
+        detail = client.get(f"/api/interviews/{test_interview.id}", headers=auth_headers)
+        notes = client.get(f"/api/interviews/{test_interview.id}/notes", headers=auth_headers)
+
+        assert detail.status_code == status.HTTP_200_OK
+        assert detail.json()["panels"][0]["interviewer_name"] == "面试官王老师"
+        assert notes.status_code == status.HTTP_200_OK
+        assert notes.json()[0]["interviewer_name"] == "面试官王老师"

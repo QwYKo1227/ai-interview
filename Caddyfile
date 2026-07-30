@@ -1,8 +1,19 @@
 {$APP_DOMAINS:interview.careray.com, interview.photonthix.com} {
 	tls internal
 	header Permissions-Policy "microphone=(self)"
-	reverse_proxy frontend:80 {
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Forwarded-Host {http.request.host}
+
+	# Realtime tokens travel in the WebSocket query string. Keep this route at
+	# Caddy (which has no access log enabled) instead of sending it through the
+	# frontend Nginx access log.
+	handle /asr-stream {
+		rewrite * /v1/audio/transcriptions/stream
+		reverse_proxy {$ASR_REALTIME_UPSTREAM:10.10.60.20:10096}
+	}
+
+	handle {
+		reverse_proxy frontend:80 {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Host {http.request.host}
+		}
 	}
 }

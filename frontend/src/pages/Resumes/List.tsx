@@ -81,16 +81,19 @@ const duplicateStatusLabels: Record<string, string> = {
   pending_dept_review: '待部门评审',
   pending_hr_decision: '待HR决策',
   auto_rejected_pending_review: 'AI建议淘汰',
-  pending_interview: '待面试',
-  interview_passed: '面试通过',
-  interview_failed: '面试未通过',
+  pending_interview: '待安排面试',
+  interview_scheduled: '面试已安排',
+  interview_in_progress: '面试中',
+  pending_interview_result: '待确认面试结果',
+  pending_next_interview: '待安排下一轮面试',
+  interview_passed: '面试通过，进入录用决策',
+  interview_failed: '面试淘汰',
   offer_pending: 'Offer待确认',
   offer_accepted: '已接受Offer',
   offer_rejected: '已拒绝Offer',
   waitlist: '备选',
   completed: '已完成',
   rejected: '已淘汰',
-  hired: '已录用',
 };
 
 const DuplicateResumePopover: React.FC<{
@@ -337,10 +340,8 @@ const ResumesList: React.FC = () => {
       const resumeInterviews = allInterviews.filter((interview) => interview.resume_id === record.id);
       setExistingInterviews(resumeInterviews);
 
-      // 检查是否已被录用
-      const hiredInterview = resumeInterviews.find((interview) => interview.result === 'hired');
-      if (hiredInterview) {
-        message.warning('该候选人已被录用，无法安排下一轮面试');
+      if (['interview_passed', 'offer_pending', 'offer_accepted', 'offer_rejected', 'completed'].includes(record.status)) {
+        message.warning('该候选人已进入录用决策或后续阶段，无法继续安排面试');
         return;
       }
 
@@ -718,16 +719,19 @@ const ResumesList: React.FC = () => {
           case 'pending_dept_review': color = 'cyan'; text = '待部门评审'; break;
           case 'pending_hr_decision': color = 'purple'; text = '待HR决策'; break;
           case 'auto_rejected_pending_review': color = 'orange'; text = 'AI建议淘汰'; break;
-          case 'pending_interview': color = 'geekblue'; text = '待面试'; break;
-          case 'interview_passed': color = 'lime'; text = '面试通过'; break;
-          case 'interview_failed': color = 'magenta'; text = '面试未通过'; break;
+          case 'pending_interview': color = 'geekblue'; text = '待安排面试'; break;
+          case 'interview_scheduled': color = 'blue'; text = '面试已安排'; break;
+          case 'interview_in_progress': color = 'orange'; text = '面试中'; break;
+          case 'pending_interview_result': color = 'purple'; text = '待确认面试结果'; break;
+          case 'pending_next_interview': color = 'cyan'; text = '待安排下一轮面试'; break;
+          case 'interview_passed': color = 'lime'; text = '面试通过，进入录用决策'; break;
+          case 'interview_failed': color = 'magenta'; text = '面试淘汰'; break;
           case 'offer_pending': color = 'blue'; text = 'Offer待确认'; break;
           case 'offer_accepted': color = 'success'; text = '已接受Offer'; break;
           case 'offer_rejected': color = 'error'; text = '已拒绝Offer'; break;
           case 'waitlist': color = 'gold'; text = '备选'; break;
           case 'completed': color = 'success'; text = '已完成'; break;
           case 'rejected': color = 'error'; text = '已淘汰'; break;
-          case 'hired': color = 'success'; text = '已录用'; break;
           default: break;
         }
         return <Tag color={color}>{text}</Tag>;
@@ -871,7 +875,7 @@ const ResumesList: React.FC = () => {
                   ...current,
                   status,
                 }))}
-                style={{ width: 150 }}
+                style={{ width: 240 }}
                 allowClear
               >
                 <Select.Option value="pending_screening">待初筛</Select.Option>
@@ -879,16 +883,19 @@ const ResumesList: React.FC = () => {
                 <Select.Option value="pending_dept_review">待部门评审</Select.Option>
                 <Select.Option value="pending_hr_decision">待HR决策</Select.Option>
                 <Select.Option value="auto_rejected_pending_review">AI建议淘汰</Select.Option>
-                <Select.Option value="pending_interview">待面试</Select.Option>
-                <Select.Option value="interview_passed">面试通过</Select.Option>
-                <Select.Option value="interview_failed">面试未通过</Select.Option>
+                <Select.Option value="pending_interview">待安排面试</Select.Option>
+                <Select.Option value="interview_scheduled">面试已安排</Select.Option>
+                <Select.Option value="interview_in_progress">面试中</Select.Option>
+                <Select.Option value="pending_interview_result">待确认面试结果</Select.Option>
+                <Select.Option value="pending_next_interview">待安排下一轮面试</Select.Option>
+                <Select.Option value="interview_passed">面试通过，进入录用决策</Select.Option>
+                <Select.Option value="interview_failed">面试淘汰</Select.Option>
                 <Select.Option value="offer_pending">Offer待确认</Select.Option>
                 <Select.Option value="offer_accepted">已接受Offer</Select.Option>
                 <Select.Option value="offer_rejected">已拒绝Offer</Select.Option>
                 <Select.Option value="waitlist">备选</Select.Option>
                 <Select.Option value="completed">已完成</Select.Option>
                 <Select.Option value="rejected">已淘汰</Select.Option>
-                <Select.Option value="hired">已录用</Select.Option>
               </Select>
             </Form.Item>
             {selectedRowKeys.length > 0 && (
@@ -1069,6 +1076,7 @@ const ResumesList: React.FC = () => {
           <Form.Item
             name="interview_time"
             label="面试时间"
+            rules={[{ required: true, message: '请选择面试时间' }]}
           >
             <DatePicker showTime style={{ width: '100%' }} size="large" />
           </Form.Item>
@@ -1085,6 +1093,7 @@ const ResumesList: React.FC = () => {
                     <Form.Item
                       name="interview_location"
                       label="面试地点"
+                      rules={[{ required: true, whitespace: true, message: '请输入面试地点' }]}
                     >
                       <Input placeholder="请输入面试地点，如：北京市朝阳区xxx大厦A座10层" size="large" />
                     </Form.Item>
@@ -1093,6 +1102,7 @@ const ResumesList: React.FC = () => {
                     <Form.Item
                       name="meeting_link"
                       label="会议链接"
+                      rules={[{ required: true, whitespace: true, message: '请输入会议链接' }]}
                     >
                       <Input placeholder="请输入视频会议链接，如：https://meeting.xxx.com/xxx" size="large" />
                     </Form.Item>

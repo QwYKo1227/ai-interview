@@ -7,12 +7,21 @@ class SystemModelConfigResponse(BaseModel):
     llm_model: str
     llm_api_key_set: bool
     llm_api_key_last4: Optional[str] = None
+    asr_provider: Literal["dashscope", "openai_compatible"] = "openai_compatible"
+    asr_base_url: Optional[str] = None
+    asr_model: str = "paraformer-offline"
+    asr_api_key_set: bool = False
+    asr_api_key_last4: Optional[str] = None
 
 
 class SystemModelConfigUpdate(BaseModel):
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_model: Optional[str] = None
+    asr_provider: Optional[Literal["dashscope", "openai_compatible"]] = None
+    asr_base_url: Optional[str] = None
+    asr_model: Optional[str] = None
+    asr_api_key: Optional[str] = None
 
 
 class MailConfigResponse(BaseModel):

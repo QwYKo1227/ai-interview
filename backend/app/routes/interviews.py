@@ -1,30 +1,62 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response, File, UploadFile, Form
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response, File, UploadFile, Form, Query
 from sqlalchemy.orm import Session
 from app.core.tenant_dependencies import get_tenant_db
 from app.config.tenant_session import tenant_session
-from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore
 from app.services.interview_service import (
     create_interview, get_interviews, get_interview, update_interview, delete_interview,
-    submit_interview_score, update_interview_questions, export_interview_result, confirm_interview_result,
+    submit_interview_score, update_interview_questions, export_interview_result,
     submit_interview_panel_score, aggregate_panel_scores, start_interview, cancel_interview, get_submission_status
 )
-from app.schemas.interview import InterviewResponse, InterviewCreate, InterviewUpdate, InterviewScore, InterviewPanelResponse
+from app.schemas.interview import (
+    InterviewResponse, InterviewDetailResponse, InterviewCreate, InterviewUpdate,
+    InterviewScore, InterviewPanelResponse, RecordingSessionResponse,
+    RecordingSessionRequest, EndInterviewRequest, LiveNotesRequest,
+    NoteSupplementRequest, HumanReviewRequest, FinalDecisionRequest,
+    FinalDecisionCorrectionRequest, CancelInterviewResponse,
+    ReviewerReplacementRequest,
+    CorrectedTranscriptRequest, SpeakerLabelsRequest,
+)
 from app.models.models import User, UserRole, Resume, Position, Interview, InterviewStatus, InterviewResult, InterviewPanel
 from app.routes.auth import get_current_user
 from app.core.security import check_roles
 
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from uuid import UUID
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints, model_validator
 import logging
 from app.core.observability import background_task_context
 from app.services.interview_access import (
     require_interview_access,
     require_interview_assignment,
+    require_assigned_interviewer,
 )
+from app.services.interview_lifecycle_service import (
+    REMINDER_COOLDOWN_HOURS,
+    SCORE_DIMENSIONS,
+    add_note_supplement,
+    analyze_sealed_recording,
+    append_recording_chunk,
+    begin_ending,
+    confirm_final_decision,
+    correct_final_decision,
+    confirm_recording,
+    heartbeat_recording,
+    panel_for_user,
+    reserve_recording,
+    replace_reviewer,
+    save_live_notes,
+    seal_recording,
+    submit_human_review,
+    process_asr_job,
+    as_utc,
+    utcnow,
+)
+from app.services.audio_service import AsrServiceError, create_realtime_session, get_transcription_config
 
 logger = logging.getLogger(__name__)
+
+RequiredText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 router = APIRouter(
     prefix="/interviews",
@@ -44,12 +76,20 @@ class EmailSendRequest(BaseModel):
 class EmailPreviewRequest(BaseModel):
     resume_id: UUID
     position_id: UUID
-    interview_time: str = None
+    interview_time: RequiredText
     round: int = 1
     interview_type: str = 'onsite'
     interview_category: str = 'technical'
-    interview_location: str = None
-    meeting_link: str = None
+    interview_location: Optional[str] = None
+    meeting_link: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_scheduling_details(self):
+        if self.interview_type == "onsite" and not (self.interview_location or "").strip():
+            raise ValueError("现场面试必须填写面试地点")
+        if self.interview_type == "video" and not (self.meeting_link or "").strip():
+            raise ValueError("视频面试必须填写会议链接")
+        return self
 
 @router.post("/{interview_id}/panel-score", response_model=InterviewPanelResponse)
 def submit_panel_score_route(
@@ -103,17 +143,16 @@ def confirm_interview_result_route(
     confirm_data: ConfirmResult,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
-    db_interview = confirm_interview_result(db, interview_id, confirm_data.result, background_tasks)
-    if not db_interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
-    return db_interview
+    interview = require_interview_access(db, interview_id, current_user)
+    return confirm_final_decision(db, interview, current_user, confirm_data.result)
 
-@router.post("/{interview_id}/cancel", response_model=InterviewResponse)
+@router.post("/{interview_id}/cancel", response_model=CancelInterviewResponse)
 def cancel_interview_route(
     interview_id: UUID,
-    reason: str = None,
+    reason: Annotated[str, Query(min_length=1, max_length=500)],
+    notify: bool = True,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
@@ -121,10 +160,27 @@ def cancel_interview_route(
     取消面试。
     """
     try:
+        current = require_interview_access(db, interview_id, current_user)
+        if current.lifecycle_state != "scheduled":
+            raise HTTPException(status_code=409, detail="只能取消尚未开始的面试")
         db_interview = cancel_interview(db, interview_id, reason)
         if not db_interview:
             raise HTTPException(status_code=404, detail="Interview not found")
-        return db_interview
+        notification = {"success": False, "errors": []}
+        if notify:
+            try:
+                from app.services.mail_service import get_mail_service
+                notification = get_mail_service(db).send_interview_cancellation_for_interview(db_interview)
+            except Exception as error:
+                logger.warning(
+                    "Interview cancellation notification failed (%s)",
+                    type(error).__name__,
+                )
+                notification = {"success": False, "errors": ["Notification delivery failed"]}
+        return CancelInterviewResponse.model_validate(db_interview).model_copy(update={
+            "notification_sent": bool(notification["success"]) if notify else False,
+            "notification_errors": notification.get("errors", []),
+        })
     except HTTPException:
         raise
     except Exception as error:
@@ -145,6 +201,345 @@ def get_submission_status_route(
     if not status:
         raise HTTPException(status_code=404, detail="Interview not found")
     return status
+
+
+def _recording_response(interview: Interview) -> RecordingSessionResponse:
+    return RecordingSessionResponse(
+        session_id=interview.recording_session_id,
+        owner_id=interview.recording_owner_id,
+        recording_state=interview.recording_state,
+        lifecycle_state=interview.lifecycle_state,
+        reservation_expires_at=interview.recording_reservation_expires_at,
+        next_chunk_index=len(interview.recording_chunks or []),
+    )
+
+
+@router.post("/{interview_id}/recording/reserve", response_model=RecordingSessionResponse)
+def reserve_recording_route(
+    interview_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_assigned_interviewer(db, interview_id, current_user)
+    return _recording_response(reserve_recording(db, interview_id, current_user))
+
+
+@router.post("/{interview_id}/recording/confirm", response_model=RecordingSessionResponse)
+def confirm_recording_route(
+    interview_id: UUID,
+    payload: RecordingSessionRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_assigned_interviewer(db, interview_id, current_user)
+    return _recording_response(confirm_recording(db, interview_id, payload.session_id, current_user))
+
+
+@router.post("/{interview_id}/recording/heartbeat", response_model=RecordingSessionResponse)
+def heartbeat_recording_route(
+    interview_id: UUID,
+    payload: RecordingSessionRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_assigned_interviewer(db, interview_id, current_user)
+    return _recording_response(heartbeat_recording(db, interview_id, payload.session_id, current_user))
+
+
+@router.post("/{interview_id}/recording/realtime-session")
+def create_realtime_session_route(
+    interview_id: UUID,
+    payload: RecordingSessionRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_assigned_interviewer(db, interview_id, current_user)
+    if (
+        interview.recording_state != "recording"
+        or interview.recording_session_id != payload.session_id
+        or interview.recording_owner_id != current_user.id
+    ):
+        raise HTTPException(status_code=409, detail="Active recording ownership is required")
+    try:
+        session = create_realtime_session(get_transcription_config(db))
+    except AsrServiceError as error:
+        logger.warning(
+            "Realtime ASR session creation failed",
+            extra={
+                "interview_id": str(interview_id),
+                "provider_status": error.status_code,
+            },
+        )
+        raise HTTPException(status_code=503, detail="实时字幕服务暂不可用") from None
+    return {
+        "token": session["token"],
+        "expires_at": session["expires_at"],
+        "ws_path": "/asr-stream",
+    }
+
+
+@router.post("/{interview_id}/recording/chunks/{chunk_index}")
+def upload_recording_chunk_route(
+    interview_id: UUID,
+    chunk_index: int,
+    session_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_assigned_interviewer(db, interview_id, current_user)
+    stored = save_upload_file(
+        file,
+        interview.tenant_id,
+        "interview_audio",
+        resource_type="interview_recording_chunk",
+        resource_id=interview.id,
+    )
+    return append_recording_chunk(db, interview_id, session_id, chunk_index, stored, current_user)
+
+
+@router.post("/{interview_id}/end", response_model=RecordingSessionResponse)
+def end_interview_route(
+    interview_id: UUID,
+    payload: EndInterviewRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_interview_access(db, interview_id, current_user)
+    return _recording_response(begin_ending(db, interview_id, payload.session_id, current_user, payload.reason))
+
+
+@router.post("/{interview_id}/recording/seal", response_model=InterviewResponse)
+def seal_recording_route(
+    interview_id: UUID,
+    payload: RecordingSessionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_interview_access(db, interview_id, current_user)
+    interview = seal_recording(db, interview_id, payload.session_id, current_user)
+    background_tasks.add_task(process_asr_job, interview.tenant_id, interview.id)
+    return interview
+
+
+@router.post("/{interview_id}/analysis/retry", response_model=InterviewResponse)
+def retry_analysis_route(
+    interview_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state != "ended" or not (interview.audio_records or {}).get("full_interview"):
+        raise HTTPException(status_code=409, detail="A sealed recording is required")
+    interview.ai_analysis_status = "pending"
+    interview.ai_analysis_error = None
+    interview.asr_job_id = None
+    interview.asr_job_status = "pending"
+    interview.asr_job_attempts = 0
+    interview.asr_job_next_poll_at = utcnow()
+    interview.asr_job_delete_pending = False
+    history = list(interview.asr_job_history or [])
+    history.append({"at": utcnow().isoformat(), "status": "manual_retry"})
+    interview.asr_job_history = history
+    db.commit()
+    background_tasks.add_task(process_asr_job, interview.tenant_id, interview.id)
+    return interview
+
+
+@router.post("/{interview_id}/transcript/corrections", response_model=InterviewResponse)
+def correct_transcript_route(
+    interview_id: UUID,
+    payload: CorrectedTranscriptRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state != "ended":
+        raise HTTPException(status_code=409, detail="Transcript can only be corrected after the interview")
+    if not payload.segments:
+        raise HTTPException(status_code=422, detail="At least one corrected segment is required")
+    segments = [segment.model_dump() for segment in payload.segments]
+    corrected = {
+        "text": " ".join(segment["text"].strip() for segment in segments if segment["text"].strip()),
+        "segments": segments,
+        "corrected_by": str(current_user.id),
+        "corrected_at": utcnow().isoformat(),
+    }
+    interview.transcripts = {
+        **(interview.transcripts or {}),
+        "corrected_full_interview_data": corrected,
+    }
+    interview.ai_analysis_status = "pending"
+    interview.ai_analysis_error = None
+    db.commit()
+    background_tasks.add_task(analyze_sealed_recording, interview.tenant_id, interview.id, True)
+    return interview
+
+
+@router.post("/{interview_id}/transcript/speaker-labels", response_model=InterviewDetailResponse)
+def label_transcript_speakers_route(
+    interview_id: UUID,
+    payload: SpeakerLabelsRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state != "ended":
+        raise HTTPException(status_code=409, detail="Speakers can only be labelled after the interview")
+
+    labels = {speaker.strip(): label.strip() for speaker, label in payload.labels.items()}
+    interview.transcripts = {
+        **(interview.transcripts or {}),
+        "speaker_labels": labels,
+    }
+    db.commit()
+    return interview
+
+
+@router.get("/{interview_id}/notes")
+def interview_notes_route(
+    interview_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state == "ended":
+        return [
+            {
+                "interviewer_id": str(panel.interviewer_id),
+                "interviewer_name": panel.interviewer_name,
+                "notes": panel.live_notes or "",
+                "supplements": panel.note_supplements or [],
+                "frozen_at": panel.notes_frozen_at,
+            }
+            for panel in interview.panels or []
+        ]
+    panel = panel_for_user(db, interview, current_user)
+    return [{"interviewer_id": str(panel.interviewer_id), "interviewer_name": panel.interviewer_name, "notes": panel.live_notes or "", "supplements": []}]
+
+
+@router.put("/{interview_id}/notes")
+def save_interview_notes_route(
+    interview_id: UUID,
+    payload: LiveNotesRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_assigned_interviewer(db, interview_id, current_user)
+    panel = save_live_notes(db, interview, current_user, payload.notes)
+    return {"notes": panel.live_notes or ""}
+
+
+@router.post("/{interview_id}/notes/supplements")
+def add_note_supplement_route(
+    interview_id: UUID,
+    payload: NoteSupplementRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_assigned_interviewer(db, interview_id, current_user)
+    panel = add_note_supplement(db, interview, current_user, payload.content)
+    return {"supplements": panel.note_supplements or []}
+
+
+@router.post("/{interview_id}/human-review", response_model=InterviewPanelResponse)
+def submit_human_review_route(
+    interview_id: UUID,
+    payload: HumanReviewRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    interview = require_assigned_interviewer(db, interview_id, current_user)
+    return submit_human_review(db, interview, current_user, payload.scores, payload.comments, payload.recommendation)
+
+
+@router.post("/{interview_id}/final-decision", response_model=InterviewResponse)
+def final_decision_route(
+    interview_id: UUID,
+    payload: FinalDecisionRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    return confirm_final_decision(db, interview, current_user, payload.decision)
+
+
+@router.post("/{interview_id}/final-decision/correct", response_model=InterviewResponse)
+def correct_final_decision_route(
+    interview_id: UUID,
+    payload: FinalDecisionCorrectionRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    return correct_final_decision(db, interview, current_user, payload.decision, payload.reason)
+
+
+@router.post("/{interview_id}/cancel-notification")
+def retry_cancel_notification_route(
+    interview_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state != "cancelled":
+        raise HTTPException(status_code=409, detail="Interview is not cancelled")
+    from app.services.mail_service import get_mail_service
+    return get_mail_service(db).send_interview_cancellation_for_interview(interview)
+
+
+@router.post("/{interview_id}/reviewers/replace", response_model=InterviewResponse)
+def replace_reviewer_route(
+    interview_id: UUID,
+    payload: ReviewerReplacementRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    return replace_reviewer(
+        db,
+        interview,
+        current_user,
+        payload.old_interviewer_id,
+        payload.new_interviewer_id,
+    )
+
+
+@router.post("/{interview_id}/review-reminders")
+def send_review_reminders_route(
+    interview_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    import os
+    from datetime import timedelta
+    from app.services.mail_service import get_mail_service
+
+    interview = require_interview_access(db, interview_id, current_user)
+    now = utcnow()
+    cooldown = now - timedelta(hours=REMINDER_COOLDOWN_HOURS)
+    base_url = os.getenv("APP_BASE_URL", "https://interview.careray.com").rstrip("/")
+    mail = get_mail_service(db)
+    sent = []
+    skipped = []
+    required_ids = {str(value) for value in (interview.panel_members or [])}
+    for panel in interview.panels or []:
+        if str(panel.interviewer_id) not in required_ids:
+            continue
+        if panel.human_review_submitted_at is not None:
+            continue
+        if panel.human_review_reminder_sent_at and as_utc(panel.human_review_reminder_sent_at) > cooldown:
+            skipped.append(str(panel.interviewer_id))
+            continue
+        recipient = db.query(User).filter(User.id == panel.interviewer_id).first()
+        if recipient and mail.send_interview_review_reminder(recipient, interview, f"{base_url}/interviews/{interview.id}/result"):
+            panel.human_review_reminder_sent_at = now
+            sent.append(str(panel.interviewer_id))
+    db.commit()
+    return {"sent": sent, "cooldown_skipped": skipped}
 
 @router.get("/{interview_id}/export")
 def export_interview_route(
@@ -209,7 +604,7 @@ def preview_email_before_create(
     current_user: User = Depends(get_current_user)
 ):
     """在创建面试前预览邮件内容"""
-    from app.services.mail_service import get_mail_service
+    from app.services.mail_service import get_mail_service, format_interview_time
     from datetime import datetime
 
     # 获取简历和岗位信息
@@ -244,7 +639,7 @@ def preview_email_before_create(
     if preview_data.interview_time:
         try:
             dt = datetime.fromisoformat(preview_data.interview_time.replace('Z', '+00:00'))
-            time_str = dt.strftime('%Y年%m月%d日 %H:%M')
+            time_str = format_interview_time(dt)
         except:
             time_str = preview_data.interview_time
 
@@ -273,7 +668,7 @@ def preview_email_before_create(
         "content": html_content
     }
 
-@router.get("/{interview_id}", response_model=InterviewResponse)
+@router.get("/{interview_id}", response_model=InterviewDetailResponse)
 def get_interview_route(
     interview_id: UUID,
     db: Session = Depends(get_tenant_db),
@@ -345,7 +740,7 @@ def submit_score_route(
     return db_interview
 
 from fastapi import UploadFile, File
-from app.services.audio_service import transcribe_audio
+from app.services.audio_service import get_transcription_config, transcribe_audio
 from app.config.tenant_session import get_tenant_id
 from app.utils.file_storage import (
     UPLOAD_ROOT, cleanup_new_file, commit_file_replacement, save_upload_file,
@@ -382,7 +777,10 @@ def upload_audio_route(
             resource_type="interview", resource_id=interview_id,
         )
         db.add(stored)
-        transcript_data = transcribe_audio(str(stored_file_path(stored)))
+        transcript_data = transcribe_audio(
+            str(stored_file_path(stored)),
+            config=get_transcription_config(db),
+        )
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
         audio_records = dict(record_owner.audio_records or {})
         transcripts = dict(record_owner.transcripts or {})
@@ -405,7 +803,7 @@ def upload_audio_route(
 def delete_interview_route(
     interview_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN]))
 ):
     db_interview = delete_interview(db, interview_id)
     if not db_interview:
@@ -420,7 +818,7 @@ def get_email_preview(
     current_user: User = Depends(get_current_user)
 ):
     """获取面试邀请邮件预览"""
-    from app.services.mail_service import get_mail_service
+    from app.services.mail_service import get_mail_service, format_interview_time
 
     interview = get_interview(db, interview_id)
     if not interview:
@@ -461,7 +859,7 @@ def get_email_preview(
     interview_type_text = type_map.get(interview_type, "现场面试")
 
     # 格式化面试时间
-    time_str = interview.interview_time.strftime('%Y年%m月%d日 %H:%M') if interview.interview_time else "待定"
+    time_str = format_interview_time(interview.interview_time)
 
     # 渲染邮件模板
     context = {
@@ -539,7 +937,11 @@ def upload_full_interview_audio(
     current_user: User = Depends(get_current_user)
 ):
     """上传整场面试录音并进行AI分析"""
-    from app.services.audio_service import transcribe_audio, format_transcript_for_display
+    from app.services.audio_service import (
+        format_transcript_for_display,
+        get_transcription_config,
+        transcribe_audio,
+    )
 
     interview = require_interview_access(db, interview_id, current_user)
 
@@ -555,7 +957,10 @@ def upload_full_interview_audio(
             resource_type="interview", resource_id=interview_id,
         )
         db.add(stored)
-        transcript_data = transcribe_audio(str(stored_file_path(stored)))
+        transcript_data = transcribe_audio(
+            str(stored_file_path(stored)),
+            config=get_transcription_config(db),
+        )
         transcript_text = transcript_data.get("text", "")
         formatted_transcript = format_transcript_for_display(transcript_data)
         interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
@@ -724,7 +1129,7 @@ def submit_direct_evaluation_with_audio(
     current_user: User = Depends(get_current_user)
 ):
     """同时上传录音和评价，AI综合分析生成最终评价"""
-    from app.services.audio_service import transcribe_audio
+    from app.services.audio_service import get_transcription_config, transcribe_audio
 
     interview = require_interview_assignment(db, interview_id, current_user)
 
@@ -741,7 +1146,10 @@ def submit_direct_evaluation_with_audio(
             resource_type="interview", resource_id=interview_id,
         )
         db.add(stored)
-        transcript_data = transcribe_audio(str(stored_file_path(stored)))
+        transcript_data = transcribe_audio(
+            str(stored_file_path(stored)),
+            config=get_transcription_config(db),
+        )
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
         interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
         interview.transcripts = {

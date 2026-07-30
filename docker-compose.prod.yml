@@ -79,6 +79,10 @@ services:
       INITIAL_ADMIN_NAME: ${INITIAL_ADMIN_NAME:-System Admin}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      ASR_PROVIDER: ${ASR_PROVIDER:-openai_compatible}
+      ASR_BASE_URL: ${ASR_BASE_URL:-}
+      ASR_MODEL: ${ASR_MODEL:-paraformer-offline}
+      ASR_API_KEY: ${ASR_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
       RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-10}
       RATE_LIMIT_PUBLIC_UPLOAD: ${RATE_LIMIT_PUBLIC_UPLOAD:-10}
@@ -118,6 +122,7 @@ services:
     container_name: ai_interview_caddy
     environment:
       APP_DOMAINS: "${APP_DOMAINS:-interview.careray.com, interview.photonthix.com}"
+      ASR_REALTIME_UPSTREAM: "${ASR_REALTIME_UPSTREAM:-10.10.60.20:10096}"
     ports:
       - "80:80"
       - "443:443"

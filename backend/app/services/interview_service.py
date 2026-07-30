@@ -11,6 +11,12 @@ from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
 from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_resource_files, unlink_file_locations
 from app.services.interview_access import can_score_interview, is_interviewer_assigned
+from app.services.resume_interview_status import (
+    apply_final_decision,
+    mark_interview_scheduled,
+    mark_interview_started,
+    restore_after_cancellation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +47,9 @@ def start_interview(db: Session, interview_id: UUID):
         )
 
     db_interview.status = InterviewStatus.IN_PROGRESS
+    db_interview.lifecycle_state = "in_progress"
     db_interview.started_at = datetime.utcnow()
+    mark_interview_started(db_interview)
     db.commit()
     db.refresh(db_interview)
 
@@ -74,6 +82,8 @@ def submit_interview_panel_score(
 
     if db_interview.status == InterviewStatus.SCHEDULED:
         db_interview.status = InterviewStatus.IN_PROGRESS
+        db_interview.lifecycle_state = "in_progress"
+        mark_interview_started(db_interview)
         print(f"Interview {interview_id} status auto-changed to IN_PROGRESS on first score submission")
         db.commit()
 
@@ -347,6 +357,8 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     )
 
     db.add(db_interview)
+    db.flush()
+    mark_interview_scheduled(db_interview)
     db.commit()
     db.refresh(db_interview)
 
@@ -448,6 +460,48 @@ def export_interview_result(db: Session, interview_id: UUID, format: str = "mark
     
     content += "## 综合评价\n\n"
     content += f"{db_interview.evaluation or '暂无评价'}\n\n"
+
+    transcripts = db_interview.transcripts or {}
+    full_interview_data = transcripts.get("full_interview_data")
+    full_interview_text = transcripts.get("full_interview", "")
+    if isinstance(full_interview_text, dict):
+        full_interview_text = full_interview_text.get("text", "")
+    if not full_interview_text and isinstance(full_interview_data, dict):
+        full_interview_text = full_interview_data.get("text", "")
+
+    question_transcripts = []
+    for key, value in transcripts.items():
+        if key in {"full_interview", "full_interview_data"}:
+            continue
+        if isinstance(value, dict):
+            value = value.get("text", "")
+        if value:
+            question_transcripts.append((str(key), str(value)))
+
+    if full_interview_text or question_transcripts:
+        content += "## 面试过程记录\n\n"
+        if full_interview_text:
+            content += f"{full_interview_text}\n\n"
+
+        def transcript_sort_key(item):
+            key = item[0]
+            return (0, int(key)) if key.isdigit() else (1, key)
+
+        for key, transcript in sorted(question_transcripts, key=transcript_sort_key):
+            if key.isdigit():
+                question_index = int(key)
+                question = (db_interview.questions or [])
+                question_title = (
+                    question[question_index].get("title")
+                    if question_index < len(question)
+                    else None
+                )
+                label = f"第 {question_index + 1} 题"
+                if question_title:
+                    label += f"：{question_title}"
+            else:
+                label = key
+            content += f"### {label}\n\n{transcript}\n\n"
     
     content += "## 详细评估\n\n"
     
@@ -547,6 +601,17 @@ def delete_interview(db: Session, interview_id: UUID):
     if not db_interview:
         return None
 
+    deletable = (
+        db_interview.lifecycle_state == "cancelled"
+        or (
+            db_interview.lifecycle_state == "scheduled"
+            and db_interview.status == InterviewStatus.SCHEDULED
+        )
+    )
+    if not deletable:
+        raise HTTPException(status_code=409, detail="Only scheduled or cancelled interviews can be deleted")
+
+    restore_after_cancellation(db, db_interview)
     tenant_id = db_interview.tenant_id
     file_locations = stage_file_deletions(
         db, tenant_resource_files(
@@ -571,17 +636,22 @@ def cancel_interview(db: Session, interview_id: UUID, reason: str = None):
     if not db_interview:
         return None
 
-    if db_interview.status == InterviewStatus.COMPLETED:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot cancel a completed interview."
-        )
+    cleaned_reason = (reason or "").strip()
+    if not cleaned_reason:
+        raise HTTPException(status_code=422, detail="Cancellation reason is required")
+
+    if db_interview.lifecycle_state != "scheduled" or db_interview.status != InterviewStatus.SCHEDULED:
+        raise HTTPException(status_code=409, detail="Only scheduled interviews can be cancelled")
 
     db_interview.status = InterviewStatus.CANCELLED
-    if reason:
-        existing_comments = db_interview.comments or {}
-        existing_comments["cancel_reason"] = reason
-        db_interview.comments = existing_comments
+    db_interview.lifecycle_state = "cancelled"
+    db_interview.cancel_reason = cleaned_reason
+    db_interview.cancelled_at = datetime.now(timezone.utc)
+    db_interview.comments = {
+        **(db_interview.comments or {}),
+        "cancel_reason": cleaned_reason,
+    }
+    restore_after_cancellation(db, db_interview)
 
     db.commit()
     db.refresh(db_interview)
@@ -780,16 +850,9 @@ def confirm_interview_result(db: Session, interview_id: UUID, result: str, backg
 
             # Commit explicitly for resume if needed, but db.commit() below handles all changes in session
 
+    apply_final_decision(db_interview)
     db.commit()
     db.refresh(db_interview)
-
-    # 发送结果通知邮件（后台任务）- 录用、淘汰、进入下一轮都发送
-    if background_tasks and db_interview.result in [InterviewResult.HIRED, InterviewResult.REJECTED, InterviewResult.NEXT_ROUND]:
-        background_tasks.add_task(
-            send_result_notification_background,
-            db_interview.tenant_id,
-            db_interview.id
-        )
 
     return db_interview
 

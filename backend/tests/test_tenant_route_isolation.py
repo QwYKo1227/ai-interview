@@ -594,12 +594,18 @@ def test_settings_read_and_update_only_current_tenant(
         llm_base_url="https://tenant-a.example.com/v1",
         llm_model="tenant-a-model",
         llm_api_key="tenant-a-secret",
+        asr_provider="openai_compatible",
+        asr_base_url="http://tenant-a-asr:9000/v1",
+        asr_model="tenant-a-asr-model",
     )
     config_b = SystemConfig(
         tenant_id=tenant_b.id,
         llm_base_url="https://tenant-b.example.com/v1",
         llm_model="tenant-b-model",
         llm_api_key="tenant-b-secret",
+        asr_provider="openai_compatible",
+        asr_base_url="http://tenant-b-asr:9000/v1",
+        asr_model="tenant-b-asr-model",
     )
     db.add_all([config_a, config_b])
     db.commit()
@@ -614,15 +620,21 @@ def test_settings_read_and_update_only_current_tenant(
             "llm_base_url": "https://tenant-a-updated.example.com/v1",
             "llm_model": "tenant-a-updated-model",
             "llm_api_key": "tenant-a-updated-secret",
+            "asr_provider": "openai_compatible",
+            "asr_base_url": "http://tenant-a-asr-updated:9000/v1",
+            "asr_model": "tenant-a-asr-updated-model",
         },
     )
 
     assert read_response.status_code == 200
     assert read_response.json()["llm_model"] == "tenant-a-model"
+    assert read_response.json()["asr_model"] == "tenant-a-asr-model"
     assert update_response.status_code == 200
     db.expire_all()
     assert db.get(SystemConfig, config_a.id).llm_model == "tenant-a-updated-model"
+    assert db.get(SystemConfig, config_a.id).asr_model == "tenant-a-asr-updated-model"
     assert db.get(SystemConfig, config_b.id).llm_model == "tenant-b-model"
+    assert db.get(SystemConfig, config_b.id).asr_model == "tenant-b-asr-model"
 
 
 def test_prompt_settings_get_put_and_reload_are_tenant_scoped(
@@ -847,6 +859,9 @@ def test_interview_create_rejects_cross_tenant_participants_and_question_banks(
     data = {
         "resume_id": test_resume.id,
         "position_id": test_position.id,
+        "interview_time": "2026-08-01T10:00:00+08:00",
+        "interview_location": "上海办公室",
+        "meeting_link": "https://meeting.example.com/interview",
         "panel_members": [],
         "question_bank_ids": [],
         "skip_ai_questions": True,
@@ -877,6 +892,9 @@ def test_interview_create_rejects_malformed_panel_member_id(
             InterviewCreate(
                 resume_id=test_resume.id,
                 position_id=test_position.id,
+                interview_time="2026-08-01T10:00:00+08:00",
+                interview_location="上海办公室",
+                meeting_link="https://meeting.example.com/interview",
                 panel_members=["not-a-uuid"],
                 skip_ai_questions=True,
                 skip_email=True,
@@ -1407,6 +1425,9 @@ def test_interview_create_rejects_duplicate_panel_members(
             InterviewCreate(
                 resume_id=test_resume.id,
                 position_id=test_position.id,
+                interview_time="2026-08-01T10:00:00+08:00",
+                interview_location="上海办公室",
+                meeting_link="https://meeting.example.com/interview",
                 panel_members=[str(test_user.id), str(test_user.id)],
                 skip_ai_questions=True,
                 skip_email=True,

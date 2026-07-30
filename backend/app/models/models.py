@@ -151,12 +151,16 @@ class ResumeStatus(str, enum.Enum):
     PENDING_HR_DECISION = "pending_hr_decision"  # 待HR综合决策
     AUTO_REJECTED_PENDING_REVIEW = "auto_rejected_pending_review"  # AI建议淘汰，待人工确认
     PENDING_INTERVIEW = "pending_interview"
+    INTERVIEW_SCHEDULED = "interview_scheduled"
+    INTERVIEW_IN_PROGRESS = "interview_in_progress"
+    PENDING_INTERVIEW_RESULT = "pending_interview_result"
+    PENDING_NEXT_INTERVIEW = "pending_next_interview"
     INTERVIEW_PASSED = "interview_passed"  # Initial interview passed
     INTERVIEW_FAILED = "interview_failed"
     OFFER_PENDING = "offer_pending"
     OFFER_ACCEPTED = "offer_accepted"
     OFFER_REJECTED = "offer_rejected"
-    ONBOARDING = "onboarding"
+    ONBOARDING = "onboarding"  # Deprecated; retained for enum compatibility only.
     COMPLETED = "completed"
     REJECTED = "rejected"
     WAITLIST = "waitlist"  # 备选
@@ -291,6 +295,8 @@ class Interview(TenantScopedMixin, Base):
         _tenant_reference("interviews", "resume_id", "resumes"),
         _tenant_reference("interviews", "position_id", "positions"),
         _tenant_reference("interviews", "interviewer_id", "users"),
+        _tenant_reference("interviews", "recording_owner_id", "users"),
+        _tenant_reference("interviews", "final_decision_by", "users"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -316,11 +322,44 @@ class Interview(TenantScopedMixin, Base):
     evaluation = Column(Text)
     suggestion = Column(Text)
     status = Column(Enum(InterviewStatus, values_callable=lambda obj: [e.value for e in obj]), default=InterviewStatus.SCHEDULED)
+    # The interview lifecycle, recording lifecycle, AI analysis, and final
+    # decision deliberately evolve independently. ``status`` remains for
+    # compatibility with older clients while new code uses these fields.
+    lifecycle_state = Column(String, nullable=False, default="scheduled")
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    end_reason = Column(Text, nullable=True)
+    recording_session_id = Column(UUID(as_uuid=True), nullable=True)
+    recording_owner_id = Column(UUID(as_uuid=True), nullable=True)
+    recording_state = Column(String, nullable=False, default="idle")
+    recording_reservation_expires_at = Column(DateTime(timezone=True), nullable=True)
+    recording_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    recording_chunks = Column(JSON, nullable=False, default=list)
+    recording_delete_after = Column(DateTime(timezone=True), nullable=True)
+    ai_analysis_status = Column(String, nullable=False, default="pending")
+    ai_analysis = Column(JSON, nullable=True)
+    ai_analysis_error = Column(Text, nullable=True)
+    ai_analysis_version = Column(Integer, nullable=False, default=0)
+    ai_analysis_started_at = Column(DateTime(timezone=True), nullable=True)
+    ai_analysis_completed_at = Column(DateTime(timezone=True), nullable=True)
+    asr_job_id = Column(String, nullable=True)
+    asr_job_status = Column(String, nullable=False, default="pending")
+    asr_job_attempts = Column(Integer, nullable=False, default=0)
+    asr_job_next_poll_at = Column(DateTime(timezone=True), nullable=True)
+    asr_job_history = Column(JSON, nullable=False, default=list)
+    asr_job_delete_pending = Column(Boolean, nullable=False, default=False)
+    final_decision_by = Column(UUID(as_uuid=True), nullable=True)
+    final_decision_at = Column(DateTime(timezone=True), nullable=True)
+    decision_history = Column(JSON, nullable=False, default=list)
+    cancel_reason = Column(Text, nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    notes_revealed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     resume = relationship("Resume", foreign_keys=[resume_id])
     position = relationship("Position", foreign_keys=[position_id])
     interviewer_user = relationship("User", foreign_keys=[interviewer_id])
+    recording_owner_user = relationship("User", foreign_keys=[recording_owner_id])
+    final_decision_user = relationship("User", foreign_keys=[final_decision_by])
     panels = relationship(
         "InterviewPanel",
         back_populates="interview",
@@ -344,6 +383,15 @@ class InterviewPanel(TenantScopedMixin, Base):
     transcripts = Column(JSON) # Transcribed text per question
     total_score = Column(Integer)
     is_submitted = Column(Boolean, default=False)
+    live_notes = Column(Text, nullable=True)
+    note_supplements = Column(JSON, nullable=False, default=list)
+    notes_frozen_at = Column(DateTime(timezone=True), nullable=True)
+    human_scores = Column(JSON, nullable=True)
+    human_comments = Column(Text, nullable=True)
+    human_recommendation = Column(String, nullable=True)
+    human_review_submitted_at = Column(DateTime(timezone=True), nullable=True)
+    human_review_updated_at = Column(DateTime(timezone=True), nullable=True)
+    human_review_reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -351,6 +399,13 @@ class InterviewPanel(TenantScopedMixin, Base):
         "Interview", back_populates="panels", foreign_keys=[interview_id]
     )
     interviewer_user = relationship("User", foreign_keys=[interviewer_id])
+
+    @property
+    def interviewer_name(self):
+        user = self.interviewer_user
+        if user is None:
+            return str(self.interviewer_id)
+        return user.full_name or user.email or str(self.interviewer_id)
 
 class OfferStatus(str, enum.Enum):
     DRAFT = "draft"
@@ -549,6 +604,10 @@ class SystemConfig(TenantScopedMixin, Base):
     llm_model = Column(String, default="qwen3.5-plus")
     llm_temperature = Column(Float, default=0.2)
     llm_max_tokens = Column(Integer)
+    asr_provider = Column(String, default="openai_compatible")
+    asr_base_url = Column(String)
+    asr_model = Column(String, default="paraformer-offline")
+    asr_api_key = Column(String)
     # 邮件服务配置
     smtp_host = Column(String)
     smtp_port = Column(Integer, default=465)

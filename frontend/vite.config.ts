@@ -15,6 +15,12 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/asr-stream': {
+        target: process.env.VITE_ASR_REALTIME_TARGET || 'ws://10.10.60.20:10096',
+        ws: true,
+        changeOrigin: true,
+        rewrite: () => '/v1/audio/transcriptions/stream',
+      },
     },
   },
   test: {

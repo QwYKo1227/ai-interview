@@ -10,6 +10,11 @@ type SystemSettings = {
   llm_model: string;
   llm_api_key_set: boolean;
   llm_api_key_last4?: string | null;
+  asr_provider: 'dashscope' | 'openai_compatible';
+  asr_base_url?: string | null;
+  asr_model: string;
+  asr_api_key_set: boolean;
+  asr_api_key_last4?: string | null;
 };
 
 type MailSettings = {
@@ -65,6 +70,7 @@ const SystemSettingsPage: React.FC = () => {
   const [meta, setMeta] = useState<SystemSettings | null>(null);
   const [mailMeta, setMailMeta] = useState<MailSettings | null>(null);
   const [editingKey, setEditingKey] = useState(false);
+  const [editingAsrKey, setEditingAsrKey] = useState(false);
   const [editingMailPassword, setEditingMailPassword] = useState(false);
   const role = (user as any)?.role?.value ?? (user as any)?.role;
 
@@ -86,8 +92,13 @@ const SystemSettingsPage: React.FC = () => {
         llm_base_url: res.llm_base_url || undefined,
         llm_model: res.llm_model || 'qwen3.5-plus',
         llm_api_key: '',
+        asr_provider: res.asr_provider || 'openai_compatible',
+        asr_base_url: res.asr_base_url || undefined,
+        asr_model: res.asr_model || 'paraformer-offline',
+        asr_api_key: '',
       });
       setEditingKey(false);
+      setEditingAsrKey(false);
     } catch (e) {
       const status = (e as any)?.response?.status;
       if (status === 404) {
@@ -214,13 +225,19 @@ const SystemSettingsPage: React.FC = () => {
       const payload: any = {
         llm_base_url: values.llm_base_url || null,
         llm_model: values.llm_model,
+        asr_provider: values.asr_provider,
+        asr_base_url: values.asr_base_url || null,
+        asr_model: values.asr_model,
       };
       if (values.llm_api_key && values.llm_api_key.trim()) {
         payload.llm_api_key = values.llm_api_key.trim();
       }
+      if (values.asr_api_key && values.asr_api_key.trim()) {
+        payload.asr_api_key = values.asr_api_key.trim();
+      }
       setSaving(true);
       await request.put('/settings/system', payload);
-      form.setFieldsValue({ llm_api_key: '' });
+      form.setFieldsValue({ llm_api_key: '', asr_api_key: '' });
       await fetchSettings();
       message.success('模型配置已保存');
     } catch (e) {
@@ -467,6 +484,75 @@ const SystemSettingsPage: React.FC = () => {
               autoComplete="new-password"
               name="llm_api_key_field"
               disabled={!!(meta?.llm_api_key_set && !editingKey)}
+            />
+          </Form.Item>
+
+          <Divider />
+          <Title level={4}>语音识别模型（ASR）</Title>
+          <Alert
+            type="info"
+            showIcon
+            message="语音识别与文本大模型独立配置"
+            description="正式录音链路需要本地服务提供实时会话、WebSocket 流式识别和异步长音频任务接口。Base URL 应包含 /v1。"
+            style={{ marginBottom: 16 }}
+          />
+
+          <Form.Item
+            name="asr_provider"
+            label="ASR 提供方"
+            rules={[{ required: true, message: '请选择 ASR 提供方' }]}
+          >
+            <Select
+              options={[
+                { value: 'openai_compatible', label: 'OpenAI 兼容（本地模型）' },
+                { value: 'dashscope', label: 'DashScope Paraformer' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item noStyle shouldUpdate={(previous, current) => previous.asr_provider !== current.asr_provider}>
+            {({ getFieldValue }) => getFieldValue('asr_provider') === 'openai_compatible' ? (
+              <Form.Item
+                name="asr_base_url"
+                label="ASR Base URL"
+                rules={[{ required: true, message: '请输入本地语音识别服务地址' }]}
+                extra="例如：http://host.docker.internal:8001/v1"
+              >
+                <Input placeholder="http://host.docker.internal:8001/v1" autoComplete="off" />
+              </Form.Item>
+            ) : null}
+          </Form.Item>
+
+          <Form.Item
+            name="asr_model"
+            label="ASR Model"
+            rules={[{ required: true, message: '请输入语音识别模型名称' }]}
+          >
+            <Input placeholder="例如：paraformer-offline" autoComplete="off" />
+          </Form.Item>
+
+          <Form.Item
+            name="asr_api_key"
+            label="ASR API Key（本地服务可留空）"
+            extra={
+              <Space direction="vertical" size={4}>
+                <Text type="secondary">
+                  {meta?.asr_api_key_set
+                    ? `已配置${meta.asr_api_key_last4 ? `（末 4 位：${meta.asr_api_key_last4}）` : ''}，不会回显完整 Key`
+                    : '未配置；无鉴权的本地服务可以留空'}
+                </Text>
+                {meta?.asr_api_key_set && !editingAsrKey ? (
+                  <Button type="link" onClick={() => setEditingAsrKey(true)} style={{ padding: 0, height: 'auto' }}>
+                    更换 ASR API Key
+                  </Button>
+                ) : null}
+              </Space>
+            }
+          >
+            <Input.Password
+              placeholder={meta?.asr_api_key_set && !editingAsrKey ? '已配置（不会回显）' : '可选'}
+              autoComplete="new-password"
+              disabled={!!(meta?.asr_api_key_set && !editingAsrKey)}
             />
           </Form.Item>
         </Form>

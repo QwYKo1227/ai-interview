@@ -30,6 +30,8 @@ class TestCreateInterview:
             position_id=test_position.id,
             interviewer="主面试官",
             interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_location="上海办公室",
+            meeting_link="https://meeting.example.com/interview",
             panel_members=[]
         )
 
@@ -40,6 +42,7 @@ class TestCreateInterview:
         assert result.position_id == test_position.id
         assert result.status == InterviewStatus.SCHEDULED
         assert result.result == InterviewResult.PENDING
+        assert test_resume.status == ResumeStatus.INTERVIEW_SCHEDULED
         assert result.questions is None
         assert len(mock_background_tasks.tasks) >= 1  # 背景任务被添加（生成问题 + 可能的邮件通知）
 
@@ -51,6 +54,8 @@ class TestCreateInterview:
             position_id=test_position.id,
             interviewer="主面试官",
             interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_location="上海办公室",
+            meeting_link="https://meeting.example.com/interview",
             panel_members=[str(test_interviewer.id)]
         )
 
@@ -64,7 +69,10 @@ class TestCreateInterview:
         interview_data = InterviewCreate(
             resume_id=uuid4(),  # 不存在的简历ID
             position_id=test_position.id,
-            interviewer="主面试官"
+            interviewer="主面试官",
+            interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_location="上海办公室",
+            meeting_link="https://meeting.example.com/interview",
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -78,7 +86,10 @@ class TestCreateInterview:
         interview_data = InterviewCreate(
             resume_id=test_resume.id,
             position_id=uuid4(),  # 不存在的岗位ID
-            interviewer="主面试官"
+            interviewer="主面试官",
+            interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_location="上海办公室",
+            meeting_link="https://meeting.example.com/interview",
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -184,6 +195,23 @@ class TestDeleteInterview:
         deleted = interview_service.get_interview(db, test_interview.id)
         assert deleted is None
 
+    def test_delete_scheduled_interview_restores_resume_status(self, db: Session, test_interview: Interview, test_resume: Resume):
+        test_resume.status = ResumeStatus.INTERVIEW_SCHEDULED
+        db.commit()
+
+        interview_service.delete_interview(db, test_interview.id)
+
+        assert test_resume.status == ResumeStatus.PENDING_INTERVIEW
+
+    def test_delete_started_interview_is_rejected(self, db: Session, test_interview_in_progress: Interview):
+        test_interview_in_progress.lifecycle_state = "in_progress"
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            interview_service.delete_interview(db, test_interview_in_progress.id)
+
+        assert exc_info.value.status_code == 409
+
     def test_delete_interview_not_found(self, db: Session):
         """测试删除不存在的面试"""
         result = interview_service.delete_interview(db, uuid4())
@@ -202,6 +230,8 @@ class TestStartInterview:
 
         assert result is not None
         assert result.status == InterviewStatus.IN_PROGRESS
+        assert result.lifecycle_state == "in_progress"
+        assert result.resume.status == ResumeStatus.INTERVIEW_IN_PROGRESS
 
     def test_start_interview_not_found(self, db: Session):
         """测试开始不存在的面试"""
@@ -224,7 +254,7 @@ class TestCancelInterview:
 
     def test_cancel_interview_success(self, db: Session, test_interview: Interview):
         """测试成功取消面试"""
-        result = interview_service.cancel_interview(db, test_interview.id)
+        result = interview_service.cancel_interview(db, test_interview.id, "Schedule changed")
 
         assert result is not None
         assert result.status == InterviewStatus.CANCELLED
@@ -240,6 +270,40 @@ class TestCancelInterview:
         assert "cancel_reason" in result.comments
         assert result.comments["cancel_reason"] == reason
 
+    def test_cancel_interview_updates_lifecycle_and_resume_status(self, db: Session, test_interview: Interview, test_resume: Resume):
+        result = interview_service.cancel_interview(db, test_interview.id, "Candidate requested rescheduling")
+
+        assert result.lifecycle_state == "cancelled"
+        assert result.cancelled_at is not None
+        assert test_resume.status.value == "pending_interview"
+
+    def test_cancel_interview_requires_reason(self, db: Session, test_interview: Interview):
+        with pytest.raises(HTTPException) as exc_info:
+            interview_service.cancel_interview(db, test_interview.id, "   ")
+
+        assert exc_info.value.status_code == 422
+
+    def test_cancel_next_round_schedule_restores_pending_next_round(self, db: Session, test_interview: Interview, test_resume: Resume):
+        previous = Interview(
+            tenant_id=test_interview.tenant_id,
+            resume_id=test_resume.id,
+            position_id=test_interview.position_id,
+            interview_time=datetime(2024, 11, 1, tzinfo=timezone.utc),
+            round=1,
+            status=InterviewStatus.COMPLETED,
+            lifecycle_state="ended",
+            result=InterviewResult.NEXT_ROUND,
+            final_decision_at=datetime(2024, 11, 2, tzinfo=timezone.utc),
+        )
+        test_interview.round = 2
+        test_resume.status = ResumeStatus.INTERVIEW_SCHEDULED
+        db.add(previous)
+        db.commit()
+
+        interview_service.cancel_interview(db, test_interview.id, "Reschedule round two")
+
+        assert test_resume.status == ResumeStatus.PENDING_NEXT_INTERVIEW
+
     def test_cancel_interview_not_found(self, db: Session):
         """测试取消不存在的面试"""
         result = interview_service.cancel_interview(db, uuid4())
@@ -253,10 +317,10 @@ class TestCancelInterview:
         db.commit()
 
         with pytest.raises(HTTPException) as exc_info:
-            interview_service.cancel_interview(db, test_interview.id)
+            interview_service.cancel_interview(db, test_interview.id, "Too late to cancel")
 
-        assert exc_info.value.status_code == 400
-        assert "Cannot cancel a completed interview" in exc_info.value.detail
+        assert exc_info.value.status_code == 409
+        assert "Only scheduled interviews" in exc_info.value.detail
 
 
 class TestSubmitInterviewPanelScore:
@@ -457,6 +521,31 @@ class TestConfirmInterviewResult:
 
         assert result is None
 
+    def test_initial_confirmation_does_not_send_result_notification(
+        self, db: Session, test_interview: Interview, mock_background_tasks
+    ):
+        test_interview.result = InterviewResult.PENDING
+        db.commit()
+
+        interview_service.confirm_interview_result(
+            db, test_interview.id, "hired", mock_background_tasks
+        )
+
+        assert mock_background_tasks.tasks == []
+
+    def test_modifying_confirmed_result_does_not_send_notification(
+        self, db: Session, test_interview: Interview, mock_background_tasks
+    ):
+        test_interview.result = InterviewResult.HIRED
+        db.commit()
+
+        result = interview_service.confirm_interview_result(
+            db, test_interview.id, "rejected", mock_background_tasks
+        )
+
+        assert result.result == InterviewResult.REJECTED
+        assert mock_background_tasks.tasks == []
+
 
 class TestGetInterviewsForInterviewer:
     """测试获取面试官的面试列表功能"""
@@ -506,6 +595,19 @@ class TestExportInterviewResult:
         result = interview_service.export_interview_result(db, uuid4())
 
         assert result is None
+
+    def test_export_interview_result_includes_transcripts(self, db: Session,
+                                                          test_interview: Interview):
+        test_interview.transcripts = {
+            "full_interview": "Complete interview transcript",
+            "0": "Answer to the first question",
+        }
+        db.commit()
+
+        result = interview_service.export_interview_result(db, test_interview.id)
+
+        assert "Complete interview transcript" in result
+        assert "Answer to the first question" in result
 
 
 class TestUpdateInterviewQuestions:

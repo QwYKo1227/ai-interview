@@ -60,3 +60,18 @@ def require_interview_assignment(
             detail="Interview assignment required",
         )
     return interview
+
+
+def require_assigned_interviewer(
+    db: Session,
+    interview_id,
+    user: User,
+) -> Interview:
+    """Require actual panel membership, excluding role-based administrative access."""
+
+    interview = db.query(Interview).filter(Interview.id == interview_id).first()
+    if interview is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
+    if not is_interviewer_assigned(db, interview, user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Interview assignment required")
+    return interview

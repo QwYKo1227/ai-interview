@@ -202,7 +202,8 @@ def test_all_business_uploads_use_tenant_storage_and_no_direct_upload_writes():
     assert '"resumes",' in resume_source
     assert "max_size=MAX_RESUME_UPLOAD_SIZE" in resume_source
     assert 'save_upload_file(file, tenant_id, "question_banks"' in bank_source
-    assert interview_source.count("stored = save_upload_file(") == 3
+    assert interview_source.count("stored = save_upload_file(") == 4
+    assert 'resource_type="interview_recording_chunk"' in interview_source
     assert 'f"uploads/' not in interview_source
     assert "shutil.copyfileobj" not in interview_source
     assert interview_source.count("commit_file_replacement(db, stored, old_files") == 3
@@ -506,7 +507,7 @@ def test_unassigned_interviewer_cannot_self_join_panel_by_question_audio_upload(
     intruder = _unassigned_interviewer(db, tenant_a.id)
     scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
     monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(interview_routes, "transcribe_audio", lambda _path: {"text": "ok"})
+    monkeypatch.setattr(interview_routes, "transcribe_audio", lambda _path, **_kwargs: {"text": "ok"})
 
     with pytest.raises(HTTPException) as exc:
         interview_routes.upload_audio_route(
@@ -535,7 +536,7 @@ def test_unassigned_interviewer_cannot_upload_full_interview_audio(
     intruder = _unassigned_interviewer(db, tenant_a.id)
     scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
     monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path: {"text": "ok", "segments": []})
+    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path, **_kwargs: {"text": "ok", "segments": []})
     monkeypatch.setattr(audio_service, "format_transcript_for_display", lambda _data: "ok")
 
     with pytest.raises(HTTPException) as exc:
@@ -561,7 +562,7 @@ def test_unassigned_interviewer_cannot_upload_direct_evaluation_audio(
     intruder = _unassigned_interviewer(db, tenant_a.id)
     scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
     monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path: {"text": "ok"})
+    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path, **_kwargs: {"text": "ok"})
 
     with pytest.raises(HTTPException) as exc:
         interview_routes.submit_direct_evaluation_with_audio(
@@ -640,7 +641,7 @@ def test_unassigned_interviewer_cannot_score_then_reuse_created_panel_for_audio(
 
     monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
     monkeypatch.setattr(
-        interview_routes, "transcribe_audio", lambda _path: {"text": "should-not-run"}
+        interview_routes, "transcribe_audio", lambda _path, **_kwargs: {"text": "should-not-run"}
     )
     with pytest.raises(HTTPException) as audio_error:
         interview_routes.upload_audio_route(
@@ -867,7 +868,7 @@ def test_question_audio_transcription_failure_leaves_no_metadata_or_file(
     monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
     monkeypatch.setattr(
         interview_routes, "transcribe_audio",
-        lambda _path: (_ for _ in ()).throw(RuntimeError("provider detail")),
+        lambda _path, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider detail")),
     )
     with pytest.raises(HTTPException) as exc:
         interview_routes.upload_audio_route(
@@ -888,7 +889,7 @@ def test_full_audio_business_failure_leaves_no_metadata_or_file(
 
     scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
     monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path: {"text": "ok", "segments": []})
+    monkeypatch.setattr(audio_service, "transcribe_audio", lambda _path, **_kwargs: {"text": "ok", "segments": []})
     monkeypatch.setattr(
         audio_service, "format_transcript_for_display",
         lambda _data: (_ for _ in ()).throw(RuntimeError("format detail")),
@@ -901,4 +902,50 @@ def test_full_audio_business_failure_leaves_no_metadata_or_file(
     assert exc.value.detail == "Audio upload failed"
     assert scoped.query(StoredFile).count() == 0
     assert not list(tmp_path.rglob("*.*"))
+    scoped.close()
+
+
+def test_full_audio_uses_tenant_asr_config(
+    db, tenant_a, test_interview, test_interviewer, tmp_path, monkeypatch
+):
+    from app.models.models import SystemConfig
+    from app.routes import interviews as interview_routes
+    from app.services import audio_service
+
+    db.add(SystemConfig(
+        tenant_id=tenant_a.id,
+        singleton_key=True,
+        llm_provider="dashscope",
+        llm_api_key="tenant-dashscope-key",
+        asr_provider="openai_compatible",
+        asr_base_url="http://local-asr:9000/v1",
+        asr_model="local-whisper",
+        asr_api_key=None,
+    ))
+    db.commit()
+    scoped = TenantSession(bind=db.get_bind(), tenant_id=tenant_a.id)
+    captured = {}
+
+    def transcribe(_path, *, config=None):
+        captured["config"] = config
+        return {"text": "ok", "segments": []}
+
+    monkeypatch.setattr(interview_routes, "UPLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(audio_service, "transcribe_audio", transcribe)
+    monkeypatch.setattr(audio_service, "format_transcript_for_display", lambda _data: "ok")
+
+    interview_routes.upload_full_interview_audio(
+        test_interview.id,
+        _upload("voice.webm", b"audio", "audio/webm"),
+        BackgroundTasks(),
+        scoped,
+        test_interviewer,
+    )
+
+    assert captured["config"] == {
+        "provider": "openai_compatible",
+        "base_url": "http://local-asr:9000/v1",
+        "model": "local-whisper",
+        "api_key": None,
+    }
     scoped.close()

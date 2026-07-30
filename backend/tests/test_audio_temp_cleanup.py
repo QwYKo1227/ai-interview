@@ -46,3 +46,66 @@ def test_transcription_removes_temporary_wav_when_provider_raises(tmp_path, monk
     assert exported
     assert all(not path.exists() for path in exported)
     assert all(path.parent != source.parent for path in exported)
+
+
+def test_transcription_passes_explicit_api_key_to_provider(tmp_path, monkeypatch):
+    source = tmp_path / "voice.webm"
+    source.write_bytes(b"audio")
+    monkeypatch.setattr(audio_service.AudioSegment, "from_file", lambda _path: _Sound())
+    captured = {}
+
+    class SuccessfulRecognition:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def call(self, _path):
+            return SimpleNamespace(
+                status_code=200,
+                get_sentence=lambda: [{"text": "ok", "begin_time": 0, "end_time": 1000}],
+            )
+
+    monkeypatch.setattr(audio_service, "Recognition", SuccessfulRecognition)
+
+    result = audio_service.transcribe_audio(str(source), config={
+        "provider": "dashscope",
+        "model": "paraformer-realtime-v2",
+        "api_key": "tenant-dashscope-key",
+    })
+
+    assert result["text"] == "ok"
+    assert captured["api_key"] == "tenant-dashscope-key"
+
+
+def test_transcription_calls_openai_compatible_local_service_without_api_key(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "voice.webm"
+    source.write_bytes(b"audio")
+    monkeypatch.setattr(audio_service.AudioSegment, "from_file", lambda _path: _Sound())
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": "local transcript"}
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(audio_service.httpx, "post", post)
+
+    result = audio_service.transcribe_audio(str(source), config={
+        "provider": "openai_compatible",
+        "base_url": "http://local-asr:9000/v1",
+        "model": "local-whisper",
+        "api_key": None,
+    })
+
+    assert result == {"text": "local transcript", "segments": []}
+    assert captured["url"] == "http://local-asr:9000/v1/audio/transcriptions"
+    assert captured["data"] == {"model": "local-whisper"}
+    assert captured["headers"] == {}

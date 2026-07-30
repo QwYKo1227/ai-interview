@@ -6,7 +6,16 @@ from app.config.tenant_session import tenant_authentication_session
 from app.models.models import User, UserRole
 from app.models.tenant_models import Tenant, TenantDomain, TenantStatus
 from app.schemas.tenant import TenantSummary
-from app.schemas.user import Token, UserResponse, CurrentUserResponse, UserLogin, UserCreate, UserUpdateMe, ChangePasswordRequest
+from app.schemas.user import (
+    AdminResetPasswordRequest,
+    ChangePasswordRequest,
+    CurrentUserResponse,
+    Token,
+    UserCreate,
+    UserLogin,
+    UserResponse,
+    UserUpdateMe,
+)
 from app.core.security import verify_password, create_access_token, check_roles, get_password_hash
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_context, get_tenant_db
 from app.core.tenant_context import TenantContext
@@ -386,6 +395,35 @@ def toggle_user_status(
     db.add(db_user)
     db.commit()
     return {"success": True, "is_active": db_user.is_active}
+
+
+@router.put("/users/{user_id}/password")
+def reset_user_password(
+    user_id: str,
+    payload: AdminResetPasswordRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN])),
+):
+    """Allow an administrator to replace another tenant user's password."""
+    from uuid import UUID
+
+    try:
+        uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的用户ID") from None
+
+    db_user = db.query(User).filter(User.id == uuid).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if db_user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="请在个人设置中修改自己的密码")
+
+    validate_password_strength(payload.new_password)
+    db_user.hashed_password = get_password_hash(payload.new_password)
+    db_user.credential_version += 1
+    db.add(db_user)
+    db.commit()
+    return {"success": True}
 
 @router.delete("/users/{user_id}")
 def delete_user(

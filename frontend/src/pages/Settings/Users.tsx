@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Table, Button, Space, message, Tag, Modal, Form, Input, Select, Card, Typography, Popconfirm, Tooltip } from 'antd';
-import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined, StopOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Table, Button, Space, message, Tag, Modal, Form, Input, Select, Typography, Popconfirm, Tooltip } from 'antd';
+import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined, StopOutlined, CheckCircleOutlined, LockOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
+import { useAuth } from '../../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 
@@ -14,7 +15,18 @@ interface User {
   created_at: string;
 }
 
+const getErrorMessage = (error: unknown, fallback: string) => {
+  const candidate = error as { response?: { data?: { detail?: unknown } } };
+  const detail = candidate?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+};
+
+const isFormValidationError = (error: unknown) => (
+  Array.isArray((error as { errorFields?: unknown })?.errorFields)
+);
+
 const UsersList: React.FC = () => {
+  const { user: currentUser } = useAuth();
   const [data, setData] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -22,6 +34,9 @@ const UsersList: React.FC = () => {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
+  const [passwordForm] = Form.useForm();
+  const [passwordUser, setPasswordUser] = useState<User | null>(null);
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
   const fetchUsers = async () => {
@@ -29,7 +44,7 @@ const UsersList: React.FC = () => {
     try {
       const res = await request.get('/auth/users');
       setData(res);
-    } catch (error) {
+    } catch {
       message.error('获取用户列表失败（权限不足？）');
     } finally {
       setLoading(false);
@@ -80,9 +95,8 @@ const UsersList: React.FC = () => {
 
       setIsModalVisible(false);
       fetchUsers();
-    } catch (error: any) {
-      const errorMsg = error?.response?.data?.detail || (isEditModal ? '更新用户失败' : '创建用户失败');
-      message.error(errorMsg);
+    } catch (error: unknown) {
+      message.error(getErrorMessage(error, isEditModal ? '更新用户失败' : '创建用户失败'));
     } finally {
       setSubmitting(false);
     }
@@ -93,9 +107,8 @@ const UsersList: React.FC = () => {
       const res = await request.put(`/auth/users/${record.id}/status`);
       message.success(res.is_active ? '用户已启用' : '用户已禁用');
       fetchUsers();
-    } catch (error: any) {
-      const errorMsg = error?.response?.data?.detail || '操作失败';
-      message.error(errorMsg);
+    } catch (error: unknown) {
+      message.error(getErrorMessage(error, '操作失败'));
     }
   };
 
@@ -104,9 +117,27 @@ const UsersList: React.FC = () => {
       await request.delete(`/auth/users/${userId}`);
       message.success('用户已删除');
       fetchUsers();
-    } catch (error: any) {
-      const errorMsg = error?.response?.data?.detail || '删除失败';
-      message.error(errorMsg);
+    } catch (error: unknown) {
+      message.error(getErrorMessage(error, '删除失败'));
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!passwordUser) return;
+    try {
+      const values = await passwordForm.validateFields();
+      setPasswordSubmitting(true);
+      await request.put(`/auth/users/${passwordUser.id}/password`, {
+        new_password: values.new_password,
+      });
+      message.success('密码已更新，该用户需要重新登录');
+      setPasswordUser(null);
+      passwordForm.resetFields();
+    } catch (error: unknown) {
+      if (isFormValidationError(error)) return;
+      message.error(getErrorMessage(error, '密码更新失败'));
+    } finally {
+      setPasswordSubmitting(false);
     }
   };
 
@@ -127,7 +158,7 @@ const UsersList: React.FC = () => {
           message.success(`成功删除 ${selectedRowKeys.length} 个用户`);
           setSelectedRowKeys([]);
           fetchUsers();
-        } catch (error) {
+        } catch {
           message.error('批量删除失败');
         }
       },
@@ -173,8 +204,8 @@ const UsersList: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 200,
-      render: (_: any, record: User) => (
+      width: 240,
+      render: (_: unknown, record: User) => (
         <Space size="small">
           <Tooltip title="编辑">
             <Button
@@ -183,6 +214,18 @@ const UsersList: React.FC = () => {
               onClick={() => handleEdit(record)}
             />
           </Tooltip>
+          {record.id !== currentUser?.id && (
+            <Tooltip title="重置密码">
+              <Button
+                type="text"
+                icon={<LockOutlined />}
+                onClick={() => {
+                  passwordForm.resetFields();
+                  setPasswordUser(record);
+                }}
+              />
+            </Tooltip>
+          )}
           <Tooltip title={record.is_active ? '禁用' : '启用'}>
             <Button
               type="text"
@@ -267,6 +310,47 @@ const UsersList: React.FC = () => {
               <Select.Option value="hr">HR</Select.Option>
               <Select.Option value="interviewer">面试官 (Interviewer)</Select.Option>
             </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`重置密码${passwordUser ? `：${passwordUser.full_name || passwordUser.email}` : ''}`}
+        open={!!passwordUser}
+        onOk={handleResetPassword}
+        onCancel={() => {
+          setPasswordUser(null);
+          passwordForm.resetFields();
+        }}
+        confirmLoading={passwordSubmitting}
+        okText="确认修改"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form form={passwordForm} layout="vertical">
+          <Form.Item
+            name="new_password"
+            label="新密码"
+            extra="至少 12 个 UTF-8 字节，且必须包含字母和数字"
+            rules={[{ required: true, message: '请输入新密码' }]}
+          >
+            <Input.Password placeholder="请输入新密码" autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label="确认新密码"
+            dependencies={['new_password']}
+            rules={[
+              { required: true, message: '请再次输入新密码' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('new_password') === value) return Promise.resolve();
+                  return Promise.reject(new Error('两次输入的密码不一致'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password placeholder="请再次输入新密码" autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>

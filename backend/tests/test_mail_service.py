@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
+from datetime import datetime, timezone
 import smtplib
 
 import pytest
@@ -115,3 +116,54 @@ def test_smtp_close_error_does_not_log_secret_for_shared_send_path(mock_get_conf
         ) is True
 
     assert secret not in caplog.text
+
+
+@patch("app.services.mail_service.get_system_config")
+def test_interview_invitation_uses_china_time_and_omits_contact_and_signature(
+    mock_get_config,
+):
+    mock_get_config.return_value = _mail_config("ssl")
+    service = MailService(MagicMock())
+    service._send_email = MagicMock(return_value=True)
+
+    assert service.send_interview_invitation(
+        interview=MagicMock(),
+        candidate_email="candidate@example.com",
+        candidate_name="候选人",
+        position_title="后端工程师",
+        interview_time=datetime(2026, 7, 29, 2, 30, tzinfo=timezone.utc),
+    ) is True
+
+    html_content = service._send_email.call_args.args[2]
+    assert "2026年07月29日 10:30" in html_content
+    assert "联系人" not in html_content
+    assert "© 公司 人力资源部" not in html_content
+    assert 'bgcolor="#667eea"' in html_content
+    assert 'data-section="interview-tips-table"' in html_content
+    assert 'bgcolor="#fff3cd"' in html_content
+    assert '<div style="background-color: #fff3cd' not in html_content
+    assert "border-left: 4px solid #ffc107" in html_content
+    assert 'width="4" bgcolor="#ffc107"' not in html_content
+    assert "请携带个人简历及相关证件" not in html_content
+
+
+def test_cancellation_notification_reaches_candidate_and_interviewer(
+    db,
+    test_interview,
+    test_resume,
+    test_interviewer,
+):
+    test_interview.cancel_reason = "候选人申请改期"
+    db.commit()
+    service = MailService.__new__(MailService)
+    service.db = db
+    service._send_email = MagicMock(return_value=True)
+
+    result = service.send_interview_cancellation_for_interview(test_interview)
+
+    assert result["success"] is True
+    recipients = {call.args[0] for call in service._send_email.call_args_list}
+    assert recipients == {test_resume.email, test_interviewer.email}
+    html = service._send_email.call_args_list[0].args[2]
+    assert "候选人申请改期" in html
+    assert "原面试时间" in html

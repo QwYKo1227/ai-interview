@@ -9,7 +9,7 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 import logging
@@ -31,6 +31,17 @@ jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
     autoescape=select_autoescape(['html', 'xml'])
 )
+
+CHINA_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def format_interview_time(interview_time: Optional[datetime]) -> str:
+    """将按 UTC 存储的面试时间转换为北京时间后用于邮件展示。"""
+    if not interview_time:
+        return "待定"
+    if interview_time.tzinfo is None:
+        interview_time = interview_time.replace(tzinfo=timezone.utc)
+    return interview_time.astimezone(CHINA_TIMEZONE).strftime("%Y年%m月%d日 %H:%M")
 
 
 class EmailConfig:
@@ -180,6 +191,25 @@ class MailService:
             "<p>这是一封 SMTP 连通与发信测试邮件。</p>",
         )
 
+    def send_interview_review_reminder(
+        self,
+        recipient: User,
+        interview: Interview,
+        review_url: str,
+    ) -> bool:
+        resume = self.db.query(Resume).filter(Resume.id == interview.resume_id).first()
+        position = self.db.query(Position).filter(Position.id == interview.position_id).first()
+        html = self._render_template(
+            "interview_review_reminder.html",
+            {
+                "interviewer_name": recipient.full_name or recipient.email,
+                "candidate_name": resume.candidate_name if resume else "候选人",
+                "position_title": position.title if position else "岗位",
+                "review_url": review_url,
+            },
+        )
+        return self._send_email(recipient.email, "待完成面试评价提醒", html)
+
     def send_interview_invitation(
         self,
         interview: Interview,
@@ -215,8 +245,7 @@ class MailService:
         Returns:
             bool: 发送是否成功
         """
-        # 格式化面试时间
-        time_str = interview_time.strftime('%Y年%m月%d日 %H:%M') if interview_time else "待定"
+        time_str = format_interview_time(interview_time)
 
         context = {
             "candidate_name": candidate_name,
@@ -474,6 +503,51 @@ class MailService:
             result["errors"].append("候选人邮箱为空")
 
         result["success"] = result["candidate_email_sent"]
+        return result
+
+    def send_interview_cancellation_for_interview(self, interview: Interview) -> Dict[str, Any]:
+        """Notify the candidate and assigned interviewers after cancellation."""
+        result = {"success": True, "sent": [], "errors": []}
+        resume = self.db.query(Resume).filter(Resume.id == interview.resume_id).first()
+        position = self.db.query(Position).filter(Position.id == interview.position_id).first()
+        if resume is None or position is None:
+            return {"success": False, "sent": [], "errors": ["Interview relations not found"]}
+
+        context = {
+            "candidate_name": resume.candidate_name or "候选人",
+            "position_title": position.title,
+            "interview_time": format_interview_time(interview.interview_time),
+            "cancel_reason": interview.cancel_reason or "未填写",
+            "round": interview.round or 1,
+        }
+        html = self._render_template("interview_cancellation.html", context)
+        subject = f"面试取消通知 - {position.title}"
+        recipients = []
+        if resume.email:
+            recipients.append(resume.email)
+        panel_ids = []
+        for value in interview.panel_members or []:
+            try:
+                panel_ids.append(UUID(str(value)))
+            except (TypeError, ValueError):
+                result["success"] = False
+                result["errors"].append(f"Invalid interviewer id: {value}")
+        if panel_ids:
+            recipients.extend(
+                user.email
+                for user in self.db.query(User).filter(User.id.in_(panel_ids), User.is_active == True).all()
+                if user.email
+            )
+
+        if not recipients:
+            result["success"] = False
+            result["errors"].append("No notification recipients")
+        for email in dict.fromkeys(recipients):
+            if self._send_email(email, subject, html):
+                result["sent"].append(email)
+            else:
+                result["success"] = False
+                result["errors"].append(email)
         return result
 
     def send_result_notification_for_interview(

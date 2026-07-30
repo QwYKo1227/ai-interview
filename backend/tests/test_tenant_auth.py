@@ -12,6 +12,7 @@ from app.core.security import (
     create_access_token,
     decode_access_token,
     get_password_hash,
+    verify_password,
 )
 from app.core.tenant_context import TenantContext
 from app.config.tenant_session import TenantSession
@@ -810,6 +811,81 @@ def test_authenticated_user_management_is_tenant_scoped(
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == [str(admin.id)]
+
+
+def test_admin_can_reset_another_users_password_and_invalidate_their_tokens(
+    client, db, tenant_a
+):
+    admin = create_user(
+        db,
+        tenant_a.id,
+        "admin@example.com",
+        "Password123",
+        role=UserRole.ADMIN,
+    )
+    member = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    member_headers = auth_header(member)
+    original_version = member.credential_version
+
+    response = client.put(
+        f"/api/auth/users/{member.id}/password",
+        headers=auth_header(admin),
+        json={"new_password": "Replacement456"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    db.refresh(member)
+    assert member.credential_version == original_version + 1
+    assert verify_password("Replacement456", member.hashed_password)
+    assert not verify_password("Password123", member.hashed_password)
+    assert client.get("/api/auth/me", headers=member_headers).status_code == 401
+
+
+def test_admin_password_reset_rejects_self_and_weak_passwords(
+    client, db, tenant_a
+):
+    admin = create_user(
+        db,
+        tenant_a.id,
+        "admin@example.com",
+        "Password123",
+        role=UserRole.ADMIN,
+    )
+    member = create_user(db, tenant_a.id, "member@example.com", "Password123")
+    original_hash = member.hashed_password
+    original_version = member.credential_version
+
+    self_response = client.put(
+        f"/api/auth/users/{admin.id}/password",
+        headers=auth_header(admin),
+        json={"new_password": "Replacement456"},
+    )
+    weak_response = client.put(
+        f"/api/auth/users/{member.id}/password",
+        headers=auth_header(admin),
+        json={"new_password": "short1"},
+    )
+
+    assert self_response.status_code == 400
+    assert self_response.json() == {"detail": "请在个人设置中修改自己的密码"}
+    assert weak_response.status_code == 400
+    db.refresh(member)
+    assert member.hashed_password == original_hash
+    assert member.credential_version == original_version
+
+
+def test_non_admin_cannot_reset_another_users_password(client, db, tenant_a):
+    actor = create_user(db, tenant_a.id, "hr@example.com", "Password123")
+    member = create_user(db, tenant_a.id, "member@example.com", "Password123")
+
+    response = client.put(
+        f"/api/auth/users/{member.id}/password",
+        headers=auth_header(actor),
+        json={"new_password": "Replacement456"},
+    )
+
+    assert response.status_code == 403
 
 
 def test_create_user_normalizes_email_before_duplicate_query(

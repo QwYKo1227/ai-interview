@@ -67,6 +67,13 @@ class ResumeUpdate(BaseModel):
     def normalize_email(cls, v):
         return _normalize_email(v)
 
+    @field_validator("years_of_experience", mode="before")
+    @classmethod
+    def normalize_years_of_experience(cls, v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(v)
+        return v
+
 class ResumeResponse(ResumeBase):
     id: UUID
     file_path: Optional[str] = None

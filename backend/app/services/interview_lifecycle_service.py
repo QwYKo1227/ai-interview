@@ -1,0 +1,792 @@
+"""Deep module for interview, recording, AI, review, and decision lifecycles."""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timedelta, timezone
+from tempfile import SpooledTemporaryFile
+from uuid import UUID, uuid4
+
+from fastapi import HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+
+from app.config.tenant_session import tenant_session
+from app.core.observability import background_task_context
+from app.models.file_models import StoredFile
+from app.models.models import (
+    Interview,
+    InterviewPanel,
+    InterviewResult,
+    InterviewStatus,
+    Position,
+    Resume,
+    User,
+    UserRole,
+)
+from app.services.resume_interview_status import (
+    apply_final_decision,
+    mark_interview_ended,
+    mark_interview_started,
+)
+from app.services.audio_service import (
+    AsrServiceError,
+    create_transcription_job,
+    delete_transcription_job,
+    get_transcription_config,
+    get_transcription_job,
+    transcribe_audio,
+)
+from app.services.ai_service import generate_text
+from app.utils.file_storage import (
+    MAX_UPLOAD_SIZE,
+    UPLOAD_ROOT,
+    cleanup_new_file,
+    save_upload_file,
+    stage_file_deletions,
+    stored_file_path,
+    unlink_file_locations,
+)
+
+
+RECORDING_RESERVATION_SECONDS = 60
+RECORDING_DISCONNECT_SECONDS = 30
+RECORDING_RETENTION_DAYS = 30
+REMINDER_COOLDOWN_HOURS = 24
+MAX_RECORDING_SIZE = max(MAX_UPLOAD_SIZE, 2 * 1024 * 1024 * 1024)
+ASR_MAX_ATTEMPTS = 3
+ASR_POLL_SECONDS = 15
+
+SCORE_DIMENSIONS = {
+    "technical_fit": {"label": "技术匹配", "weight": 35, "gate": True},
+    "problem_solving": {"label": "问题解决", "weight": 20, "gate": True},
+    "learning_ability": {"label": "学习能力", "weight": 15, "gate": False},
+    "engineering_mindset": {"label": "工程化思维", "weight": 15, "gate": True},
+    "collaboration": {"label": "协作能力", "weight": 10, "gate": False},
+    "culture_fit": {"label": "文化匹配", "weight": 5, "gate": False},
+}
+FINAL_DECISIONS = {
+    "next_round": InterviewResult.NEXT_ROUND,
+    "passed": InterviewResult.PASSED,
+    "rejected": InterviewResult.REJECTED,
+}
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _role_value(user: User) -> str:
+    return getattr(user.role, "value", user.role)
+
+
+def _locked_interview(db: Session, interview_id: UUID) -> Interview:
+    interview = (
+        db.query(Interview)
+        .filter(Interview.id == interview_id)
+        .with_for_update()
+        .first()
+    )
+    if interview is None:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    return interview
+
+
+def _require_owner(interview: Interview, user: User, session_id: UUID) -> None:
+    if interview.recording_session_id != session_id or interview.recording_owner_id != user.id:
+        raise HTTPException(status_code=409, detail="Recording session is owned by another interviewer")
+
+
+def reserve_recording(db: Session, interview_id: UUID, user: User) -> Interview:
+    interview = _locked_interview(db, interview_id)
+    if interview.lifecycle_state not in {"scheduled", "in_progress"}:
+        raise HTTPException(status_code=409, detail="Interview cannot start recording in its current state")
+
+    now = utcnow()
+    live_reservation = (
+        interview.recording_state == "reserved"
+        and interview.recording_reservation_expires_at
+        and as_utc(interview.recording_reservation_expires_at) > now
+    )
+    live_recording = (
+        interview.recording_state == "recording"
+        and interview.recording_heartbeat_at
+        and as_utc(interview.recording_heartbeat_at) > now - timedelta(seconds=RECORDING_DISCONNECT_SECONDS)
+    )
+    if (live_reservation or live_recording) and interview.recording_owner_id != user.id:
+        raise HTTPException(status_code=409, detail="Another interviewer owns the recording")
+
+    if interview.recording_owner_id == user.id and (live_reservation or live_recording):
+        return interview
+
+    is_new_interview = interview.lifecycle_state == "scheduled"
+    interview.recording_session_id = uuid4()
+    interview.recording_owner_id = user.id
+    interview.recording_state = "reserved"
+    interview.recording_reservation_expires_at = now + timedelta(seconds=RECORDING_RESERVATION_SECONDS)
+    interview.recording_heartbeat_at = now
+    if is_new_interview:
+        interview.recording_chunks = []
+        interview.ai_analysis_status = "pending"
+        interview.ai_analysis_error = None
+        interview.asr_job_id = None
+        interview.asr_job_status = "pending"
+        interview.asr_job_attempts = 0
+        interview.asr_job_next_poll_at = utcnow()
+        interview.asr_job_history = []
+        interview.asr_job_delete_pending = False
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
+def confirm_recording(db: Session, interview_id: UUID, session_id: UUID, user: User) -> Interview:
+    interview = _locked_interview(db, interview_id)
+    _require_owner(interview, user, session_id)
+    now = utcnow()
+    if interview.recording_state == "recording":
+        return interview
+    if interview.recording_state != "reserved" or not interview.recording_reservation_expires_at or as_utc(interview.recording_reservation_expires_at) <= now:
+        raise HTTPException(status_code=409, detail="Recording reservation expired")
+
+    interview.recording_state = "recording"
+    interview.lifecycle_state = "in_progress"
+    interview.recording_heartbeat_at = now
+    interview.started_at = interview.started_at or now
+    interview.status = InterviewStatus.IN_PROGRESS
+    mark_interview_started(interview)
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
+def heartbeat_recording(db: Session, interview_id: UUID, session_id: UUID, user: User) -> Interview:
+    interview = _locked_interview(db, interview_id)
+    _require_owner(interview, user, session_id)
+    if interview.recording_state not in {"recording", "ending"}:
+        raise HTTPException(status_code=409, detail="Recording is not active")
+    interview.recording_heartbeat_at = utcnow()
+    db.commit()
+    return interview
+
+
+def append_recording_chunk(
+    db: Session,
+    interview_id: UUID,
+    session_id: UUID,
+    chunk_index: int,
+    stored: StoredFile,
+    user: User,
+) -> dict:
+    interview = _locked_interview(db, interview_id)
+    _require_owner(interview, user, session_id)
+    if interview.recording_state not in {"recording", "ending"}:
+        raise HTTPException(status_code=409, detail="Recording is not accepting chunks")
+    chunks = list(interview.recording_chunks or [])
+    for item in chunks:
+        if item["index"] == chunk_index:
+            if item["size"] == stored.size:
+                cleanup_new_file(db, stored)
+                return item
+            cleanup_new_file(db, stored)
+            raise HTTPException(status_code=409, detail="Recording chunk conflicts with an existing chunk")
+    if chunk_index != len(chunks):
+        cleanup_new_file(db, stored)
+        raise HTTPException(status_code=409, detail=f"Expected recording chunk {len(chunks)}")
+    db.add(stored)
+    item = {"index": chunk_index, "file_id": str(stored.id), "size": stored.size}
+    chunks.append(item)
+    interview.recording_chunks = chunks
+    interview.recording_heartbeat_at = utcnow()
+    db.commit()
+    return item
+
+
+def begin_ending(
+    db: Session,
+    interview_id: UUID,
+    session_id: UUID,
+    user: User,
+    reason: str | None = None,
+) -> Interview:
+    interview = _locked_interview(db, interview_id)
+    is_admin = _role_value(user) in {UserRole.ADMIN.value, UserRole.HR.value}
+    if not is_admin:
+        _require_owner(interview, user, session_id)
+    if interview.lifecycle_state == "ended":
+        return interview
+    if interview.recording_state not in {"recording", "ending"}:
+        raise HTTPException(status_code=409, detail="Interview recording is not active")
+    interview.lifecycle_state = "ending"
+    interview.recording_state = "ending"
+    interview.end_reason = reason
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
+def seal_recording(db: Session, interview_id: UUID, session_id: UUID, user: User | None) -> Interview:
+    interview = _locked_interview(db, interview_id)
+    is_admin = user is None or _role_value(user) in {UserRole.ADMIN.value, UserRole.HR.value}
+    if not is_admin:
+        _require_owner(interview, user, session_id)
+    if interview.lifecycle_state == "ended" and (interview.audio_records or {}).get("full_interview"):
+        return interview
+    if interview.recording_state != "ending":
+        raise HTTPException(status_code=409, detail="Interview must be ending before it can be sealed")
+
+    chunks = sorted(interview.recording_chunks or [], key=lambda item: item["index"])
+    if not chunks:
+        raise HTTPException(status_code=409, detail="No recording chunks were uploaded")
+    file_ids = [UUID(item["file_id"]) for item in chunks]
+    records = db.query(StoredFile).filter(StoredFile.id.in_(file_ids)).all()
+    by_id = {record.id: record for record in records}
+    if any(file_id not in by_id for file_id in file_ids):
+        raise HTTPException(status_code=409, detail="Recording chunks are incomplete")
+
+    combined = SpooledTemporaryFile(max_size=32 * 1024 * 1024)
+    for file_id in file_ids:
+        with stored_file_path(by_id[file_id]).open("rb") as source:
+            while data := source.read(1024 * 1024):
+                combined.write(data)
+    combined.seek(0)
+    upload = UploadFile(filename="full_interview.webm", file=combined)
+    stored = None
+    try:
+        stored = save_upload_file(
+            upload,
+            interview.tenant_id,
+            "interview_audio",
+            resource_type="interview",
+            resource_id=interview.id,
+            max_size=MAX_RECORDING_SIZE,
+        )
+        db.add(stored)
+        locations = stage_file_deletions(db, records)
+        interview.audio_records = {**(interview.audio_records or {}), "full_interview": f"/api/files/{stored.id}"}
+        interview.recording_chunks = []
+        interview.recording_state = "sealed"
+        interview.lifecycle_state = "ended"
+        interview.ended_at = utcnow()
+        interview.notes_revealed_at = interview.ended_at
+        interview.recording_delete_after = interview.ended_at + timedelta(days=RECORDING_RETENTION_DAYS)
+        interview.ai_analysis_status = "pending"
+        interview.status = InterviewStatus.ANALYZING
+        mark_interview_ended(interview)
+        for panel in interview.panels or []:
+            panel.notes_frozen_at = interview.ended_at
+        db.commit()
+        unlink_file_locations(locations)
+    except HTTPException:
+        raise
+    except Exception:
+        if stored is not None:
+            cleanup_new_file(db, stored)
+        else:
+            db.rollback()
+        raise
+    finally:
+        combined.close()
+    db.refresh(interview)
+    return interview
+
+
+def _extract_json(value: str) -> dict:
+    match = re.search(r"\{.*\}", value or "", re.DOTALL)
+    if not match:
+        return {"report": value}
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {"report": value}
+
+
+def enforce_analysis_contract(value: dict) -> dict:
+    dimensions = value.get("dimensions") if isinstance(value.get("dimensions"), dict) else {}
+    normalized = {}
+    gate_missing = False
+    gate_failed = False
+    weighted_total = 0.0
+    coverage = 0
+    for key, config in SCORE_DIMENSIONS.items():
+        item = dimensions.get(key) if isinstance(dimensions.get(key), dict) else {}
+        score = item.get("score")
+        evidence = [
+            evidence_item
+            for evidence_item in (item.get("evidence") or [])
+            if isinstance(evidence_item, dict)
+            and isinstance(evidence_item.get("quote"), str)
+            and evidence_item.get("quote").strip()
+            and isinstance(evidence_item.get("start"), (int, float))
+            and isinstance(evidence_item.get("end"), (int, float))
+        ]
+        if not isinstance(score, (int, float)) or not 1 <= score <= 10 or not evidence:
+            score = None
+            evidence = []
+        else:
+            score = round(float(score), 1)
+            coverage += config["weight"]
+            weighted_total += score * config["weight"] / 100
+        if config["gate"] and score is None:
+            gate_missing = True
+        if config["gate"] and score is not None and score < 6:
+            gate_failed = True
+        normalized[key] = {
+            "score": score,
+            "assessment": item.get("assessment") or "",
+            "evidence": evidence,
+        }
+    recommendation = value.get("recommendation")
+    if recommendation not in {"next_round", "passed", "waitlist", "rejected", "inconclusive"}:
+        recommendation = "inconclusive"
+    if gate_missing:
+        recommendation = "inconclusive"
+    elif gate_failed and recommendation in {"next_round", "passed"}:
+        recommendation = "waitlist"
+    return {
+        **value,
+        "dimensions": normalized,
+        "weighted_score": round(weighted_total, 1) if coverage else None,
+        "coverage": coverage,
+        "recommendation": recommendation,
+    }
+
+
+def _asr_history(interview: Interview, **values) -> None:
+    history = list(interview.asr_job_history or [])
+    history.append({"at": utcnow().isoformat(), **values})
+    interview.asr_job_history = history
+
+
+def _asr_retry_delay(attempts: int) -> timedelta:
+    delays = (30, 120, 300)
+    return timedelta(seconds=delays[min(max(attempts - 1, 0), len(delays) - 1)])
+
+
+def _mark_asr_failure(interview: Interview, error: AsrServiceError | None = None) -> None:
+    retryable = error is None or error.retryable
+    if retryable and interview.asr_job_attempts < ASR_MAX_ATTEMPTS:
+        interview.asr_job_status = "retry_wait"
+        delay = (
+            timedelta(seconds=error.retry_after)
+            if error is not None and error.retry_after
+            else _asr_retry_delay(interview.asr_job_attempts)
+        )
+        interview.asr_job_next_poll_at = utcnow() + delay
+        interview.ai_analysis_status = "transcribing"
+    else:
+        interview.asr_job_status = "failed"
+        interview.asr_job_next_poll_at = None
+        interview.ai_analysis_status = "failed"
+        interview.ai_analysis_error = "AsrTranscriptionFailed"
+
+
+def _normalize_asr_result(payload: dict) -> dict:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise AsrServiceError(retryable=False)
+    text = result.get("text")
+    raw_segments = result.get("segments")
+    if not isinstance(text, str) or not isinstance(raw_segments, list):
+        raise AsrServiceError(retryable=False)
+    segments = []
+    for segment in raw_segments:
+        if not isinstance(segment, dict):
+            continue
+        segments.append({
+            "speaker": segment.get("speaker") or "说话人",
+            "text": segment.get("text") or "",
+            "start": segment.get("start", 0),
+            "end": segment.get("end", 0),
+        })
+    return {
+        "text": text,
+        "segments": segments,
+        "language": result.get("language"),
+        "duration": result.get("duration"),
+        "model": result.get("model"),
+    }
+
+
+def _delete_remote_asr_job(interview: Interview, config: dict) -> None:
+    if not interview.asr_job_id:
+        interview.asr_job_delete_pending = False
+        return
+    job_id = interview.asr_job_id
+    try:
+        delete_transcription_job(job_id, config)
+        interview.asr_job_delete_pending = False
+        interview.asr_job_id = None
+        _asr_history(interview, job_id=job_id, status="deleted")
+    except AsrServiceError:
+        interview.asr_job_delete_pending = True
+
+
+@background_task_context
+def process_asr_job(tenant_id: UUID, interview_id: UUID) -> None:
+    """Advance one durable ASR job by one state transition."""
+    should_analyze = False
+    use_legacy_provider = False
+    with tenant_session(tenant_id) as db:
+        interview = (
+            db.query(Interview)
+            .filter(Interview.id == interview_id)
+            .with_for_update()
+            .first()
+        )
+        if (
+            interview is None
+            or interview.lifecycle_state != "ended"
+            or not (interview.audio_records or {}).get("full_interview")
+        ):
+            return
+
+        config = get_transcription_config(db)
+        if config.get("provider") != "openai_compatible":
+            use_legacy_provider = True
+        elif interview.asr_job_delete_pending and interview.asr_job_id:
+            _delete_remote_asr_job(interview, config)
+            db.commit()
+
+        if use_legacy_provider:
+            pass
+        elif interview.asr_job_status == "completed":
+            should_analyze = interview.ai_analysis_status in {"pending", "transcribing", "analyzing"}
+        elif interview.asr_job_status == "failed":
+            return
+        elif (
+            interview.asr_job_next_poll_at
+            and as_utc(interview.asr_job_next_poll_at) > utcnow()
+        ):
+            return
+        elif not interview.asr_job_id:
+            interview.asr_job_attempts = (interview.asr_job_attempts or 0) + 1
+            interview.asr_job_status = "submitting"
+            interview.ai_analysis_status = "transcribing"
+            interview.ai_analysis_started_at = interview.ai_analysis_started_at or utcnow()
+            db.commit()
+            url = (interview.audio_records or {}).get("full_interview")
+            match = re.fullmatch(r"/api/files/([0-9a-fA-F-]{36})", url or "")
+            stored = db.query(StoredFile).filter(StoredFile.id == UUID(match.group(1))).first() if match else None
+            if stored is None:
+                interview.asr_job_status = "failed"
+                interview.ai_analysis_status = "failed"
+                interview.ai_analysis_error = "Recording file is missing"
+                db.commit()
+                return
+            try:
+                payload = create_transcription_job(str(stored_file_path(stored)), config)
+                interview.asr_job_id = str(payload["id"])
+                interview.asr_job_status = str(payload.get("status") or "queued")
+                interview.asr_job_next_poll_at = utcnow() + timedelta(seconds=ASR_POLL_SECONDS)
+                interview.ai_analysis_error = None
+                _asr_history(
+                    interview,
+                    attempt=interview.asr_job_attempts,
+                    job_id=interview.asr_job_id,
+                    status=interview.asr_job_status,
+                )
+            except AsrServiceError as error:
+                _asr_history(
+                    interview,
+                    attempt=interview.asr_job_attempts,
+                    status="submission_failed",
+                    provider_status=error.status_code,
+                )
+                _mark_asr_failure(interview, error)
+            db.commit()
+        else:
+            try:
+                payload = get_transcription_job(interview.asr_job_id, config)
+                remote_status = str(payload.get("status") or "processing")
+                interview.asr_job_status = remote_status
+                if remote_status == "completed":
+                    transcript_data = _normalize_asr_result(payload)
+                    interview.transcripts = {
+                        **(interview.transcripts or {}),
+                        "full_interview": transcript_data["text"],
+                        "full_interview_data": transcript_data,
+                    }
+                    interview.asr_job_status = "completed"
+                    interview.asr_job_next_poll_at = None
+                    interview.asr_job_delete_pending = True
+                    interview.ai_analysis_status = "analyzing"
+                    interview.ai_analysis_error = None
+                    _asr_history(interview, job_id=interview.asr_job_id, status="completed")
+                    db.commit()
+                    _delete_remote_asr_job(interview, config)
+                    db.commit()
+                    should_analyze = True
+                elif remote_status in {"failed", "cancelled"}:
+                    _asr_history(interview, job_id=interview.asr_job_id, status=remote_status)
+                    interview.asr_job_delete_pending = True
+                    _delete_remote_asr_job(interview, config)
+                    _mark_asr_failure(interview)
+                    db.commit()
+                else:
+                    interview.asr_job_next_poll_at = utcnow() + timedelta(seconds=ASR_POLL_SECONDS)
+                    db.commit()
+            except AsrServiceError as error:
+                if error.retryable:
+                    interview.asr_job_next_poll_at = utcnow() + timedelta(
+                        seconds=error.retry_after or ASR_POLL_SECONDS
+                    )
+                else:
+                    _mark_asr_failure(interview, error)
+                db.commit()
+
+    if use_legacy_provider or should_analyze:
+        analyze_sealed_recording(tenant_id, interview_id)
+
+
+@background_task_context
+def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected: bool = False) -> None:
+    with tenant_session(tenant_id) as db:
+        interview = db.query(Interview).filter(Interview.id == interview_id).first()
+        if not interview:
+            return
+        url = (interview.audio_records or {}).get("full_interview")
+        match = re.fullmatch(r"/api/files/([0-9a-fA-F-]{36})", url or "")
+        if not match:
+            interview.ai_analysis_status = "failed"
+            interview.ai_analysis_error = "Recording file is missing"
+            db.commit()
+            return
+        stored = db.query(StoredFile).filter(StoredFile.id == UUID(match.group(1))).first()
+        if not stored:
+            interview.ai_analysis_status = "failed"
+            interview.ai_analysis_error = "Recording file is missing"
+            db.commit()
+            return
+
+        interview.ai_analysis_status = "transcribing"
+        interview.ai_analysis_started_at = utcnow()
+        interview.ai_analysis_error = None
+        db.commit()
+        try:
+            transcripts = interview.transcripts or {}
+            corrected_data = transcripts.get("corrected_full_interview_data")
+            completed_data = transcripts.get("full_interview_data")
+            if use_corrected and corrected_data:
+                transcript_data = corrected_data
+            elif interview.asr_job_status == "completed" and completed_data:
+                transcript_data = completed_data
+            else:
+                transcript_data = transcribe_audio(
+                    str(stored_file_path(stored)),
+                    config=get_transcription_config(db),
+                )
+            transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
+            transcript_values = dict(interview.transcripts or {})
+            if use_corrected and corrected_data:
+                transcript_values["analysis_transcript_data"] = transcript_data
+            else:
+                transcript_values["full_interview"] = transcript
+                transcript_values["full_interview_data"] = transcript_data
+            interview.transcripts = transcript_values
+            interview.ai_analysis_status = "analyzing"
+            db.commit()
+
+            resume = db.query(Resume).filter(Resume.id == interview.resume_id).first()
+            position = db.query(Position).filter(Position.id == interview.position_id).first()
+            matrix = json.dumps(SCORE_DIMENSIONS, ensure_ascii=False)
+            prompt = f"""你是结构化面试分析助手。只能依据录音转写，不得引用面试官评分。
+候选人：{resume.candidate_name if resume else '未知'}
+岗位：{position.title if position else '未知'}
+评分矩阵：{matrix}
+Gate 阈值为 6 分。每个维度按 1-10 分评分；证据不足时 score 必须为 null。
+每个非空评分必须包含 evidence 数组，每条含 start、end、quote。任一 Gate 低于 6，建议不得为 passed 或 next_round；Gate 缺证据时 recommendation 必须为 inconclusive。
+输出严格 JSON：{{"dimensions":{{...}},"weighted_score":number|null,"coverage":number,"recommendation":"next_round|passed|waitlist|rejected|inconclusive","summary":string,"strengths":[string],"risks":[string]}}。
+
+转写及分段：
+{json.dumps(transcript_data, ensure_ascii=False)}"""
+            raw = generate_text(prompt, db=db)
+            analysis = enforce_analysis_contract(_extract_json(raw))
+            analysis["matrix"] = SCORE_DIMENSIONS
+            analysis["source"] = "corrected_transcript" if use_corrected and corrected_data else "recording_only"
+            interview.ai_analysis = analysis
+            interview.ai_analysis_status = "completed"
+            interview.ai_analysis_error = None
+            interview.ai_analysis_version = (interview.ai_analysis_version or 0) + 1
+            interview.ai_analysis_completed_at = utcnow()
+            interview.status = InterviewStatus.COMPLETED
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            interview = db.query(Interview).filter(Interview.id == interview_id).first()
+            if interview:
+                interview.ai_analysis_status = "failed"
+                interview.ai_analysis_error = type(error).__name__
+                interview.status = InterviewStatus.COMPLETED
+                db.commit()
+
+
+def panel_for_user(db: Session, interview: Interview, user: User) -> InterviewPanel:
+    panel = db.query(InterviewPanel).filter(
+        InterviewPanel.interview_id == interview.id,
+        InterviewPanel.interviewer_id == user.id,
+    ).first()
+    if panel is None:
+        raise HTTPException(status_code=403, detail="Interview assignment required")
+    return panel
+
+
+def save_live_notes(db: Session, interview: Interview, user: User, notes: str) -> InterviewPanel:
+    if interview.lifecycle_state != "in_progress":
+        raise HTTPException(status_code=409, detail="Live notes can only be edited during the interview")
+    panel = panel_for_user(db, interview, user)
+    panel.live_notes = notes
+    db.commit()
+    db.refresh(panel)
+    return panel
+
+
+def add_note_supplement(db: Session, interview: Interview, user: User, content: str) -> InterviewPanel:
+    if interview.lifecycle_state != "ended":
+        raise HTTPException(status_code=409, detail="Supplements can only be added after the interview")
+    panel = panel_for_user(db, interview, user)
+    items = list(panel.note_supplements or [])
+    items.append({"content": content, "author_id": str(user.id), "created_at": utcnow().isoformat()})
+    panel.note_supplements = items
+    db.commit()
+    db.refresh(panel)
+    return panel
+
+
+def submit_human_review(
+    db: Session,
+    interview: Interview,
+    user: User,
+    scores: dict,
+    comments: str,
+    recommendation: str,
+) -> InterviewPanel:
+    if interview.lifecycle_state != "ended" or interview.final_decision_at is not None:
+        raise HTTPException(status_code=409, detail="Human review is not editable")
+    if scores and set(scores) != set(SCORE_DIMENSIONS):
+        raise HTTPException(status_code=422, detail="All score dimensions are required")
+    if any(not isinstance(value, int) or value < 1 or value > 10 for value in scores.values()):
+        raise HTTPException(status_code=422, detail="Scores must be integers from 1 to 10")
+    panel = panel_for_user(db, interview, user)
+    now = utcnow()
+    panel.human_scores = scores
+    panel.human_comments = comments
+    panel.human_recommendation = recommendation
+    panel.human_review_submitted_at = panel.human_review_submitted_at or now
+    panel.human_review_updated_at = now
+    db.commit()
+    db.refresh(panel)
+    return panel
+
+
+def confirm_final_decision(db: Session, interview: Interview, user: User, decision: str) -> Interview:
+    if _role_value(user) not in {UserRole.ADMIN.value, UserRole.HR.value}:
+        raise HTTPException(status_code=403, detail="HR or admin role required")
+    if decision not in FINAL_DECISIONS:
+        raise HTTPException(status_code=422, detail="Invalid final decision")
+    if interview.final_decision_at is not None:
+        raise HTTPException(status_code=409, detail="Final decision is locked")
+    panels = {str(panel.interviewer_id): panel for panel in (interview.panels or [])}
+    required_ids = [str(value) for value in (interview.panel_members or [])]
+    missing = [value for value in required_ids if value not in panels or panels[value].human_review_submitted_at is None]
+    if missing:
+        raise HTTPException(status_code=409, detail={"message": "All assigned interviewers must submit", "missing": missing})
+    interview.result = FINAL_DECISIONS[decision]
+    interview.final_decision_by = user.id
+    interview.final_decision_at = utcnow()
+    interview.decision_history = [
+        *(interview.decision_history or []),
+        {
+            "action": "confirmed",
+            "result": decision,
+            "actor_id": str(user.id),
+            "at": interview.final_decision_at.isoformat(),
+        },
+    ]
+    apply_final_decision(interview)
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
+def correct_final_decision(
+    db: Session,
+    interview: Interview,
+    user: User,
+    decision: str,
+    reason: str,
+) -> Interview:
+    if _role_value(user) != UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    if interview.final_decision_at is None:
+        raise HTTPException(status_code=409, detail="No final decision to correct")
+    if decision not in FINAL_DECISIONS:
+        raise HTTPException(status_code=422, detail="Invalid final decision")
+    cleaned_reason = (reason or "").strip()
+    if not cleaned_reason or len(cleaned_reason) > 500:
+        raise HTTPException(status_code=422, detail="Correction reason must be 1-500 characters")
+
+    previous = interview.result.value
+    interview.result = FINAL_DECISIONS[decision]
+    interview.final_decision_by = user.id
+    interview.final_decision_at = utcnow()
+    interview.decision_history = [
+        *(interview.decision_history or []),
+        {
+            "action": "corrected",
+            "from": previous,
+            "to": decision,
+            "reason": cleaned_reason,
+            "actor_id": str(user.id),
+            "at": interview.final_decision_at.isoformat(),
+        },
+    ]
+    apply_final_decision(interview)
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
+def replace_reviewer(
+    db: Session,
+    interview: Interview,
+    user: User,
+    old_interviewer_id: UUID,
+    new_interviewer_id: UUID,
+) -> Interview:
+    if _role_value(user) not in {UserRole.ADMIN.value, UserRole.HR.value}:
+        raise HTTPException(status_code=403, detail="HR or admin role required")
+    if interview.lifecycle_state != "ended" or interview.final_decision_at is not None:
+        raise HTTPException(status_code=409, detail="Reviewers can only be replaced before the final decision")
+    required = [str(value) for value in (interview.panel_members or [])]
+    old_value = str(old_interviewer_id)
+    new_value = str(new_interviewer_id)
+    if old_value not in required:
+        raise HTTPException(status_code=404, detail="Reviewer is not assigned")
+    if new_value in required:
+        raise HTTPException(status_code=409, detail="Replacement reviewer is already assigned")
+    replacement = db.query(User).filter(User.id == new_interviewer_id, User.is_active == True).first()
+    if replacement is None:
+        raise HTTPException(status_code=404, detail="Replacement reviewer not found")
+    required[required.index(old_value)] = new_value
+    interview.panel_members = required
+    existing = db.query(InterviewPanel).filter(
+        InterviewPanel.interview_id == interview.id,
+        InterviewPanel.interviewer_id == new_interviewer_id,
+    ).first()
+    if existing is None:
+        db.add(InterviewPanel(
+            tenant_id=interview.tenant_id,
+            interview_id=interview.id,
+            interviewer_id=new_interviewer_id,
+            is_submitted=False,
+        ))
+    db.commit()
+    db.refresh(interview)
+    return interview

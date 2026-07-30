@@ -1,21 +1,37 @@
 import React, { useEffect, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography } from 'antd';
-import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 
 const { Text } = Typography;
 
+export const getInterviewProgress = (record: any) => {
+  if (record.lifecycle_state === 'cancelled' || record.status === 'cancelled') return 'cancelled';
+  if (record.final_decision_at) return 'decided';
+  if (record.lifecycle_state === 'ended') return 'pending_decision';
+  if (record.lifecycle_state === 'ending') return 'ending';
+  return record.lifecycle_state || record.status;
+};
+
+export const normalizeInterviewResult = (result?: string) => {
+  if (result === 'hired') return 'passed';
+  if (result === 'waitlist') return 'pending';
+  return result || 'pending';
+};
+
 const InterviewsList: React.FC = () => {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
+  const [resultFilter, setResultFilter] = useState<string | undefined>(undefined);
   const [interviewerNameMap, setInterviewerNameMap] = useState<Record<string, string>>({});
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [selectedInterviewId, setSelectedInterviewId] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [sendCancelNotification, setSendCancelNotification] = useState(true);
   
   const [selectResumeModalVisible, setSelectResumeModalVisible] = useState(false);
   const [pendingInterviewResumes, setPendingInterviewResumes] = useState<any[]>([]);
@@ -40,7 +56,7 @@ const InterviewsList: React.FC = () => {
   // 判断是否可以取消面试（仅 HR/Admin 可见）
   const canCancelInterview = user?.role === 'admin' || user?.role === 'hr';
   // 判断是否可以删除面试（仅 HR/Admin 可见）
-  const canDeleteInterview = user?.role === 'admin' || user?.role === 'hr';
+  const canDeleteInterview = user?.role === 'admin';
 
   const fetchInterviews = async () => {
     setLoading(true);
@@ -80,7 +96,10 @@ const InterviewsList: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  const filteredData = statusFilter ? (data as any[]).filter((i) => i?.status === statusFilter) : data;
+  const filteredData = (data as any[]).filter((interview) => (
+    (!statusFilter || getInterviewProgress(interview) === statusFilter)
+    && (!resultFilter || normalizeInterviewResult(interview.result) === resultFilter)
+  ));
 
   const getInterviewerText = (record: any) => {
     const members = Array.isArray(record?.panel_members) ? record.panel_members : [];
@@ -112,6 +131,7 @@ const InterviewsList: React.FC = () => {
   const handleOpenCancelModal = (id: string) => {
     setSelectedInterviewId(id);
     setCancelReason('');
+    setSendCancelNotification(true);
     setCancelModalVisible(true);
   };
 
@@ -125,8 +145,14 @@ const InterviewsList: React.FC = () => {
 
     setCancelling(true);
     try {
-      await request.post(`/interviews/${selectedInterviewId}/cancel?reason=${encodeURIComponent(cancelReason)}`);
-      message.success('面试已取消');
+      const response = await request.post(`/interviews/${selectedInterviewId}/cancel`, undefined, {
+        params: { reason: cancelReason.trim(), notify: sendCancelNotification },
+      }) as any;
+      if (sendCancelNotification && !response?.notification_sent) {
+        message.warning('面试已取消，但通知发送失败，可在列表中重新发送');
+      } else {
+        message.success('面试已取消');
+      }
       setCancelModalVisible(false);
       setCancelReason('');
       setSelectedInterviewId(null);
@@ -135,6 +161,15 @@ const InterviewsList: React.FC = () => {
       message.error('取消面试失败');
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleRetryCancelNotification = async (id: string) => {
+    try {
+      const response = await request.post(`/interviews/${id}/cancel-notification`) as any;
+      response?.success ? message.success('取消通知已发送') : message.error('取消通知发送失败');
+    } catch (error) {
+      message.error('取消通知发送失败');
     }
   };
 
@@ -379,18 +414,41 @@ const InterviewsList: React.FC = () => {
       }
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status: string) => {
+      title: '面试进度',
+      key: 'progress',
+      render: (_: unknown, record: any) => {
         const map: Record<string, {text: string, color: string}> = {
           scheduled: { text: '待面试', color: 'blue' },
           in_progress: { text: '面试中', color: 'orange' },
-          analyzing: { text: '分析中', color: 'purple' },
-          completed: { text: '已完成', color: 'green' },
-          cancelled: { text: '已取消', color: 'default' }
+          ending: { text: '正在结束', color: 'gold' },
+          pending_decision: { text: '待确认面试结果', color: 'purple' },
+          decided: { text: '已确认', color: 'green' },
+          cancelled: { text: '已取消', color: 'default' },
         };
-        const info = map[status] || { text: status, color: 'default' };
+        const progress = getInterviewProgress(record);
+        const info = map[progress] || { text: progress, color: 'default' };
+        const tag = <Tag color={info.color} style={{ border: 'none' }}>{info.text}</Tag>;
+        const cancellationDetails = [
+          record.cancel_reason ? `取消原因：${record.cancel_reason}` : '',
+          record.cancelled_at ? `取消时间：${new Date(record.cancelled_at).toLocaleString()}` : '',
+        ].filter(Boolean).join('；');
+        return progress === 'cancelled' && cancellationDetails
+          ? <Tooltip title={cancellationDetails}>{tag}</Tooltip>
+          : tag;
+      }
+    },
+    {
+      title: '面试结果',
+      key: 'result',
+      render: (_: unknown, record: any) => {
+        const map: Record<string, {text: string, color: string}> = {
+          pending: { text: '未出结果', color: 'default' },
+          next_round: { text: '进入下一轮', color: 'blue' },
+          passed: { text: '通过', color: 'green' },
+          rejected: { text: '淘汰', color: 'red' },
+        };
+        const result = normalizeInterviewResult(record.result);
+        const info = map[result] || { text: result, color: 'default' };
         return <Tag color={info.color} style={{ border: 'none' }}>{info.text}</Tag>;
       }
     },
@@ -404,31 +462,37 @@ const InterviewsList: React.FC = () => {
 
         return (
         <Space size="small">
-          {record.status === 'scheduled' && (
+          {(record.lifecycle_state || record.status) === 'scheduled' && (
             <Tooltip title="开始面试">
               <Button type="text" icon={<PlayCircleOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
             </Tooltip>
           )}
 
-          {record.status === 'in_progress' && !isPendingConfirmation && (
-            <Tooltip title="继续评分">
+          {(record.lifecycle_state || record.status) === 'in_progress' && (
+            <Tooltip title="继续面试">
               <Button type="text" icon={<PlayCircleOutlined style={{ color: '#F97316' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
             </Tooltip>
           )}
 
-          {(record.status === 'completed' || isPendingConfirmation) && (
+          {(record.lifecycle_state === 'ended' || record.status === 'completed' || isPendingConfirmation) && (
              <Tooltip title={isPendingConfirmation ? "确认结果" : "查看结果"}>
                <Button type="text" icon={<EyeOutlined style={{ color: isPendingConfirmation ? '#F59E0B' : '#10B981' }} />} onClick={() => navigate(`/interviews/${record.id}/result`)} />
              </Tooltip>
           )}
 
-          {canCancelInterview && (record.status === 'scheduled' || record.status === 'in_progress') && (
+          {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
             <Tooltip title="取消面试">
               <Button type="text" danger icon={<StopOutlined />} onClick={() => handleOpenCancelModal(record.id)} />
             </Tooltip>
           )}
 
-          {canDeleteInterview && (
+          {canCancelInterview && getInterviewProgress(record) === 'cancelled' && (
+            <Tooltip title="重新发送取消通知">
+              <Button type="text" icon={<SendOutlined />} onClick={() => handleRetryCancelNotification(record.id)} />
+            </Tooltip>
+          )}
+
+          {canDeleteInterview && ['scheduled', 'cancelled'].includes(getInterviewProgress(record)) && (
             <Tooltip title="删除">
               <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
             </Tooltip>
@@ -443,7 +507,7 @@ const InterviewsList: React.FC = () => {
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
         <Space>
           <Select
-            placeholder="筛选状态"
+            placeholder="筛选面试进度"
             allowClear
             value={statusFilter}
             onChange={(val) => setStatusFilter(val)}
@@ -451,8 +515,23 @@ const InterviewsList: React.FC = () => {
             options={[
               { value: 'scheduled', label: '待面试' },
               { value: 'in_progress', label: '面试中' },
-              { value: 'completed', label: '已完成' },
+              { value: 'ending', label: '正在结束' },
+              { value: 'pending_decision', label: '待确认面试结果' },
+              { value: 'decided', label: '已确认' },
               { value: 'cancelled', label: '已取消' },
+            ]}
+          />
+          <Select
+            placeholder="筛选面试结果"
+            allowClear
+            value={resultFilter}
+            onChange={(val) => setResultFilter(val)}
+            style={{ width: 160 }}
+            options={[
+              { value: 'pending', label: '未出结果' },
+              { value: 'next_round', label: '进入下一轮' },
+              { value: 'passed', label: '通过' },
+              { value: 'rejected', label: '淘汰' },
             ]}
           />
           {selectedRowKeys.length > 0 && canDeleteInterview && (
@@ -476,6 +555,9 @@ const InterviewsList: React.FC = () => {
         rowSelection={{
           selectedRowKeys,
           onChange: (keys) => setSelectedRowKeys(keys),
+          getCheckboxProps: (record: any) => ({
+            disabled: !canDeleteInterview || !['scheduled', 'cancelled'].includes(getInterviewProgress(record)),
+          }),
         }}
       />
 
@@ -499,6 +581,13 @@ const InterviewsList: React.FC = () => {
           maxLength={500}
           showCount
         />
+        <Checkbox
+          checked={sendCancelNotification}
+          onChange={(event) => setSendCancelNotification(event.target.checked)}
+          style={{ marginTop: 12 }}
+        >
+          通知候选人和面试官
+        </Checkbox>
       </Modal>
 
       {/* 选择简历弹窗 */}
@@ -662,6 +751,7 @@ const InterviewsList: React.FC = () => {
           <Form.Item
             name="interview_time"
             label="面试时间"
+            rules={[{ required: true, message: '请选择面试时间' }]}
           >
             <DatePicker showTime style={{ width: '100%' }} size="large" />
           </Form.Item>
@@ -678,6 +768,7 @@ const InterviewsList: React.FC = () => {
                     <Form.Item
                       name="interview_location"
                       label="面试地点"
+                      rules={[{ required: true, whitespace: true, message: '请输入面试地点' }]}
                     >
                       <Input placeholder="请输入面试地点，如：北京市朝阳区xxx大厦A座10层" size="large" />
                     </Form.Item>
@@ -686,6 +777,7 @@ const InterviewsList: React.FC = () => {
                     <Form.Item
                       name="meeting_link"
                       label="会议链接"
+                      rules={[{ required: true, whitespace: true, message: '请输入会议链接' }]}
                     >
                       <Input placeholder="请输入视频会议链接，如：https://meeting.xxx.com/xxx" size="large" />
                     </Form.Item>

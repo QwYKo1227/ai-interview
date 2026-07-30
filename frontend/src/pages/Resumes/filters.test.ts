@@ -33,13 +33,13 @@ describe('resume filters', () => {
     ref.current = {
       candidateName: 'Bob',
       positionId: 'new-position',
-      status: 'hired',
+      status: 'completed',
     };
 
     expect(refresh()).toEqual({
       candidate_name: 'Bob',
       position_id: 'new-position',
-      status: 'hired',
+      status: 'completed',
     });
   });
 });

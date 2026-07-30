@@ -129,20 +129,24 @@ def get_position_stats(db: Session, position_id: UUID) -> PositionStats:
             ResumeStatus.PENDING_SCREENING, 
             ResumeStatus.PENDING_REVIEW
         ]),
-        pending_interview=sum(1 for r in resumes if r.status == ResumeStatus.PENDING_INTERVIEW),
+        pending_interview=sum(1 for r in resumes if r.status in [
+            ResumeStatus.PENDING_INTERVIEW,
+            ResumeStatus.INTERVIEW_SCHEDULED,
+            ResumeStatus.INTERVIEW_IN_PROGRESS,
+            ResumeStatus.PENDING_INTERVIEW_RESULT,
+            ResumeStatus.PENDING_NEXT_INTERVIEW,
+        ]),
         interview_completed=sum(1 for r in resumes if r.status in [
             ResumeStatus.INTERVIEW_PASSED, 
             ResumeStatus.INTERVIEW_FAILED,
             ResumeStatus.OFFER_PENDING,
             ResumeStatus.OFFER_ACCEPTED,
             ResumeStatus.OFFER_REJECTED,
-            ResumeStatus.ONBOARDING,
             ResumeStatus.COMPLETED
         ]),
         offer_pending=sum(1 for r in resumes if r.status == ResumeStatus.OFFER_PENDING),
         offer_accepted=sum(1 for r in resumes if r.status in [
             ResumeStatus.OFFER_ACCEPTED,
-            ResumeStatus.ONBOARDING,
             ResumeStatus.COMPLETED
         ]),
         rejected=sum(1 for r in resumes if r.status in [

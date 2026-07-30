@@ -141,6 +141,10 @@ def init_builtin_workflows_on_startup():
 
 init_builtin_workflows_on_startup()
 
+from app.services.interview_lifecycle_monitor import start_interview_lifecycle_monitor
+
+start_interview_lifecycle_monitor()
+
 
 @app.get("/")
 def read_root():

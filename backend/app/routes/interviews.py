@@ -54,6 +54,10 @@ from app.services.interview_lifecycle_service import (
     utcnow,
 )
 from app.services.audio_service import AsrServiceError, create_realtime_session, get_transcription_config
+from app.services.resume_interview_status import (
+    mark_legacy_interview_completed,
+    mark_legacy_interview_ended,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1072,6 +1076,7 @@ def submit_direct_evaluation(
         if all_submitted:
             interview.status = InterviewStatus.ANALYZING
             interview.result = InterviewResult.PENDING
+            mark_legacy_interview_ended(interview)
             
             all_evaluations = []
             for p in submitted_panels:
@@ -1101,7 +1106,7 @@ def submit_direct_evaluation(
                     avg_score
                 )
             else:
-                interview.status = InterviewStatus.COMPLETED
+                mark_legacy_interview_completed(interview)
                 db.commit()
                 db.refresh(interview)
         else:
@@ -1118,6 +1123,7 @@ def submit_direct_evaluation(
         if full_transcript:
             interview.status = InterviewStatus.ANALYZING
             interview.result = InterviewResult.PENDING
+            mark_legacy_interview_ended(interview)
             background_tasks.add_task(
                 generate_combined_evaluation,
                 interview.tenant_id,
@@ -1128,8 +1134,8 @@ def submit_direct_evaluation(
                 evaluation_data.score
             )
         else:
-            interview.status = InterviewStatus.COMPLETED
             interview.result = InterviewResult.PENDING
+            mark_legacy_interview_completed(interview)
 
         db.commit()
         db.refresh(interview)
@@ -1208,7 +1214,6 @@ def submit_direct_evaluation_with_audio(
                     )
                 combined = "\n\n".join(all_evaluations)
                 average = sum(item.total_score or 0 for item in submitted_panels) // len(submitted_panels)
-                interview.status = InterviewStatus.ANALYZING if transcript else InterviewStatus.COMPLETED
                 interview.result = InterviewResult.PENDING
                 interview.evaluation = combined
                 interview.suggestion = "综合多位面试官评价"
@@ -1216,7 +1221,11 @@ def submit_direct_evaluation_with_audio(
                 interview.scores = {"overall": average}
                 interview.comments = {"overall": combined}
                 if transcript:
+                    interview.status = InterviewStatus.ANALYZING
+                    mark_legacy_interview_ended(interview)
                     background_payload = (transcript, combined, "综合多位面试官评价", average)
+                else:
+                    mark_legacy_interview_completed(interview)
             else:
                 interview.result = InterviewResult.PENDING
         else:
@@ -1227,9 +1236,10 @@ def submit_direct_evaluation_with_audio(
             interview.comments = {"overall": evaluation}
             if transcript:
                 interview.status = InterviewStatus.ANALYZING
+                mark_legacy_interview_ended(interview)
                 background_payload = (transcript, evaluation, suggestion, score)
             else:
-                interview.status = InterviewStatus.COMPLETED
+                mark_legacy_interview_completed(interview)
             interview.result = InterviewResult.PENDING
         commit_file_replacement(db, stored, old_files, root=UPLOAD_ROOT)
     except Exception:
@@ -1327,8 +1337,8 @@ def generate_combined_evaluation(
 
         if evaluation:
             interview.evaluation = evaluation
-            interview.status = InterviewStatus.COMPLETED
             interview.result = InterviewResult.PENDING
+            mark_legacy_interview_completed(interview)
 
             # 如果有面试官评分，保留
             if interviewer_score:

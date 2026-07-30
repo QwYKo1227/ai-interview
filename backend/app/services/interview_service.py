@@ -13,6 +13,8 @@ from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_res
 from app.services.interview_access import can_score_interview, is_interviewer_assigned
 from app.services.resume_interview_status import (
     apply_final_decision,
+    mark_legacy_interview_completed,
+    mark_legacy_interview_ended,
     mark_interview_scheduled,
     mark_interview_started,
     restore_after_cancellation,
@@ -226,6 +228,7 @@ def aggregate_panel_scores(db: Session, interview_id: UUID, background_tasks: Ba
         )
 
         db_interview.status = InterviewStatus.ANALYZING
+        mark_legacy_interview_ended(db_interview)
         db.commit()
         db.refresh(db_interview)
         print(f"Panel scores aggregated for interview {interview_id}, status changed to ANALYZING")
@@ -716,15 +719,16 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
         
         if db_interview.status != InterviewStatus.ANALYZING:
             db_interview.status = InterviewStatus.ANALYZING
-            db.commit()
+        mark_legacy_interview_ended(db_interview)
+        db.commit()
             
         scores = score_data.get('scores', {})
         panel_details = score_data.get('panel_details', "")
         transcripts = score_data.get('transcripts', "")
         
         if not scores:
-            db_interview.status = InterviewStatus.COMPLETED
             db_interview.result = InterviewResult.PENDING
+            mark_legacy_interview_completed(db_interview)
             db.commit()
             return
 
@@ -752,7 +756,7 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
             db_interview.suggestion = "waitlist"
         
         db_interview.result = InterviewResult.PENDING
-        db_interview.status = InterviewStatus.COMPLETED
+        mark_legacy_interview_completed(db_interview)
         
         db.commit()
         
@@ -783,7 +787,8 @@ def generate_combined_evaluation(tenant_id: UUID, interview_id: UUID, transcript
         
         if db_interview.status != InterviewStatus.ANALYZING:
             db_interview.status = InterviewStatus.ANALYZING
-            db.commit()
+        mark_legacy_interview_ended(db_interview)
+        db.commit()
         
         try:
             evaluation_result = generate_interview_evaluation_from_transcript(
@@ -799,8 +804,8 @@ def generate_combined_evaluation(tenant_id: UUID, interview_id: UUID, transcript
             db_interview.evaluation = interviewer_evaluation
             db_interview.suggestion = interviewer_suggestion
         
-        db_interview.status = InterviewStatus.COMPLETED
         db_interview.result = InterviewResult.PENDING
+        mark_legacy_interview_completed(db_interview)
         db.commit()
 
 
@@ -821,7 +826,7 @@ def confirm_interview_result(db: Session, interview_id: UUID, result: str, backg
         print(f"Invalid result value: {result}")
         return None
 
-    db_interview.status = InterviewStatus.COMPLETED
+    mark_legacy_interview_completed(db_interview)
 
     # 同步更新简历状态
     if db_interview.resume_id:
@@ -941,6 +946,7 @@ def submit_interview_score(
     db_interview.total_score = avg_score
     db_interview.status = InterviewStatus.ANALYZING
     db_interview.result = InterviewResult.PENDING
+    mark_legacy_interview_ended(db_interview)
     db.commit()
     db.refresh(db_interview)
     

@@ -492,6 +492,7 @@ const InterviewResultPage: React.FC = () => {
       analyzing: ['AI 分析中', 'processing'],
       completed: ['AI 分析完成', 'success'],
       failed: ['AI 分析失败', 'error'],
+      not_applicable: ['未使用录音分析', 'default'],
     };
     const [aiStatusText, aiStatusColor] = aiStatusMap[interview.ai_analysis_status] || [interview.ai_analysis_status, 'default'];
 
@@ -517,6 +518,9 @@ const InterviewResultPage: React.FC = () => {
           )}
           {interview.ai_analysis_status === 'failed' && (
             <Alert type="error" showIcon message="AI 分析失败" description={interview.ai_analysis_error || '请联系 HR/Admin 重试'} />
+          )}
+          {interview.ai_analysis_status === 'not_applicable' && (
+            <Alert type="info" showIcon message="本次面试使用人工评分或历史评价流程，未执行录音 AI 分析" />
           )}
           {interview.ai_analysis_status === 'completed' && (
             <>

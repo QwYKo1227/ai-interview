@@ -1,8 +1,16 @@
 """Keep a resume's interview-stage status aligned with its interviews."""
 
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
-from app.models.models import Interview, InterviewResult, Resume, ResumeStatus, ScreeningResult
+from app.models.models import (
+    Interview,
+    InterviewResult,
+    InterviewStatus,
+    Resume,
+    ResumeStatus,
+    ScreeningResult,
+)
 
 
 INTERVIEW_STAGE_STATUSES = {
@@ -44,6 +52,38 @@ def mark_interview_started(interview: Interview) -> None:
 
 def mark_interview_ended(interview: Interview) -> None:
     set_resume_interview_status(interview, ResumeStatus.PENDING_INTERVIEW_RESULT)
+
+
+def mark_legacy_interview_ended(interview: Interview) -> None:
+    """Close lifecycle fields when a legacy evaluation flow starts or completes."""
+    now = datetime.now(timezone.utc)
+    interview.lifecycle_state = "ended"
+    interview.ended_at = interview.ended_at or now
+    interview.notes_revealed_at = interview.notes_revealed_at or interview.ended_at
+    mark_interview_ended(interview)
+    for panel in interview.panels or []:
+        panel.notes_frozen_at = panel.notes_frozen_at or interview.ended_at
+
+
+def mark_legacy_interview_completed(interview: Interview) -> None:
+    """Synchronize lifecycle and analysis fields after legacy evaluation."""
+    interview.status = InterviewStatus.COMPLETED
+    mark_legacy_interview_ended(interview)
+
+    has_sealed_recording = (
+        interview.recording_state == "sealed"
+        and bool((interview.audio_records or {}).get("full_interview"))
+    )
+    if not has_sealed_recording and interview.ai_analysis_status in {
+        "pending",
+        "transcribing",
+        "analyzing",
+    }:
+        interview.ai_analysis_status = "not_applicable"
+        interview.ai_analysis_error = None
+        if interview.asr_job_status == "pending":
+            interview.asr_job_status = "not_applicable"
+            interview.asr_job_next_poll_at = None
 
 
 def apply_final_decision(interview: Interview) -> None:

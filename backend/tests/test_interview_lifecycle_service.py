@@ -20,6 +20,7 @@ from app.services.interview_lifecycle_service import (
     process_asr_job,
     utcnow,
 )
+from app.services.resume_interview_status import mark_legacy_interview_completed
 
 
 def test_recording_reservation_only_starts_interview_after_confirmation(
@@ -117,6 +118,30 @@ def test_interviewer_cannot_force_end_interview(
         )
 
     assert error.value.status_code == 403
+
+
+def test_legacy_evaluation_completion_synchronizes_lifecycle_and_resume(
+    db: Session,
+    test_interview,
+    test_interview_panel: InterviewPanel,
+):
+    test_interview.lifecycle_state = "in_progress"
+    test_interview.recording_state = "idle"
+    test_interview.status = InterviewStatus.ANALYZING
+    test_interview.evaluation = "Legacy evaluation"
+    db.commit()
+
+    mark_legacy_interview_completed(test_interview)
+    db.commit()
+
+    assert test_interview.status == InterviewStatus.COMPLETED
+    assert test_interview.lifecycle_state == "ended"
+    assert test_interview.ended_at is not None
+    assert test_interview.notes_revealed_at == test_interview.ended_at
+    assert test_interview.ai_analysis_status == "not_applicable"
+    assert test_interview.asr_job_status == "not_applicable"
+    assert test_interview.resume.status.value == "pending_interview_result"
+    assert test_interview_panel.notes_frozen_at == test_interview.ended_at
 
 
 def test_human_review_is_independent_and_required_for_final_decision(

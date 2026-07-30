@@ -10,7 +10,7 @@ from app.services.interview_service import (
 from app.schemas.interview import (
     InterviewResponse, InterviewDetailResponse, InterviewCreate, InterviewUpdate,
     InterviewScore, InterviewPanelResponse, RecordingSessionResponse,
-    RecordingSessionRequest, EndInterviewRequest, LiveNotesRequest,
+    RecordingSessionRequest, EndInterviewRequest, ForceEndInterviewRequest, LiveNotesRequest,
     NoteSupplementRequest, HumanReviewRequest, FinalDecisionRequest,
     FinalDecisionCorrectionRequest, CancelInterviewResponse,
     ReviewerReplacementRequest,
@@ -38,6 +38,7 @@ from app.services.interview_lifecycle_service import (
     analyze_sealed_recording,
     append_recording_chunk,
     begin_ending,
+    force_end_interview,
     confirm_final_decision,
     correct_final_decision,
     confirm_recording,
@@ -311,6 +312,21 @@ def end_interview_route(
 ):
     require_interview_access(db, interview_id, current_user)
     return _recording_response(begin_ending(db, interview_id, payload.session_id, current_user, payload.reason))
+
+
+@router.post(
+    "/{interview_id}/force-end",
+    response_model=InterviewResponse,
+    dependencies=[Depends(check_roles([UserRole.ADMIN, UserRole.HR]))],
+)
+def force_end_interview_route(
+    interview_id: UUID,
+    payload: ForceEndInterviewRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_interview_access(db, interview_id, current_user)
+    return force_end_interview(db, interview_id, current_user, payload.reason)
 
 
 @router.post("/{interview_id}/recording/seal", response_model=InterviewResponse)

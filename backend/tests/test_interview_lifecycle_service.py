@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.file_models import StoredFile
-from app.models.models import Interview, InterviewPanel, User, UserRole
+from app.models.models import Interview, InterviewPanel, InterviewStatus, User, UserRole
 from app.services import interview_lifecycle_service
 from app.services.interview_lifecycle_service import (
     SCORE_DIMENSIONS,
@@ -14,6 +14,7 @@ from app.services.interview_lifecycle_service import (
     correct_final_decision,
     confirm_recording,
     enforce_analysis_contract,
+    force_end_interview,
     reserve_recording,
     submit_human_review,
     process_asr_job,
@@ -68,6 +69,54 @@ def test_live_recording_reservation_rejects_another_interviewer(
         reserve_recording(db, test_interview.id, another)
 
     assert error.value.status_code == 409
+
+
+def test_admin_can_force_end_interview_without_recording_session(
+    db: Session,
+    test_interview,
+    test_interview_panel: InterviewPanel,
+    test_admin,
+):
+    test_interview.lifecycle_state = "in_progress"
+    test_interview.recording_state = "idle"
+    test_interview.status = InterviewStatus.IN_PROGRESS
+    db.commit()
+
+    ended = force_end_interview(
+        db,
+        test_interview.id,
+        test_admin,
+        "Candidate left before recording started",
+    )
+
+    assert ended.lifecycle_state == "ended"
+    assert ended.recording_state == "failed"
+    assert ended.status.value == "completed"
+    assert ended.ended_at is not None
+    assert ended.notes_revealed_at == ended.ended_at
+    assert ended.end_reason == "Candidate left before recording started"
+    assert ended.ai_analysis_status == "failed"
+    assert ended.resume.status.value == "pending_interview_result"
+    assert test_interview_panel.notes_frozen_at == ended.ended_at
+
+
+def test_interviewer_cannot_force_end_interview(
+    db: Session,
+    test_interview,
+    test_interviewer,
+):
+    test_interview.lifecycle_state = "in_progress"
+    db.commit()
+
+    with pytest.raises(HTTPException) as error:
+        force_end_interview(
+            db,
+            test_interview.id,
+            test_interviewer,
+            "Not authorized",
+        )
+
+    assert error.value.status_code == 403
 
 
 def test_human_review_is_independent_and_required_for_final_decision(

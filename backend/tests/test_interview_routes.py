@@ -331,6 +331,69 @@ class TestCancelInterviewRoute:
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
+class TestForceEndInterviewRoute:
+    def test_hr_can_force_end_without_recording_session(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+    ):
+        test_interview.lifecycle_state = "in_progress"
+        test_interview.recording_state = "idle"
+        test_interview.status = InterviewStatus.IN_PROGRESS
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/force-end",
+            headers=auth_headers,
+            json={"reason": "候选人提前离开"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["lifecycle_state"] == "ended"
+        assert response.json()["recording_state"] == "failed"
+        assert response.json()["status"] == "completed"
+
+    def test_interviewer_cannot_force_end(
+        self,
+        client: TestClient,
+        interviewer_auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+    ):
+        test_interview.lifecycle_state = "in_progress"
+        test_interview.status = InterviewStatus.IN_PROGRESS
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/force-end",
+            headers=interviewer_auth_headers,
+            json={"reason": "Not authorized"},
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_force_end_requires_reason(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+    ):
+        test_interview.lifecycle_state = "in_progress"
+        test_interview.status = InterviewStatus.IN_PROGRESS
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/force-end",
+            headers=auth_headers,
+            json={"reason": "  "},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
 class TestConfirmInterviewRoute:
     """测试 POST /interviews/{id}/confirm 确认面试结果路由"""
 

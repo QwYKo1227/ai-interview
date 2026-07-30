@@ -128,6 +128,17 @@ class EndInterviewRequest(RecordingSessionRequest):
     reason: Optional[str] = None
 
 
+class ForceEndInterviewRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_reason(self):
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("强制结束原因不能为空")
+        return self
+
+
 class LiveNotesRequest(BaseModel):
     notes: str = ""
 

@@ -231,6 +231,46 @@ def begin_ending(
     return interview
 
 
+def force_end_interview(
+    db: Session,
+    interview_id: UUID,
+    user: User,
+    reason: str,
+) -> Interview:
+    """End a stuck interview without requiring a live recording session."""
+    if _role_value(user) not in {UserRole.ADMIN.value, UserRole.HR.value}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin or HR access required")
+
+    interview = _locked_interview(db, interview_id)
+    if interview.lifecycle_state == "ended":
+        return interview
+    if interview.lifecycle_state not in {"in_progress", "ending"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an interview in progress can be force-ended",
+        )
+
+    now = utcnow()
+    interview.lifecycle_state = "ended"
+    interview.ended_at = now
+    interview.notes_revealed_at = now
+    interview.end_reason = reason.strip()
+    interview.recording_state = "failed"
+    interview.recording_reservation_expires_at = None
+    interview.recording_heartbeat_at = None
+    interview.ai_analysis_status = "failed"
+    interview.ai_analysis_error = "Interview was force-ended without a sealed recording"
+    interview.asr_job_status = "failed"
+    interview.asr_job_next_poll_at = None
+    interview.status = InterviewStatus.COMPLETED
+    mark_interview_ended(interview)
+    for panel in interview.panels or []:
+        panel.notes_frozen_at = now
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
 def seal_recording(db: Session, interview_id: UUID, session_id: UUID, user: User | None) -> Interview:
     interview = _locked_interview(db, interview_id)
     is_admin = user is None or _role_value(user) in {UserRole.ADMIN.value, UserRole.HR.value}

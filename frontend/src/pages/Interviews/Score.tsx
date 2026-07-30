@@ -504,12 +504,18 @@ const InterviewScore: React.FC = () => {
           message.error('请填写强制结束原因');
           return Promise.reject();
         }
-        const sessionId = interview?.recording_session_id;
-        if (!id || !sessionId) throw new Error('recording session missing');
-        await request.post(`/interviews/${id}/end`, { session_id: sessionId, reason });
-        await request.post(`/interviews/${id}/recording/seal`, { session_id: sessionId });
-        message.success('面试已强制结束，AI 正在分析已有录音');
-        navigate(`/interviews/${id}/result`);
+        if (!id) return Promise.reject();
+        setEndingInterview(true);
+        try {
+          await request.post(`/interviews/${id}/force-end`, { reason: reason.trim() });
+          message.success('面试已强制结束，可继续填写人工评价');
+          navigate(`/interviews/${id}/result`);
+        } catch (error: any) {
+          message.error(error?.response?.data?.detail || '强制结束面试失败');
+          return Promise.reject();
+        } finally {
+          setEndingInterview(false);
+        }
       },
     });
   };
@@ -906,8 +912,8 @@ const InterviewScore: React.FC = () => {
          )}
 
          {isHrOrAdmin && interview?.lifecycle_state === 'in_progress' && !fullRecording && (
-           <Tooltip title="填写原因并强制结束当前录音">
-             <Button danger icon={<StopOutlined />} onClick={handleForceEndInterview}>强制结束</Button>
+           <Tooltip title="填写原因并强制结束面试">
+             <Button danger icon={<StopOutlined />} loading={endingInterview} onClick={handleForceEndInterview}>强制结束</Button>
            </Tooltip>
          )}
 

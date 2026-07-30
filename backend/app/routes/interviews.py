@@ -137,13 +137,17 @@ def aggregate_scores_route(
         raise HTTPException(status_code=404, detail="Interview or panels not found")
     return db_interview
 
-@router.post("/{interview_id}/confirm", response_model=InterviewResponse)
+@router.post(
+    "/{interview_id}/confirm",
+    response_model=InterviewResponse,
+    dependencies=[Depends(check_roles([UserRole.ADMIN, UserRole.HR]))],
+)
 def confirm_interview_result_route(
     interview_id: UUID,
     confirm_data: ConfirmResult,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+    current_user: User = Depends(get_current_user),
 ):
     interview = require_interview_access(db, interview_id, current_user)
     return confirm_final_decision(db, interview, current_user, confirm_data.result)

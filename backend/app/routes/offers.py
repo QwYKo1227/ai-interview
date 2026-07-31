@@ -11,8 +11,8 @@ from app.schemas.offer import (
     OfferSendRequest, OfferAcceptRequest, OfferRejectRequest, OfferStats
 )
 from app.services import offer_service
-from app.core.tenant_dependencies import get_current_user_dep
-from app.models.models import User
+from app.core.security import check_roles
+from app.models.models import User, UserRole
 from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
 from app.core.proxy import resolve_request_host
 
@@ -37,7 +37,7 @@ def _require_offer(db: Session, offer_id: UUID) -> None:
 def create_offer(
     offer_data: OfferCreate,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     try:
         offer = offer_service.create_offer(db, offer_data, current_user.id)
@@ -53,14 +53,14 @@ def list_offers(
     position_id: Optional[UUID] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return offer_service.get_offers(db, page, page_size, status, position_id, search)
 
 @router.get("/stats", response_model=OfferStats)
 def get_offer_stats(
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return offer_service.get_offer_stats(db)
 
@@ -68,7 +68,7 @@ def get_offer_stats(
 def get_offer(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     offer = offer_service.get_offer(db, offer_id)
     if not offer:
@@ -80,7 +80,7 @@ def update_offer(
     offer_id: UUID,
     offer_data: OfferUpdate,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     try:
         offer = offer_service.update_offer(db, offer_id, offer_data)
@@ -95,7 +95,7 @@ def send_offer(
     offer_id: UUID,
     request: OfferSendRequest = OfferSendRequest(),
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
@@ -114,7 +114,7 @@ def accept_offer(
     offer_id: UUID,
     request: OfferAcceptRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
@@ -133,7 +133,7 @@ def reject_offer(
     offer_id: UUID,
     request: OfferRejectRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
@@ -147,7 +147,7 @@ def withdraw_offer(
     offer_id: UUID,
     reason: Optional[str] = None,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
@@ -160,7 +160,7 @@ def withdraw_offer(
 def reopen_offer(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
@@ -173,7 +173,7 @@ def reopen_offer(
 def delete_offer(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     from app.models.models import Offer, OfferStatus
     offer = db.query(Offer).filter(Offer.id == offer_id).first()

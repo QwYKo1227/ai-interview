@@ -5,7 +5,7 @@ from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.resume import (
     ResumeResponse, ResumeCreate, ResumeUpdate,
     DepartmentReviewCreate, DepartmentReviewUpdate, DepartmentReviewResponse,
-    DepartmentReviewLinkResponse,
+    AssignedDepartmentReviewResponse, DepartmentReviewLinkResponse,
     HRDecisionCreate, HRDecisionResponse,
     DuplicateCheckRequest, DuplicateCheckResponse, DuplicateResumeSummary,
     DepartmentReviewSummary
@@ -14,6 +14,7 @@ from app.services.resume_service import (
     upload_resume, upload_public_resume, get_resumes, get_resume, update_resume, delete_resume,
     batch_upload_resumes, reparse_resume,
     check_duplicate_resume, create_department_review, get_department_reviews,
+    get_assigned_department_reviews,
     complete_department_review, reassign_department_reviewer,
     reissue_department_review_link, aggregate_department_reviews, submit_hr_decision,
     confirm_rejection, override_rejection, get_duplicate_resumes,
@@ -159,6 +160,18 @@ def batch_upload_resumes_route(
         validate_pdf_file(f)
     return batch_upload_resumes(db, files, position_id, background_tasks)
 
+
+@router.get(
+    "/my-reviews",
+    response_model=List[AssignedDepartmentReviewResponse],
+)
+def get_my_reviews_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_assigned_department_reviews(db, current_user.id)
+
+
 # ==================== 简历详情与更新 ====================
 
 @router.get("/{resume_id}/duplicates", response_model=List[DuplicateResumeSummary])
@@ -250,7 +263,6 @@ def create_department_review_route(
 def complete_department_review_route(
     resume_id: UUID,
     review_id: UUID,
-    reviewer_id: UUID = Form(...),
     technical_score: int = Form(None),
     experience_score: int = Form(None),
     overall_score: int = Form(None),
@@ -269,7 +281,13 @@ def complete_department_review_route(
         recommendation=recommendation,
         comment=comment
     )
-    return complete_department_review(db, resume_id, review_id, reviewer_id, review_data)
+    return complete_department_review(
+        db,
+        resume_id,
+        review_id,
+        current_user.id,
+        review_data,
+    )
 
 
 @router.put(

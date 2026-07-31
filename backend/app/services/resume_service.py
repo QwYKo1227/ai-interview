@@ -871,6 +871,40 @@ def get_department_reviews(db: Session, resume_id: UUID) -> List[DepartmentRevie
     return reviews
 
 
+def get_assigned_department_reviews(
+    db: Session, reviewer_id: UUID
+) -> List[Dict[str, Any]]:
+    reviews = (
+        db.query(DepartmentReview)
+        .options(
+            joinedload(DepartmentReview.resume).joinedload(Resume.position)
+        )
+        .filter(
+            DepartmentReview.reviewer_id == reviewer_id,
+            DepartmentReview.is_completed.is_(False),
+        )
+        .order_by(DepartmentReview.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "review_id": review.id,
+            "resume_id": review.resume_id,
+            "candidate_name": review.resume.candidate_name,
+            "position_title": (
+                review.resume.position.title
+                if review.resume.position is not None
+                else None
+            ),
+            "match_score": review.resume.match_score,
+            "status": review.resume.status,
+            "created_at": review.created_at,
+        }
+        for review in reviews
+        if review.resume is not None
+    ]
+
+
 def complete_department_review(db: Session, resume_id: UUID, review_id: UUID, reviewer_id: UUID, review_data: DepartmentReviewUpdate) -> DepartmentReview:
     """
     完成部门评审

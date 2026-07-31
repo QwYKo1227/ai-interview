@@ -7,7 +7,6 @@ import request from '../../utils/request';
 import { useOptionalAuth } from '../../contexts/AuthContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-// @ts-ignore
 import html2pdf from 'html2pdf.js';
 
 const { Title, Paragraph, Text } = Typography;

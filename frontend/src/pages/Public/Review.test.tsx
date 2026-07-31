@@ -164,7 +164,7 @@ describe('PublicReview', () => {
     const layout = container.querySelector('.public-review-layout')
     expect(layout).toBeInTheDocument()
     expect(layout?.firstElementChild).toHaveClass('public-review-preview')
-    expect(screen.getByTestId('pdf-canvas-preview')).toHaveAttribute(
+    expect(await screen.findByTestId('pdf-canvas-preview')).toHaveAttribute(
       'data-url', 'blob:resume-preview',
     )
     expect(container.querySelector('iframe')).not.toBeInTheDocument()

@@ -53,7 +53,8 @@ def get_transcription_config(db: Session) -> dict:
             else os.getenv("ASR_MODEL", "paraformer-offline")
         ),
         "api_key": (
-            config.asr_api_key if config and config.asr_api_key
+            config.asr_api_key
+            if config is not None
             else os.getenv("ASR_API_KEY")
         ),
     }

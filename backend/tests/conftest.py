@@ -109,7 +109,16 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     覆盖 get_db 依赖，使用测试数据库
     """
     from fastapi import FastAPI
-    from app.routes import auth, positions, resumes, interviews, coding_tests, settings
+    from app.routes import (
+        auth,
+        coding_tests,
+        interviews,
+        offer_templates,
+        offers,
+        positions,
+        resumes,
+        settings,
+    )
 
     # 创建测试应用（不导入 question_banks 路由，因为它使用了 ARRAY 类型）
     test_app = FastAPI()
@@ -122,6 +131,8 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     test_app.include_router(coding_tests.router, prefix="/api")
     test_app.include_router(coding_tests.public_router, prefix="/api")
     test_app.include_router(settings.router, prefix="/api")
+    test_app.include_router(offers.router, prefix="/api")
+    test_app.include_router(offer_templates.router, prefix="/api")
 
     # 正确覆盖 get_db 依赖
     def override_get_db():

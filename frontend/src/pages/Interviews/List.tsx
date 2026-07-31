@@ -167,7 +167,11 @@ const InterviewsList: React.FC = () => {
   const handleRetryCancelNotification = async (id: string) => {
     try {
       const response = await request.post(`/interviews/${id}/cancel-notification`) as any;
-      response?.success ? message.success('取消通知已发送') : message.error('取消通知发送失败');
+      if (response?.success) {
+        message.success('取消通知已发送');
+      } else {
+        message.error('取消通知发送失败');
+      }
     } catch (error) {
       message.error('取消通知发送失败');
     }

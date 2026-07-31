@@ -10,6 +10,7 @@ import QuestionBankUpload from '../pages/QuestionBanks/Upload';
 import ResumesList from '../pages/Resumes/List';
 import ResumeUpload from '../pages/Resumes/Upload';
 import ResumeDetail from '../pages/Resumes/Detail';
+import MyReviews from '../pages/Reviews/MyReviews';
 import InterviewsList from '../pages/Interviews/List';
 import InterviewScore from '../pages/Interviews/Score';
 import InterviewResultPage from '../pages/Interviews/Result';
@@ -134,6 +135,10 @@ const router = createBrowserRouter([
       {
         path: 'resumes/upload',
         element: <ResumeUpload />,
+      },
+      {
+        path: 'resumes/my-reviews',
+        element: <MyReviews />,
       },
       {
         path: 'resumes/:id',

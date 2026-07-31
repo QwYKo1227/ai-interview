@@ -159,6 +159,16 @@ class DepartmentReviewResponse(DepartmentReviewBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AssignedDepartmentReviewResponse(BaseModel):
+    review_id: UUID
+    resume_id: UUID
+    candidate_name: Optional[str] = None
+    position_title: Optional[str] = None
+    match_score: Optional[int] = None
+    status: ResumeStatus
+    created_at: datetime
+
+
 class DepartmentReviewLinkResponse(BaseModel):
     public_token: str
 

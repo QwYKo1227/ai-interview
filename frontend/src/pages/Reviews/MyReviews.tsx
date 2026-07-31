@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Card, Table, Button, Tag, Space, message, Typography, Empty, Spin } from 'antd';
-import { EyeOutlined, ClockCircleOutlined, FileTextOutlined } from '@ant-design/icons';
+import { EyeOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import request from '../../utils/request';
@@ -23,24 +23,22 @@ const MyReviews: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [pendingReviews, setPendingReviews] = useState<PendingReview[]>([]);
 
-  useEffect(() => {
-    fetchPendingReviews();
-  }, [user?.id]);
-
-  const fetchPendingReviews = async () => {
+  const fetchPendingReviews = useCallback(async () => {
     if (!user?.id) return;
     setLoading(true);
     try {
-      const res = await request.get('/resumes/my-reviews', {
-        params: { reviewer_id: user.id }
-      });
+      const res = await request.get('/resumes/my-reviews');
       setPendingReviews(res);
-    } catch (error) {
+    } catch {
       message.error('获取待评审列表失败');
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchPendingReviews();
+  }, [fetchPendingReviews]);
 
   const columns = [
     {

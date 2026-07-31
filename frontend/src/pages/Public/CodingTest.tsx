@@ -201,7 +201,7 @@ const PublicCodingTest: React.FC = () => {
       setSubmitting(true);
       
       let endpoint = `/public/coding-tests/${token}/submit`;
-      let payload: any = {
+      const payload: any = {
         candidate_name: candidateInfo.name,
         candidate_email: candidateInfo.email,
       };

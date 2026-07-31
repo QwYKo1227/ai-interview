@@ -7,8 +7,8 @@ from app.schemas.offer_template import (
     OfferTemplateCreate, OfferTemplateUpdate, OfferTemplateResponse, OfferTemplateListResponse
 )
 from app.services import offer_template_service
-from app.core.tenant_dependencies import get_current_user_dep
-from app.models.models import User
+from app.core.security import check_roles
+from app.models.models import User, UserRole
 
 router = APIRouter(
     prefix="/offer-templates",
@@ -20,7 +20,7 @@ router = APIRouter(
 def create_template(
     template_data: OfferTemplateCreate,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     template = offer_template_service.create_template(db, template_data, current_user.id)
     return offer_template_service.get_template(db, template.id)
@@ -30,7 +30,7 @@ def list_templates(
     position_id: Optional[UUID] = None,
     include_inactive: bool = False,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     items = offer_template_service.get_templates(db, position_id, include_inactive)
     return {"items": items, "total": len(items)}
@@ -39,7 +39,7 @@ def list_templates(
 def get_default_template(
     position_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     template = offer_template_service.get_default_template_for_position(db, position_id)
     if not template:
@@ -50,7 +50,7 @@ def get_default_template(
 def get_template(
     template_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     template = offer_template_service.get_template(db, template_id)
     if not template:
@@ -62,7 +62,7 @@ def update_template(
     template_id: UUID,
     template_data: OfferTemplateUpdate,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     template = offer_template_service.update_template(db, template_id, template_data)
     if not template:
@@ -73,7 +73,7 @@ def update_template(
 def delete_template(
     template_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     success = offer_template_service.delete_template(db, template_id)
     if not success:

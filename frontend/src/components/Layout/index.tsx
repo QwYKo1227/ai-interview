@@ -11,7 +11,8 @@ import {
   BellOutlined,
   SettingOutlined,
   FileAddOutlined,
-  ApartmentOutlined
+  ApartmentOutlined,
+  AuditOutlined
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -54,6 +55,11 @@ const AppLayout: React.FC = () => {
       key: '/resumes',
       icon: <FileTextOutlined aria-hidden="true" />,
       label: '简历管理',
+    },
+    {
+      key: '/resumes/my-reviews',
+      icon: <AuditOutlined aria-hidden="true" />,
+      label: '我的评审',
     },
     {
       key: '/interviews',

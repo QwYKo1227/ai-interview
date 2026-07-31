@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Modal } from 'antd'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -32,8 +32,11 @@ const resume = {
 describe('ResumeDetail laptop layout', () => {
   let stylesheet: HTMLStyleElement | undefined
 
-  afterEach(() => {
-    Modal.destroyAll()
+  afterEach(async () => {
+    await act(async () => {
+      Modal.destroyAll()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
     cleanup()
     document.querySelectorAll('.ant-modal-root').forEach((element) => element.remove())
     stylesheet?.remove()

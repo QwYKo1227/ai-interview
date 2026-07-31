@@ -444,7 +444,6 @@ const ResumeDetail: React.FC = () => {
     try {
       const values = await submitReviewForm.validateFields();
       const formData = new FormData();
-      formData.append('reviewer_id', user?.id || '');
       formData.append('technical_score', values.technical_score || '');
       formData.append('experience_score', values.experience_score || '');
       formData.append('overall_score', values.overall_score || '');

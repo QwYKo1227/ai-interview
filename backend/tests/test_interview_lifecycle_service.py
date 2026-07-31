@@ -46,6 +46,43 @@ def test_recording_reservation_only_starts_interview_after_confirmation(
     assert started.resume.status.value == "interview_in_progress"
 
 
+def test_recording_reservation_rejects_interview_before_scheduled_time(
+    db: Session,
+    test_interview,
+    test_interviewer,
+):
+    test_interview.interview_time = utcnow() + timedelta(minutes=20)
+    db.commit()
+
+    with pytest.raises(HTTPException) as error:
+        reserve_recording(db, test_interview.id, test_interviewer)
+
+    assert error.value.status_code == 409
+    assert "面试尚未到开始时间" in error.value.detail
+    assert test_interview.recording_state == "idle"
+
+
+def test_recording_confirmation_rechecks_rescheduled_start_time(
+    db: Session,
+    test_interview,
+    test_interviewer,
+):
+    test_interview.interview_time = utcnow() - timedelta(minutes=1)
+    db.commit()
+    reserved = reserve_recording(db, test_interview.id, test_interviewer)
+    session_id = reserved.recording_session_id
+
+    test_interview.interview_time = utcnow() + timedelta(minutes=20)
+    db.commit()
+
+    with pytest.raises(HTTPException) as error:
+        confirm_recording(db, test_interview.id, session_id, test_interviewer)
+
+    assert error.value.status_code == 409
+    assert "面试尚未到开始时间" in error.value.detail
+    assert test_interview.lifecycle_state == "scheduled"
+
+
 def test_live_recording_reservation_rejects_another_interviewer(
     db: Session,
     tenant_a,

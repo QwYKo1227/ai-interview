@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography } from 'antd';
-import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined, EditOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import dayjs from 'dayjs';
 
 const { Text } = Typography;
 
@@ -20,6 +21,14 @@ export const normalizeInterviewResult = (result?: string) => {
   if (result === 'waitlist') return 'pending';
   return result || 'pending';
 };
+
+export const buildInterviewSchedulePayload = (values: any) => ({
+  panel_members: values.panel_members,
+  interview_time: values.interview_time.toISOString(),
+  interview_type: values.interview_type,
+  interview_location: values.interview_type === 'onsite' ? values.interview_location : null,
+  meeting_link: values.interview_type === 'video' ? values.meeting_link : null,
+});
 
 const InterviewsList: React.FC = () => {
   const [data, setData] = useState([]);
@@ -49,6 +58,16 @@ const InterviewsList: React.FC = () => {
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailForm] = Form.useForm();
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [scheduleModalVisible, setScheduleModalVisible] = useState(false);
+  const [scheduleEmailVisible, setScheduleEmailVisible] = useState(false);
+  const [editingInterview, setEditingInterview] = useState<any>(null);
+  const [pendingSchedule, setPendingSchedule] = useState<any>(null);
+  const [scheduleEmailPreview, setScheduleEmailPreview] = useState<any>(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleSaved, setScheduleSaved] = useState(false);
+  const [notificationFailures, setNotificationFailures] = useState<Record<string, string[]>>({});
+  const [scheduleForm] = Form.useForm();
+  const [scheduleEmailForm] = Form.useForm();
   
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -57,6 +76,100 @@ const InterviewsList: React.FC = () => {
   const canCancelInterview = user?.role === 'admin' || user?.role === 'hr';
   // 判断是否可以删除面试（仅 HR/Admin 可见）
   const canDeleteInterview = user?.role === 'admin';
+
+  const handleOpenScheduleEdit = (record: any) => {
+    setEditingInterview(record);
+    setScheduleSaved(false);
+    setNotificationFailures({});
+    scheduleForm.setFieldsValue({
+      panel_members: record.panel_members || [],
+      interview_time: record.interview_time ? dayjs(record.interview_time) : null,
+      interview_type: record.interview_type || 'onsite',
+      interview_location: record.interview_location || undefined,
+      meeting_link: record.meeting_link || undefined,
+    });
+    setScheduleModalVisible(true);
+  };
+
+  const handlePreviewScheduleEmails = async () => {
+    if (!editingInterview) return;
+    try {
+      const values = await scheduleForm.validateFields();
+      const payload = buildInterviewSchedulePayload(values);
+      setScheduleSaving(true);
+      const preview = await request.post(`/interviews/${editingInterview.id}/schedule-email-preview`, payload);
+      setPendingSchedule(payload);
+      setScheduleEmailPreview(preview);
+      scheduleEmailForm.setFieldsValue({
+        notify_current: preview.current.default_enabled,
+        current_subject: preview.current.subject,
+        current_content: preview.current.content,
+        notify_removed: preview.removed.default_enabled,
+        removed_subject: preview.removed.subject,
+        removed_content: preview.removed.content,
+      });
+      setScheduleModalVisible(false);
+      setScheduleEmailVisible(true);
+    } catch (error) {
+      message.error('无法预览面试安排变更');
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
+  const sendScheduleNotificationGroup = async (
+    group: 'current' | 'removed',
+    values: any,
+    recipientIds?: string[],
+  ) => {
+    const preview = scheduleEmailPreview?.[group];
+    const enabled = values[`notify_${group}`];
+    const ids = recipientIds || preview?.recipients?.map((item: any) => item.id) || [];
+    if (!enabled || ids.length === 0) return [];
+    try {
+      const result = await request.post(`/interviews/${editingInterview.id}/schedule-notifications`, {
+        recipient_ids: ids,
+        subject: values[`${group}_subject`],
+        content: values[`${group}_content`],
+      });
+      return result.failed || [];
+    } catch {
+      return ids;
+    }
+  };
+
+  const handleSaveSchedule = async () => {
+    if (!editingInterview || !pendingSchedule) return;
+    try {
+      const values = await scheduleEmailForm.validateFields();
+      setScheduleSaving(true);
+      if (!scheduleSaved) {
+        await request.put(`/interviews/${editingInterview.id}/schedule`, pendingSchedule);
+        setScheduleSaved(true);
+        await fetchInterviews();
+      }
+      const currentFailures = await sendScheduleNotificationGroup(
+        'current', values, notificationFailures.current,
+      );
+      const removedFailures = await sendScheduleNotificationGroup(
+        'removed', values, notificationFailures.removed,
+      );
+      const failures = { current: currentFailures, removed: removedFailures };
+      setNotificationFailures(failures);
+      if (currentFailures.length || removedFailures.length) {
+        message.warning('面试安排已更新，但部分邮件发送失败，可重试失败邮件');
+        return;
+      }
+      message.success('面试安排已更新，所选通知已发送');
+      setScheduleEmailVisible(false);
+      setEditingInterview(null);
+      setPendingSchedule(null);
+    } catch (error) {
+      message.error(scheduleSaved ? '邮件重试失败' : '更新面试安排失败');
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
 
   const fetchInterviews = async () => {
     setLoading(true);
@@ -467,8 +580,14 @@ const InterviewsList: React.FC = () => {
         return (
         <Space size="small">
           {(record.lifecycle_state || record.status) === 'scheduled' && (
-            <Tooltip title="开始面试">
+            <Tooltip title="进入面试">
               <Button type="text" icon={<PlayCircleOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
+            </Tooltip>
+          )}
+
+          {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
+            <Tooltip title="编辑面试安排">
+              <Button type="text" icon={<EditOutlined />} onClick={() => handleOpenScheduleEdit(record)} />
             </Tooltip>
           )}
 
@@ -564,6 +683,141 @@ const InterviewsList: React.FC = () => {
           }),
         }}
       />
+
+      <Modal
+        title="编辑面试安排"
+        open={scheduleModalVisible}
+        onOk={handlePreviewScheduleEmails}
+        onCancel={() => setScheduleModalVisible(false)}
+        confirmLoading={scheduleSaving}
+        okText="下一步：邮件通知"
+        cancelText="取消"
+        width={680}
+        destroyOnClose
+      >
+        <Form form={scheduleForm} layout="vertical" preserve>
+          <Form.Item
+            name="panel_members"
+            label="面试官"
+            rules={[{ required: true, type: 'array', min: 1, message: '请至少选择一位面试官' }]}
+          >
+            <Select mode="multiple" placeholder="选择面试官" optionFilterProp="children">
+              {interviewers.map((interviewer: any) => (
+                <Select.Option key={interviewer.id} value={interviewer.id}>
+                  {interviewer.full_name || interviewer.email}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+          <Form.Item
+            name="interview_time"
+            label="面试时间"
+            rules={[{ required: true, message: '请选择面试时间' }]}
+          >
+            <DatePicker showTime style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="interview_type"
+            label="面试形式"
+            rules={[{ required: true, message: '请选择面试形式' }]}
+          >
+            <Select
+              options={[
+                { value: 'onsite', label: '现场面试' },
+                { value: 'video', label: '视频面试' },
+                { value: 'phone', label: '电话面试' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(previous, current) => previous.interview_type !== current.interview_type}>
+            {({ getFieldValue }) => getFieldValue('interview_type') === 'onsite' ? (
+              <Form.Item
+                name="interview_location"
+                label="面试地点"
+                rules={[{ required: true, whitespace: true, message: '请输入面试地点' }]}
+              >
+                <Input placeholder="请输入现场面试地点" />
+              </Form.Item>
+            ) : getFieldValue('interview_type') === 'video' ? (
+              <Form.Item
+                name="meeting_link"
+                label="会议链接"
+                rules={[{ required: true, whitespace: true, message: '请输入会议链接' }]}
+              >
+                <Input placeholder="请输入视频会议链接" />
+              </Form.Item>
+            ) : null}
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="确认面试官邮件通知"
+        open={scheduleEmailVisible}
+        onCancel={() => {
+          setScheduleEmailVisible(false);
+          if (!scheduleSaved) setScheduleModalVisible(true);
+        }}
+        width={860}
+        destroyOnClose
+        footer={[
+          <Button key="cancel" onClick={() => {
+            setScheduleEmailVisible(false);
+            if (!scheduleSaved) setScheduleModalVisible(true);
+          }}>
+            {scheduleSaved ? '关闭' : '返回修改'}
+          </Button>,
+          <Button key="save" type="primary" loading={scheduleSaving} onClick={handleSaveSchedule}>
+            {(notificationFailures.current?.length || notificationFailures.removed?.length)
+              ? '重试失败邮件'
+              : '保存并发送所选通知'}
+          </Button>,
+        ]}
+      >
+        <Form form={scheduleEmailForm} layout="vertical" preserve>
+          {(['current', 'removed'] as const).map((group) => {
+            const preview = scheduleEmailPreview?.[group];
+            const label = group === 'current' ? '通知当前面试官' : '通知被移除的面试官';
+            const recipientText = preview?.recipients?.map((item: any) => (
+              `${item.name}${item.email ? ` <${item.email}>` : '（无邮箱）'}`
+            )).join('、') || '无';
+            return (
+              <div key={group} style={{ marginBottom: 20, padding: 16, border: '1px solid #e5e7eb', borderRadius: 8 }}>
+                <Form.Item name={`notify_${group}`} valuePropName="checked" style={{ marginBottom: 8 }}>
+                  <Checkbox disabled={!preview?.recipients?.length}>{label}</Checkbox>
+                </Form.Item>
+                <Text type="secondary">收件人：{recipientText}</Text>
+                <Form.Item
+                  name={`${group}_subject`}
+                  label="邮件主题"
+                  rules={[{ required: true, whitespace: true, message: '请输入邮件主题' }]}
+                  style={{ marginTop: 12 }}
+                >
+                  <Input />
+                </Form.Item>
+                <Form.Item
+                  name={`${group}_content`}
+                  label="邮件正文"
+                  rules={[{ required: true, whitespace: true, message: '请输入邮件正文' }]}
+                >
+                  <Input.TextArea rows={7} style={{ fontFamily: 'monospace' }} />
+                </Form.Item>
+                <Form.Item noStyle shouldUpdate>
+                  {({ getFieldValue }) => (
+                    <div
+                      style={{ border: '1px solid #d9d9d9', borderRadius: 8, padding: 12, maxHeight: 220, overflow: 'auto' }}
+                      dangerouslySetInnerHTML={{ __html: getFieldValue(`${group}_content`) || '' }}
+                    />
+                  )}
+                </Form.Item>
+                {!!notificationFailures[group]?.length && (
+                  <Text type="danger">{notificationFailures[group].length} 封邮件发送失败</Text>
+                )}
+              </div>
+            );
+          })}
+        </Form>
+      </Modal>
 
       {/* 取消面试弹窗 */}
       <Modal

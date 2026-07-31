@@ -494,6 +494,142 @@ class TestUpdateInterviewRoute:
         data = response.json()
         assert data["interviewer"] == "新面试官"
 
+    def test_hr_can_update_scheduled_interview_arrangement(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_user: User,
+        test_interviewer: User,
+        test_interview: Interview,
+        test_interview_panel: InterviewPanel,
+        db: Session,
+    ):
+        response = client.put(
+            f"/api/interviews/{test_interview.id}/schedule",
+            json={
+                "panel_members": [str(test_user.id)],
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_type": "video",
+                "meeting_link": "https://meeting.example.com/updated",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["panel_members"] == [str(test_user.id)]
+        assert data["interview_type"] == "video"
+        assert data["meeting_link"] == "https://meeting.example.com/updated"
+        assert data["interview_location"] is None
+        assert db.query(InterviewPanel).filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == test_interviewer.id,
+        ).first() is None
+        assert db.query(InterviewPanel).filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == test_user.id,
+        ).first() is not None
+
+    def test_interviewer_cannot_update_interview_arrangement(
+        self,
+        client: TestClient,
+        interviewer_auth_headers: dict,
+        test_interviewer: User,
+        test_interview: Interview,
+    ):
+        response = client.put(
+            f"/api/interviews/{test_interview.id}/schedule",
+            json={
+                "panel_members": [str(test_interviewer.id)],
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_type": "phone",
+            },
+            headers=interviewer_auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_started_interview_arrangement_cannot_be_updated(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_user: User,
+        test_interview_in_progress: Interview,
+    ):
+        response = client.put(
+            f"/api/interviews/{test_interview_in_progress.id}/schedule",
+            json={
+                "panel_members": [str(test_user.id)],
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_type": "phone",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+    def test_schedule_email_preview_separates_current_and_removed_interviewers(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_user: User,
+        test_interviewer: User,
+        test_interview: Interview,
+    ):
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-email-preview",
+            json={
+                "panel_members": [str(test_user.id)],
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_type": "onsite",
+                "interview_location": "上海办公室",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert [item["id"] for item in data["current"]["recipients"]] == [str(test_user.id)]
+        assert [item["id"] for item in data["removed"]["recipients"]] == [str(test_interviewer.id)]
+        assert data["current"]["default_enabled"] is True
+        assert data["removed"]["default_enabled"] is True
+        assert f"/interviews/{test_interview.id}/score" in data["current"]["content"]
+        assert "进入面试" in data["current"]["content"]
+        assert f"/interviews/{test_interview.id}/score" not in data["removed"]["content"]
+
+    def test_schedule_notification_returns_per_recipient_failures(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_user: User,
+        test_interviewer: User,
+        test_interview: Interview,
+        monkeypatch,
+    ):
+        class StubMailService:
+            def _send_email(self, email, subject, content):
+                return email == test_user.email
+
+        monkeypatch.setattr(
+            "app.services.mail_service.get_mail_service",
+            lambda db: StubMailService(),
+        )
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-notifications",
+            json={
+                "recipient_ids": [str(test_user.id), str(test_interviewer.id)],
+                "subject": "面试安排更新",
+                "content": "<p>最新安排</p>",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {
+            "sent": [str(test_user.id)],
+            "failed": [str(test_interviewer.id)],
+        }
+
     def test_update_interview_not_found(self, client: TestClient, auth_headers: dict):
         """测试更新不存在的面试"""
         fake_id = uuid4()

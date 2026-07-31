@@ -1,8 +1,8 @@
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session, joinedload
-from app.models.models import Interview, Resume, Position, InterviewStatus, InterviewResult, QuestionBank, ResumeStatus, ScreeningResult, InterviewPanel, User
-from app.schemas.interview import InterviewCreate, InterviewUpdate, InterviewScore
+from app.models.models import Interview, Resume, Position, InterviewStatus, InterviewResult, QuestionBank, ResumeStatus, ScreeningResult, InterviewPanel, User, UserRole
+from app.schemas.interview import InterviewCreate, InterviewUpdate, InterviewScore, InterviewScheduleUpdate
 from fastapi import BackgroundTasks
 import logging
 from app.core.observability import background_task_context
@@ -11,6 +11,7 @@ from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
 from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_resource_files, unlink_file_locations
 from app.services.interview_access import can_score_interview, is_interviewer_assigned
+from app.services.interview_timing import require_interview_start_time
 from app.services.resume_interview_status import (
     apply_final_decision,
     mark_legacy_interview_completed,
@@ -47,6 +48,8 @@ def start_interview(db: Session, interview_id: UUID):
             status_code=400,
             detail=f"Cannot start interview with status {db_interview.status.value}"
         )
+
+    require_interview_start_time(db_interview)
 
     db_interview.status = InterviewStatus.IN_PROGRESS
     db_interview.lifecycle_state = "in_progress"
@@ -585,6 +588,65 @@ def update_interview(db: Session, interview_id: UUID, interview: InterviewUpdate
             value = _normalize_dt_utc(value)
         setattr(db_interview, key, value)
     
+    db.commit()
+    db.refresh(db_interview)
+    return db_interview
+
+
+def update_interview_schedule(
+    db: Session,
+    interview_id: UUID,
+    schedule: InterviewScheduleUpdate,
+):
+    db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
+    if not db_interview:
+        return None
+    if db_interview.lifecycle_state != "scheduled" or db_interview.status != InterviewStatus.SCHEDULED:
+        raise HTTPException(status_code=409, detail="只能修改尚未开始的面试安排")
+
+    member_ids = list(schedule.panel_members)
+    assignable_roles = [UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]
+    users = db.query(User).filter(
+        User.id.in_(member_ids),
+        User.is_active == True,
+        User.role.in_(assignable_roles),
+    ).all()
+    users_by_id = {user.id: user for user in users}
+    missing_ids = [str(member_id) for member_id in member_ids if member_id not in users_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=422, detail="面试官不存在、已停用或不可分配")
+
+    new_member_set = set(member_ids)
+    existing_panels = {
+        panel.interviewer_id: panel
+        for panel in db.query(InterviewPanel).filter(InterviewPanel.interview_id == interview_id).all()
+    }
+
+    for existing_id, panel in existing_panels.items():
+        if existing_id not in new_member_set:
+            db.delete(panel)
+    for added_id in new_member_set - set(existing_panels):
+        db.add(InterviewPanel(
+            tenant_id=db_interview.tenant_id,
+            interview_id=db_interview.id,
+            interviewer_id=added_id,
+            is_submitted=False,
+        ))
+
+    db_interview.panel_members = [str(member_id) for member_id in member_ids]
+    db_interview.interviewer = "面试小组"
+    db_interview.interview_time = _normalize_dt_utc(schedule.interview_time)
+    db_interview.interview_type = schedule.interview_type
+    db_interview.interview_location = (
+        schedule.interview_location.strip()
+        if schedule.interview_type == "onsite" and schedule.interview_location
+        else None
+    )
+    db_interview.meeting_link = (
+        schedule.meeting_link.strip()
+        if schedule.interview_type == "video" and schedule.meeting_link
+        else None
+    )
     db.commit()
     db.refresh(db_interview)
     return db_interview

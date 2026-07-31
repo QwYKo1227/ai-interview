@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.core.tenant_dependencies import get_tenant_db
 from app.config.tenant_session import tenant_session
 from app.services.interview_service import (
-    create_interview, get_interviews, get_interview, update_interview, delete_interview,
+    create_interview, get_interviews, get_interview, update_interview, update_interview_schedule, delete_interview,
     submit_interview_score, update_interview_questions, export_interview_result,
     submit_interview_panel_score, aggregate_panel_scores, start_interview, cancel_interview, get_submission_status
 )
@@ -14,7 +14,8 @@ from app.schemas.interview import (
     NoteSupplementRequest, HumanReviewRequest, FinalDecisionRequest,
     FinalDecisionCorrectionRequest, CancelInterviewResponse,
     ReviewerReplacementRequest,
-    CorrectedTranscriptRequest, SpeakerLabelsRequest,
+    CorrectedTranscriptRequest, SpeakerLabelsRequest, InterviewScheduleUpdate,
+    InterviewScheduleNotificationRequest,
 )
 from app.models.models import User, UserRole, Resume, Position, Interview, InterviewStatus, InterviewResult, InterviewPanel
 from app.routes.auth import get_current_user
@@ -25,6 +26,7 @@ from uuid import UUID
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, StringConstraints, model_validator
 import logging
+from html import escape
 from app.core.observability import background_task_context
 from app.services.interview_access import (
     require_interview_access,
@@ -741,6 +743,174 @@ def update_interview_route(
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     return db_interview
+
+
+def _schedule_notification_html(
+    *,
+    heading: str,
+    intro: str,
+    interview: Interview,
+    schedule: InterviewScheduleUpdate,
+    interview_url: str | None = None,
+) -> str:
+    from app.services.mail_service import format_interview_time
+
+    candidate_name = interview.resume.candidate_name if interview.resume else "候选人"
+    position_title = interview.position.title if interview.position else "岗位"
+    detail = ""
+    if schedule.interview_type == "onsite":
+        detail = f"<li><strong>面试地点：</strong>{escape(schedule.interview_location or '')}</li>"
+    elif schedule.interview_type == "video":
+        detail = f"<li><strong>会议链接：</strong>{escape(schedule.meeting_link or '')}</li>"
+    type_text = {"onsite": "现场面试", "video": "视频面试", "phone": "电话面试"}[schedule.interview_type]
+    interview_link = (
+        '<p style="margin:24px 0">'
+        f'<a href="{escape(interview_url, quote=True)}" '
+        'style="display:inline-block;padding:10px 18px;border-radius:6px;'
+        'background:#2563eb;color:#ffffff;text-decoration:none;font-weight:600">进入面试</a></p>'
+        if interview_url
+        else ""
+    )
+    return (
+        '<div style="font-family:Arial,sans-serif;line-height:1.7;color:#1f2937">'
+        f"<h2>{escape(heading)}</h2><p>{escape(intro)}</p><ul>"
+        f"<li><strong>候选人：</strong>{escape(candidate_name or '候选人')}</li>"
+        f"<li><strong>应聘岗位：</strong>{escape(position_title or '岗位')}</li>"
+        f"<li><strong>面试轮次：</strong>第 {interview.round or 1} 轮</li>"
+        f"<li><strong>面试时间：</strong>{escape(format_interview_time(schedule.interview_time))}</li>"
+        f"<li><strong>面试形式：</strong>{type_text}</li>{detail}</ul>"
+        f"{interview_link}<p>如有疑问，请联系招聘负责人。</p></div>"
+    )
+
+
+@router.post("/{interview_id}/schedule-email-preview")
+def preview_schedule_update_email(
+    interview_id: UUID,
+    schedule: InterviewScheduleUpdate,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = get_interview(db, interview_id)
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    if interview.lifecycle_state != "scheduled" or interview.status != InterviewStatus.SCHEDULED:
+        raise HTTPException(status_code=409, detail="只能修改尚未开始的面试安排")
+
+    proposed_ids = set(schedule.panel_members)
+    old_ids = {UUID(str(value)) for value in (interview.panel_members or [])}
+    relevant_ids = proposed_ids | old_ids
+    users = db.query(User).filter(
+        User.id.in_(relevant_ids),
+        User.is_active == True,
+        User.role.in_([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]),
+    ).all()
+    users_by_id = {user.id: user for user in users}
+    if any(member_id not in users_by_id for member_id in proposed_ids):
+        raise HTTPException(status_code=422, detail="面试官不存在、已停用或不可分配")
+
+    previous_time = as_utc(interview.interview_time) if interview.interview_time else None
+    proposed_time = as_utc(schedule.interview_time)
+    schedule_changed = any([
+        previous_time != proposed_time,
+        interview.interview_type != schedule.interview_type,
+        (interview.interview_location or "") != (schedule.interview_location or ""),
+        (interview.meeting_link or "") != (schedule.meeting_link or ""),
+    ])
+    current_recipient_ids = proposed_ids if schedule_changed else proposed_ids - old_ids
+    removed_recipient_ids = old_ids - proposed_ids
+
+    import os
+    from app.services.system_config_service import get_system_config
+    system_config = get_system_config(db)
+    frontend_url = (
+        (system_config.frontend_url if system_config else None)
+        or os.getenv("APP_BASE_URL")
+        or "https://interview.careray.com"
+    ).rstrip("/")
+    interview_url = f"{frontend_url}/interviews/{interview.id}/score"
+
+    def recipients(ids):
+        return [
+            {
+                "id": str(user.id),
+                "name": user.full_name or user.email,
+                "email": user.email,
+            }
+            for user in users
+            if user.id in ids
+        ]
+
+    position_title = interview.position.title if interview.position else "岗位"
+    return {
+        "current": {
+            "recipients": recipients(current_recipient_ids),
+            "subject": f"面试安排更新 - {position_title}",
+            "content": _schedule_notification_html(
+                heading="面试安排更新",
+                intro="您被安排参与以下面试，请查收最新安排。",
+                interview=interview,
+                schedule=schedule,
+                interview_url=interview_url,
+            ),
+            "default_enabled": bool(current_recipient_ids),
+        },
+        "removed": {
+            "recipients": recipients(removed_recipient_ids),
+            "subject": f"面试安排变更 - {position_title}",
+            "content": _schedule_notification_html(
+                heading="面试安排变更",
+                intro="您已不再参与以下面试，无需继续准备或出席。",
+                interview=interview,
+                schedule=schedule,
+            ),
+            "default_enabled": bool(removed_recipient_ids),
+        },
+    }
+
+
+@router.put("/{interview_id}/schedule")
+def update_interview_schedule_route(
+    interview_id: UUID,
+    schedule: InterviewScheduleUpdate,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    updated = update_interview_schedule(db, interview_id, schedule)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    return InterviewResponse.model_validate(updated)
+
+
+@router.post("/{interview_id}/schedule-notifications")
+def send_interview_schedule_notifications(
+    interview_id: UUID,
+    notification: InterviewScheduleNotificationRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    if not get_interview(db, interview_id):
+        raise HTTPException(status_code=404, detail="Interview not found")
+    recipients = db.query(User).filter(
+        User.id.in_(notification.recipient_ids),
+        User.is_active == True,
+        User.role.in_([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]),
+    ).all()
+    recipients_by_id = {user.id: user for user in recipients}
+    from app.services.mail_service import get_mail_service
+    mail_service = get_mail_service(db)
+    sent = []
+    failed = []
+    for recipient_id in notification.recipient_ids:
+        recipient = recipients_by_id.get(recipient_id)
+        if recipient and recipient.email and mail_service._send_email(
+            recipient.email,
+            notification.subject.strip(),
+            notification.content,
+        ):
+            sent.append(str(recipient_id))
+        else:
+            failed.append(str(recipient_id))
+    return {"sent": sent, "failed": failed}
 
 @router.post("/{interview_id}/score", response_model=InterviewResponse)
 def submit_score_route(

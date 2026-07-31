@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Card, Descriptions, Button, InputNumber, Form, Input, Row, Col, Typography, message, Divider, Tag, Space, Spin, Modal, Popconfirm, Select, Collapse, Tooltip, List, Progress } from 'antd';
+import { Alert, Card, Descriptions, Button, InputNumber, Form, Input, Row, Col, Typography, message, Divider, Tag, Space, Spin, Modal, Popconfirm, Select, Collapse, Tooltip, List, Progress } from 'antd';
 import { useParams, useNavigate } from 'react-router-dom';
 import { EditOutlined, DeleteOutlined, PlusOutlined, SaveOutlined, CloseOutlined, DownloadOutlined, FilePdfOutlined, FileWordOutlined, LeftOutlined, RightOutlined, CheckCircleOutlined, CheckCircleFilled, CaretRightOutlined, AudioOutlined, LoadingOutlined, ExpandOutlined, CompressOutlined, PlayCircleOutlined, StopOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
@@ -8,6 +8,7 @@ import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
 import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
 import { canRecordFullInterview } from './recordingControls';
 import RealtimeTranscriptPanel from './RealtimeTranscriptPanel';
+import { getInterviewStartTiming } from './interviewTiming';
 import {
   RealtimeTranscriptionClient,
   type RealtimeSegment,
@@ -73,6 +74,7 @@ const InterviewScore: React.FC = () => {
   const [submittingDirect, setSubmittingDirect] = useState(false);
 
   const [startingInterview, setStartingInterview] = useState(false);
+  const [scheduleClockMs, setScheduleClockMs] = useState(() => Date.now());
 
   // 面试计时状态
   const [elapsedTime, setElapsedTime] = useState(0); // 秒
@@ -83,6 +85,19 @@ const InterviewScore: React.FC = () => {
       fetchInterview(id);
     }
   }, [id]);
+
+  useEffect(() => {
+    if (interview?.lifecycle_state !== 'scheduled') return;
+    setScheduleClockMs(Date.now());
+    const interval = setInterval(() => setScheduleClockMs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [interview?.lifecycle_state, interview?.interview_time]);
+
+  useEffect(() => {
+    if (!id || interview?.lifecycle_state !== 'scheduled') return;
+    const interval = setInterval(() => fetchInterview(id, true), 30_000);
+    return () => clearInterval(interval);
+  }, [id, interview?.lifecycle_state]);
 
   useEffect(() => () => {
     realtimeClientRef.current?.stop();
@@ -830,6 +845,7 @@ const InterviewScore: React.FC = () => {
   const skippedAiQuestions = interview.questions.length === 0;
   const canOperateRecording = canRecordFullInterview(interview?.panel_members || [], user?.id);
   const isHrOrAdmin = user?.role === 'admin' || user?.role === 'hr';
+  const startTiming = getInterviewStartTiming(interview?.interview_time, scheduleClockMs);
 
   const questionFormContent = (
     <>
@@ -891,12 +907,15 @@ const InterviewScore: React.FC = () => {
          {/* 开始面试即开始录音；断线后可从同一入口接管。 */}
          {canOperateRecording && (interview?.lifecycle_state === 'scheduled'
            || (interview?.lifecycle_state === 'in_progress' && !fullRecording)) && (
-           <Tooltip title={interview?.lifecycle_state === 'scheduled' ? '开始面试并录音' : '接管录音'}>
+           <Tooltip title={interview?.lifecycle_state === 'scheduled' && !startTiming.canStart
+             ? `面试尚未开始，距离计划时间还有 ${startTiming.countdownText}`
+             : interview?.lifecycle_state === 'scheduled' ? '开始面试并录音' : '接管录音'}>
              <Button
                type="primary"
                icon={<PlayCircleOutlined />}
                onClick={handleStartInterview}
                loading={startingInterview}
+               disabled={interview?.lifecycle_state === 'scheduled' && !startTiming.canStart}
              >
                {interview?.lifecycle_state === 'scheduled' ? '开始面试' : '接管录音'}
              </Button>
@@ -974,6 +993,16 @@ const InterviewScore: React.FC = () => {
             <Title level={4} style={{ margin: 0 }}>面试题目 & 评分</Title>
             {headerExtra}
           </div>
+
+          {interview?.lifecycle_state === 'scheduled' && !startTiming.canStart && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`面试计划于 ${new Date(interview.interview_time).toLocaleString()} 开始`}
+              description={`当前可提前查看资料，距离“开始面试”按钮启用还有 ${startTiming.countdownText}。`}
+            />
+          )}
 
           {/* Question Navigation */}
           <div style={{ marginBottom: 16, overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: 8, paddingTop: 4, paddingLeft: 4 }}>

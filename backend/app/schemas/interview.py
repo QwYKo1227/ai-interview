@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Literal
 from uuid import UUID
 from datetime import datetime
 from app.models.models import InterviewStatus, InterviewResult
@@ -40,6 +40,30 @@ class InterviewUpdate(BaseModel):
     result: Optional[InterviewResult] = None
     evaluation: Optional[str] = None
     suggestion: Optional[str] = None
+
+
+class InterviewScheduleUpdate(BaseModel):
+    panel_members: List[UUID] = Field(min_length=1)
+    interview_time: datetime
+    interview_type: Literal["onsite", "video", "phone"]
+    interview_location: Optional[str] = None
+    meeting_link: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_scheduling_details(self):
+        if len(set(self.panel_members)) != len(self.panel_members):
+            raise ValueError("面试官不能重复")
+        if self.interview_type == "onsite" and not (self.interview_location or "").strip():
+            raise ValueError("现场面试必须填写面试地点")
+        if self.interview_type == "video" and not (self.meeting_link or "").strip():
+            raise ValueError("视频面试必须填写会议链接")
+        return self
+
+
+class InterviewScheduleNotificationRequest(BaseModel):
+    recipient_ids: List[UUID] = Field(min_length=1)
+    subject: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1)
 
 class InterviewScore(BaseModel):
     scores: Dict[str, int] # 题目索引 -> 分数

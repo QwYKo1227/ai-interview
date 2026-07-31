@@ -29,6 +29,7 @@ from app.services.resume_interview_status import (
     mark_interview_ended,
     mark_interview_started,
 )
+from app.services.interview_timing import require_interview_start_time
 from app.services.audio_service import (
     AsrServiceError,
     create_transcription_job,
@@ -107,6 +108,8 @@ def reserve_recording(db: Session, interview_id: UUID, user: User) -> Interview:
     interview = _locked_interview(db, interview_id)
     if interview.lifecycle_state not in {"scheduled", "in_progress"}:
         raise HTTPException(status_code=409, detail="Interview cannot start recording in its current state")
+    if interview.lifecycle_state == "scheduled":
+        require_interview_start_time(interview)
 
     now = utcnow()
     live_reservation = (
@@ -149,6 +152,8 @@ def reserve_recording(db: Session, interview_id: UUID, user: User) -> Interview:
 def confirm_recording(db: Session, interview_id: UUID, session_id: UUID, user: User) -> Interview:
     interview = _locked_interview(db, interview_id)
     _require_owner(interview, user, session_id)
+    if interview.lifecycle_state == "scheduled":
+        require_interview_start_time(interview)
     now = utcnow()
     if interview.recording_state == "recording":
         return interview

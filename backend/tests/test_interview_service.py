@@ -6,7 +6,7 @@ start_interview, cancel_interview, submit_interview_panel_score, aggregate_panel
 
 import pytest
 from uuid import uuid4, UUID
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 from sqlalchemy.orm import Session
@@ -238,6 +238,17 @@ class TestStartInterview:
         result = interview_service.start_interview(db, uuid4())
 
         assert result is None
+
+    def test_start_interview_rejects_before_scheduled_time(self, db: Session, test_interview: Interview):
+        test_interview.interview_time = datetime.now(timezone.utc) + timedelta(minutes=15)
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            interview_service.start_interview(db, test_interview.id)
+
+        assert exc_info.value.status_code == 409
+        assert "面试尚未到开始时间" in exc_info.value.detail
+        assert test_interview.status == InterviewStatus.SCHEDULED
 
     def test_start_interview_wrong_status(self, db: Session, test_interview_in_progress: Interview):
         """测试面试状态不正确时无法开始"""

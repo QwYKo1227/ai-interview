@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getInterviewProgress, normalizeInterviewResult } from './List';
+import { buildInterviewSchedulePayload, getInterviewProgress, normalizeInterviewResult } from './List';
 
 
 describe('interview list status presentation', () => {
@@ -17,5 +17,23 @@ describe('interview list status presentation', () => {
   it('normalizes retired interview results for historical records', () => {
     expect(normalizeInterviewResult('hired')).toBe('passed');
     expect(normalizeInterviewResult('waitlist')).toBe('pending');
+  });
+
+  it('clears schedule fields that do not apply to the selected interview form', () => {
+    const interviewTime = { toISOString: () => '2026-08-01T02:00:00.000Z' };
+
+    expect(buildInterviewSchedulePayload({
+      panel_members: ['one'],
+      interview_time: interviewTime,
+      interview_type: 'video',
+      interview_location: '旧办公室',
+      meeting_link: 'https://meeting.example.com/new',
+    })).toEqual({
+      panel_members: ['one'],
+      interview_time: '2026-08-01T02:00:00.000Z',
+      interview_type: 'video',
+      interview_location: null,
+      meeting_link: 'https://meeting.example.com/new',
+    });
   });
 });

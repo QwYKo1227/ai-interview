@@ -55,6 +55,7 @@ RECORDING_DISCONNECT_SECONDS = 30
 RECORDING_RETENTION_DAYS = 30
 REMINDER_COOLDOWN_HOURS = 24
 MAX_RECORDING_SIZE = max(MAX_UPLOAD_SIZE, 2 * 1024 * 1024 * 1024)
+MAX_RECORDING_CHUNKS = 10_000
 ASR_MAX_ATTEMPTS = 3
 ASR_POLL_SECONDS = 15
 
@@ -189,28 +190,44 @@ def append_recording_chunk(
     stored: StoredFile,
     user: User,
 ) -> dict:
-    interview = _locked_interview(db, interview_id)
-    _require_owner(interview, user, session_id)
-    if interview.recording_state not in {"recording", "ending"}:
-        raise HTTPException(status_code=409, detail="Recording is not accepting chunks")
-    chunks = list(interview.recording_chunks or [])
-    for item in chunks:
-        if item["index"] == chunk_index:
-            if item["size"] == stored.size:
-                cleanup_new_file(db, stored)
-                return item
-            cleanup_new_file(db, stored)
-            raise HTTPException(status_code=409, detail="Recording chunk conflicts with an existing chunk")
-    if chunk_index != len(chunks):
+    try:
+        interview = _locked_interview(db, interview_id)
+        _require_owner(interview, user, session_id)
+        if interview.recording_state not in {"recording", "ending"}:
+            raise HTTPException(status_code=409, detail="Recording is not accepting chunks")
+        chunks = list(interview.recording_chunks or [])
+        for item in chunks:
+            if item["index"] == chunk_index:
+                if item["size"] == stored.size:
+                    cleanup_new_file(db, stored)
+                    return item
+                raise HTTPException(
+                    status_code=409,
+                    detail="Recording chunk conflicts with an existing chunk",
+                )
+        if chunk_index != len(chunks):
+            raise HTTPException(status_code=409, detail=f"Expected recording chunk {len(chunks)}")
+        if len(chunks) >= MAX_RECORDING_CHUNKS:
+            raise HTTPException(status_code=413, detail="Recording has too many chunks")
+        try:
+            accumulated_size = sum(int(item["size"]) for item in chunks)
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=409,
+                detail="Recording chunk metadata is invalid",
+            ) from None
+        if accumulated_size + stored.size > MAX_RECORDING_SIZE:
+            raise HTTPException(status_code=413, detail="Recording exceeds the maximum size")
+        db.add(stored)
+        item = {"index": chunk_index, "file_id": str(stored.id), "size": stored.size}
+        chunks.append(item)
+        interview.recording_chunks = chunks
+        interview.recording_heartbeat_at = utcnow()
+        db.commit()
+        return item
+    except Exception:
         cleanup_new_file(db, stored)
-        raise HTTPException(status_code=409, detail=f"Expected recording chunk {len(chunks)}")
-    db.add(stored)
-    item = {"index": chunk_index, "file_id": str(stored.id), "size": stored.size}
-    chunks.append(item)
-    interview.recording_chunks = chunks
-    interview.recording_heartbeat_at = utcnow()
-    db.commit()
-    return item
+        raise
 
 
 def begin_ending(

@@ -60,6 +60,10 @@ from app.services.resume_interview_status import (
     mark_legacy_interview_completed,
     mark_legacy_interview_ended,
 )
+from app.services.interview_schedule_notification import (
+    issue_schedule_notification_token,
+    validate_schedule_notification_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +141,9 @@ def aggregate_scores_route(
     interview_id: UUID, 
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user) # Only allowed users (HR/Admin) should do this ideally
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_interview_access(db, interview_id, current_user)
     db_interview = aggregate_panel_scores(db, interview_id, background_tasks)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview or panels not found")
@@ -208,6 +213,7 @@ def get_submission_status_route(
     获取面试评分提交状态。
     返回各面试官是否已提交评分。
     """
+    require_interview_access(db, interview_id, current_user)
     status = get_submission_status(db, interview_id)
     if not status:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -574,19 +580,25 @@ def export_interview_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_interview_access(db, interview_id, current_user)
     content = export_interview_result(db, interview_id, format)
     if not content:
         raise HTTPException(status_code=404, detail="Interview not found")
         
     return PlainTextResponse(content=content)
 
-@router.put("/{interview_id}/questions", response_model=InterviewResponse)
+@router.put(
+    "/{interview_id}/questions",
+    response_model=InterviewResponse,
+    dependencies=[Depends(check_roles([UserRole.ADMIN, UserRole.HR]))],
+)
 def update_questions_route(
     interview_id: UUID,
     questions: List[dict],
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_interview_access(db, interview_id, current_user)
     db_interview = update_interview_questions(db, interview_id, questions)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -627,7 +639,7 @@ def get_interviews_route(
 def preview_email_before_create(
     preview_data: EmailPreviewRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """在创建面试前预览邮件内容"""
     from app.services.mail_service import get_mail_service, format_interview_time
@@ -700,23 +712,7 @@ def get_interview_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
-    
-    print(f"[Get Interview] interview_id: {interview_id}")
-    print(f"[Get Interview] panel_members: {interview.panel_members}")
-    print(f"[Get Interview] panel_members type: {type(interview.panel_members)}")
-    if interview.panel_members:
-        for i, member in enumerate(interview.panel_members):
-            print(f"[Get Interview] member[{i}]: {member}, type: {type(member)}")
-    
-    print(f"[Get Interview] panels count: {len(interview.panels) if interview.panels else 0}")
-    if interview.panels:
-        for p in interview.panels:
-            print(f"[Get Interview] panel: interviewer_id={p.interviewer_id}, is_submitted={p.is_submitted}")
-    
-    return interview
+    return require_interview_access(db, interview_id, current_user)
 
 @router.post("/{interview_id}/start", response_model=InterviewResponse)
 def start_interview_route(
@@ -727,18 +723,24 @@ def start_interview_route(
     """
     开始面试，将状态从 SCHEDULED 改为 IN_PROGRESS。
     """
+    require_interview_access(db, interview_id, current_user)
     db_interview = start_interview(db, interview_id)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     return db_interview
 
-@router.put("/{interview_id}", response_model=InterviewResponse)
+@router.put(
+    "/{interview_id}",
+    response_model=InterviewResponse,
+    dependencies=[Depends(check_roles([UserRole.ADMIN, UserRole.HR]))],
+)
 def update_interview_route(
     interview_id: UUID,
     interview: InterviewUpdate,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_interview_access(db, interview_id, current_user)
     db_interview = update_interview(db, interview_id, interview)
     if not db_interview:
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -842,6 +844,11 @@ def preview_schedule_update_email(
 
     position_title = interview.position.title if interview.position else "岗位"
     return {
+        "notification_token": issue_schedule_notification_token(
+            interview,
+            schedule,
+            relevant_ids,
+        ),
         "current": {
             "recipients": recipients(current_recipient_ids),
             "subject": f"面试安排更新 - {position_title}",
@@ -888,8 +895,12 @@ def send_interview_schedule_notifications(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
-    if not get_interview(db, interview_id):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
+    validate_schedule_notification_token(
+        notification.preview_token,
+        interview,
+        notification.recipient_ids,
+    )
     recipients = db.query(User).filter(
         User.id.in_(notification.recipient_ids),
         User.is_active == True,
@@ -1009,14 +1020,12 @@ def delete_interview_route(
 def get_email_preview(
     interview_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """获取面试邀请邮件预览"""
     from app.services.mail_service import get_mail_service, format_interview_time
 
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
 
     mail_service = get_mail_service(db)
 
@@ -1086,14 +1095,12 @@ def send_interview_email(
     interview_id: UUID,
     email_data: EmailSendRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """发送面试邀请邮件"""
     from app.services.mail_service import get_mail_service
 
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
 
     mail_service = get_mail_service(db)
 

@@ -17,6 +17,75 @@ from app.models.models import (
     Interview, InterviewStatus, InterviewResult, InterviewPanel,
     User, UserRole
 )
+from app.models.file_models import StoredFile
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix", "payload"),
+    [
+        ("GET", "", None),
+        ("GET", "/submission-status", None),
+        ("GET", "/export", None),
+        ("GET", "/email-preview", None),
+        ("POST", "/start", None),
+        ("POST", "/aggregate", None),
+        ("PUT", "", {"interviewer": "unauthorized change"}),
+        (
+            "PUT",
+            "/questions",
+            [{"title": "unauthorized", "content": "changed", "reference_answer": "x"}],
+        ),
+        (
+            "POST",
+            "/send-email",
+            {"subject": "arbitrary", "content": "<p>arbitrary html</p>"},
+        ),
+    ],
+)
+def test_unassigned_interviewer_cannot_access_or_mutate_interview(
+    method: str,
+    suffix: str,
+    payload,
+    client: TestClient,
+    interviewer_auth_headers: dict,
+    test_interviewer: User,
+    test_interview: Interview,
+    db: Session,
+):
+    """An authenticated interviewer must not bypass per-interview assignment."""
+
+    test_interview.interviewer_id = None
+    test_interview.panel_members = []
+    db.commit()
+
+    response = client.request(
+        method,
+        f"/api/interviews/{test_interview.id}{suffix}",
+        headers=interviewer_auth_headers,
+        json=payload,
+    )
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_interviewer_cannot_preview_candidate_email_before_interview_creation(
+    client: TestClient,
+    interviewer_auth_headers: dict,
+    test_resume,
+    test_position,
+):
+    response = client.post(
+        "/api/interviews/email-preview",
+        headers=interviewer_auth_headers,
+        json={
+            "resume_id": str(test_resume.id),
+            "position_id": str(test_position.id),
+            "interview_time": "2026-08-01T10:00:00Z",
+            "interview_type": "phone",
+        },
+    )
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
 class TestCreateInterviewRoute:
@@ -604,6 +673,7 @@ class TestUpdateInterviewRoute:
         test_user: User,
         test_interviewer: User,
         test_interview: Interview,
+        db: Session,
         monkeypatch,
     ):
         class StubMailService:
@@ -614,10 +684,28 @@ class TestUpdateInterviewRoute:
             "app.services.mail_service.get_mail_service",
             lambda db: StubMailService(),
         )
+        schedule = {
+            "panel_members": [str(test_user.id), str(test_interviewer.id)],
+            "interview_time": "2024-12-20T14:00:00Z",
+            "interview_type": "phone",
+        }
+        preview = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-email-preview",
+            json=schedule,
+            headers=auth_headers,
+        )
+        assert preview.status_code == status.HTTP_200_OK
+        updated = client.put(
+            f"/api/interviews/{test_interview.id}/schedule",
+            json=schedule,
+            headers=auth_headers,
+        )
+        assert updated.status_code == status.HTTP_200_OK
         response = client.post(
             f"/api/interviews/{test_interview.id}/schedule-notifications",
             json={
                 "recipient_ids": [str(test_user.id), str(test_interviewer.id)],
+                "preview_token": preview.json()["notification_token"],
                 "subject": "面试安排更新",
                 "content": "<p>最新安排</p>",
             },
@@ -629,6 +717,163 @@ class TestUpdateInterviewRoute:
             "sent": [str(test_user.id)],
             "failed": [str(test_interviewer.id)],
         }
+
+    def test_schedule_notification_rejects_unrelated_recipient(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_admin: User,
+        test_interviewer: User,
+        test_interview: Interview,
+        monkeypatch,
+    ):
+        sent = []
+
+        class StubMailService:
+            def _send_email(self, email, subject, content):
+                sent.append((email, subject, content))
+                return True
+
+        monkeypatch.setattr(
+            "app.services.mail_service.get_mail_service",
+            lambda db: StubMailService(),
+        )
+        schedule = {
+            "panel_members": [str(test_interviewer.id)],
+            "interview_time": "2024-12-20T14:00:00Z",
+            "interview_type": "phone",
+        }
+        preview = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-email-preview",
+            json=schedule,
+            headers=auth_headers,
+        )
+        assert preview.status_code == status.HTTP_200_OK
+        updated = client.put(
+            f"/api/interviews/{test_interview.id}/schedule",
+            json=schedule,
+            headers=auth_headers,
+        )
+        assert updated.status_code == status.HTTP_200_OK
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-notifications",
+            json={
+                "recipient_ids": [str(test_admin.id)],
+                "preview_token": preview.json()["notification_token"],
+                "subject": "Security notice",
+                "content": '<a href="https://evil.invalid">Re-login</a>',
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert sent == []
+
+    def test_schedule_notification_rejects_tampered_preview_token(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interviewer: User,
+        test_interview: Interview,
+    ):
+        schedule = {
+            "panel_members": [str(test_interviewer.id)],
+            "interview_time": "2024-12-20T14:00:00Z",
+            "interview_type": "phone",
+        }
+        preview = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-email-preview",
+            json=schedule,
+            headers=auth_headers,
+        )
+        assert preview.status_code == status.HTTP_200_OK
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-notifications",
+            json={
+                "recipient_ids": [str(test_interviewer.id)],
+                "subject": "Schedule update",
+                "content": "<p>Updated</p>",
+                "preview_token": preview.json()["notification_token"] + "x",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_schedule_notification_requires_previewed_schedule_to_be_saved(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interviewer: User,
+        test_interview: Interview,
+    ):
+        preview = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-email-preview",
+            json={
+                "panel_members": [str(test_interviewer.id)],
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_type": "phone",
+            },
+            headers=auth_headers,
+        )
+        assert preview.status_code == status.HTTP_200_OK
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/schedule-notifications",
+            json={
+                "recipient_ids": [str(test_interviewer.id)],
+                "subject": "Schedule update",
+                "content": "<p>Updated</p>",
+                "preview_token": preview.json()["notification_token"],
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+
+    def test_invalid_recording_session_cleans_up_staged_chunk(
+        self,
+        client: TestClient,
+        interviewer_auth_headers: dict,
+        test_interviewer: User,
+        test_interview: Interview,
+        monkeypatch,
+    ):
+        """A rejected chunk must not leave a durable orphan in upload storage."""
+
+        staged = StoredFile(
+            id=uuid4(),
+            tenant_id=test_interview.tenant_id,
+            object_key=f"{test_interview.tenant_id}/interview_audio/staged.webm",
+            original_filename="chunk.webm",
+            content_type="video/webm",
+            size=3,
+            category="interview_audio",
+            resource_type="interview_recording_chunk",
+            resource_id=test_interview.id,
+        )
+        cleaned = []
+        monkeypatch.setattr(
+            "app.routes.interviews.save_upload_file",
+            lambda *args, **kwargs: staged,
+        )
+        monkeypatch.setattr(
+            "app.services.interview_lifecycle_service.cleanup_new_file",
+            lambda db, record: cleaned.append(record.id),
+        )
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/recording/chunks/0",
+            data={"session_id": str(uuid4())},
+            files={"file": ("chunk.webm", b"abc", "video/webm")},
+            headers=interviewer_auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert cleaned == [staged.id]
 
     def test_update_interview_not_found(self, client: TestClient, auth_headers: dict):
         """测试更新不存在的面试"""

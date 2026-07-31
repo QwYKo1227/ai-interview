@@ -131,6 +131,7 @@ const InterviewsList: React.FC = () => {
         recipient_ids: ids,
         subject: values[`${group}_subject`],
         content: values[`${group}_content`],
+        preview_token: scheduleEmailPreview?.notification_token,
       });
       return result.failed || [];
     } catch {

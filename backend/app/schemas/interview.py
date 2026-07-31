@@ -64,6 +64,7 @@ class InterviewScheduleNotificationRequest(BaseModel):
     recipient_ids: List[UUID] = Field(min_length=1)
     subject: str = Field(min_length=1, max_length=255)
     content: str = Field(min_length=1)
+    preview_token: str = Field(min_length=1, max_length=4096)
 
 class InterviewScore(BaseModel):
     scores: Dict[str, int] # 题目索引 -> 分数

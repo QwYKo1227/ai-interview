@@ -13,6 +13,7 @@ from app.services.interview_lifecycle_service import (
     confirm_final_decision,
     correct_final_decision,
     confirm_recording,
+    append_recording_chunk,
     enforce_analysis_contract,
     force_end_interview,
     reserve_recording,
@@ -107,6 +108,58 @@ def test_live_recording_reservation_rejects_another_interviewer(
         reserve_recording(db, test_interview.id, another)
 
     assert error.value.status_code == 409
+
+
+def test_recording_chunks_cannot_exceed_total_recording_limit(
+    db: Session,
+    test_interview,
+    test_interviewer,
+    monkeypatch,
+):
+    session_id = uuid4()
+    test_interview.lifecycle_state = "in_progress"
+    test_interview.recording_state = "recording"
+    test_interview.recording_session_id = session_id
+    test_interview.recording_owner_id = test_interviewer.id
+    test_interview.recording_chunks = [
+        {
+            "index": 0,
+            "file_id": str(uuid4()),
+            "size": interview_lifecycle_service.MAX_RECORDING_SIZE,
+        }
+    ]
+    db.commit()
+
+    staged = StoredFile(
+        id=uuid4(),
+        tenant_id=test_interview.tenant_id,
+        object_key=f"{test_interview.tenant_id}/interview_audio/overflow.webm",
+        original_filename="overflow.webm",
+        content_type="video/webm",
+        size=1,
+        category="interview_audio",
+        resource_type="interview_recording_chunk",
+        resource_id=test_interview.id,
+    )
+    cleaned = []
+    monkeypatch.setattr(
+        interview_lifecycle_service,
+        "cleanup_new_file",
+        lambda db, record: cleaned.append(record.id),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        append_recording_chunk(
+            db,
+            test_interview.id,
+            session_id,
+            1,
+            staged,
+            test_interviewer,
+        )
+
+    assert error.value.status_code == 413
+    assert cleaned == [staged.id]
 
 
 def test_admin_can_force_end_interview_without_recording_session(

@@ -15,7 +15,15 @@ from app.config.database import get_unscoped_db
 from app.config.tenant_session import TenantSession
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import CodingTest, Interview, InterviewPanel, Resume, User, UserRole
+from app.models.models import (
+    CodingTest,
+    DepartmentReview,
+    Interview,
+    InterviewPanel,
+    Resume,
+    User,
+    UserRole,
+)
 from app.models.tenant_models import PublicAccessToken, TenantDomain
 from app.routes import files
 from app.schemas.interview import InterviewScore
@@ -369,6 +377,48 @@ def test_assigned_interviewer_can_download_resume_file(
     assert response.status_code == 200
     assert response.content == b"assigned resume"
     assert publish.status_code == 404
+    assert db.query(PublicAccessToken).count() == 0
+
+
+def test_assigned_department_reviewer_can_download_resume_file(
+    db, tenant_a, test_resume, test_interviewer, tmp_path
+):
+    stored = save_upload_file(
+        _upload(content=b"department review resume"),
+        tenant_a.id,
+        "resumes",
+        root=tmp_path,
+        resource_type="resume",
+        resource_id=test_resume.id,
+    )
+    test_resume.file_id = stored.id
+    test_resume.file_path = f"/api/files/{stored.id}"
+    review = DepartmentReview(
+        tenant_id=tenant_a.id,
+        resume_id=test_resume.id,
+        reviewer_id=test_interviewer.id,
+        is_completed=False,
+    )
+    db.add_all([stored, review])
+    db.commit()
+
+    with TestClient(
+        _app(db, tenant_a, tmp_path, current_user=test_interviewer)
+    ) as client:
+        response = client.get(f"/api/files/{stored.id}")
+        publish = client.post(
+            f"/api/files/{stored.id}/public-token",
+            json={"ttl_seconds": 120},
+        )
+
+        review.is_completed = True
+        db.commit()
+        completed = client.get(f"/api/files/{stored.id}")
+
+    assert response.status_code == 200
+    assert response.content == b"department review resume"
+    assert publish.status_code == 404
+    assert completed.status_code == 404
     assert db.query(PublicAccessToken).count() == 0
 
 

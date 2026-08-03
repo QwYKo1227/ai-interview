@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_db
 from app.models.file_models import StoredFile
-from app.models.models import Interview, QuestionBank, Resume, User, UserRole
+from app.models.models import (
+    DepartmentReview,
+    Interview,
+    QuestionBank,
+    Resume,
+    User,
+    UserRole,
+)
 from app.schemas.file import PublicFileTokenRequest, PublicFileTokenResponse
 from app.services.public_token_service import enforce_public_request_tenant, issue_public_token, resolve_public_token
 from app.utils.file_storage import UPLOAD_ROOT as DEFAULT_UPLOAD_ROOT, resolve_object_path, sanitize_content_type
@@ -86,6 +93,18 @@ def _can_access_file(
         return True
     if record.resource_type != "resume" or not allow_assigned_resume:
         return False
+    active_department_review = (
+        db.query(DepartmentReview.id)
+        .filter(
+            DepartmentReview.tenant_id == current_user.tenant_id,
+            DepartmentReview.resume_id == record.resource_id,
+            DepartmentReview.reviewer_id == current_user.id,
+            DepartmentReview.is_completed.is_(False),
+        )
+        .first()
+    )
+    if active_department_review is not None:
+        return True
     interviews = (
         db.query(Interview)
         .filter(Interview.resume_id == record.resource_id)

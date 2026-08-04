@@ -25,6 +25,38 @@ def _sent_offer(db, position, resume, creator):
     return offer
 
 
+def test_pending_confirmation_status_route_replaces_legacy_send_route(
+    client: TestClient, db, auth_headers: dict, test_position, test_resume, test_user
+):
+    offer = Offer(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        position_id=test_position.id,
+        candidate_name=test_resume.candidate_name,
+        candidate_email=test_resume.email,
+        position_title=test_position.title,
+        status=OfferStatus.DRAFT,
+        created_by=test_user.id,
+    )
+    db.add(offer)
+    db.commit()
+    db.refresh(offer)
+
+    legacy = client.post(f"/api/offers/{offer.id}/send", headers=auth_headers)
+    assert legacy.status_code == status.HTTP_404_NOT_FOUND
+
+    response = client.post(
+        f"/api/offers/{offer.id}/mark-pending-confirmation",
+        headers=auth_headers,
+    )
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"success": True, "status": "sent"}
+    db.refresh(offer)
+    db.refresh(test_resume)
+    assert offer.status == OfferStatus.SENT
+    assert test_resume.status == ResumeStatus.OFFER_PENDING
+
+
 def test_interviewer_only_sees_offers_for_positions_they_manage(
     client: TestClient, db, interviewer_auth_headers: dict, test_interviewer,
     test_position, test_resume, test_user

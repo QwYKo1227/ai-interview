@@ -5,7 +5,7 @@ import {
   Drawer, Descriptions, Divider, Timeline
 } from 'antd';
 import {
-  PlusOutlined, MailOutlined, CheckOutlined, CloseOutlined, RollbackOutlined,
+  PlusOutlined, SwapOutlined, CheckOutlined, CloseOutlined, RollbackOutlined,
   EyeOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ReloadOutlined,
   FileTextOutlined, DollarOutlined, EnvironmentOutlined, ClockCircleOutlined,
   RedoOutlined
@@ -128,7 +128,7 @@ const OffersList: React.FC = () => {
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [detailDrawerVisible, setDetailDrawerVisible] = useState(false);
-  const [sendModalVisible, setSendModalVisible] = useState(false);
+  const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
   const [acceptModalVisible, setAcceptModalVisible] = useState(false);
   
@@ -270,21 +270,21 @@ const OffersList: React.FC = () => {
     }
   };
 
-  const handleSend = async () => {
+  const handleMarkPendingConfirmation = async () => {
     if (!currentOffer) return;
     try {
-      const result = await request.post(`/offers/${currentOffer.id}/send`, {});
+      const result = await request.post(`/offers/${currentOffer.id}/mark-pending-confirmation`, {});
       if (!result?.success) {
         message.error(result?.error || '确认发出失败');
         return;
       }
-      message.success('已确认Offer发出，等待候选人结果');
-      setSendModalVisible(false);
+      message.success('Offer状态已变更为“Offer待确认”');
+      setStatusModalVisible(false);
       fetchOffers();
       fetchStats();
       window.dispatchEvent(new Event('offer-pending-updated'));
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '发送失败');
+      message.error(error.response?.data?.detail || '状态变更失败');
     }
   };
 
@@ -384,35 +384,35 @@ const OffersList: React.FC = () => {
     });
   };
 
-  const handleBatchSend = () => {
+  const handleBatchMarkPendingConfirmation = () => {
     if (selectedRowKeys.length === 0) {
-      message.warning('请先选择要发送的Offer');
+      message.warning('请先选择要变更状态的Offer');
       return;
     }
     Modal.confirm({
-      title: '确认批量发送',
-      content: `确定要发送选中的 ${selectedRowKeys.length} 个Offer吗？`,
+      title: '批量变更Offer状态',
+      content: `确定将选中的 ${selectedRowKeys.length} 个Offer变更为“Offer待确认”吗？`,
       okText: '确认',
       cancelText: '取消',
       onOk: async () => {
         try {
           const results = await Promise.all(
-            selectedRowKeys.map(id => request.post(`/offers/${id}/send`))
+            selectedRowKeys.map(id => request.post(`/offers/${id}/mark-pending-confirmation`))
           );
           const failed = results.filter(result => !result?.success);
           if (failed.length > 0) {
             const reason = failed.find(result => result?.error)?.error;
-            message.error(reason || `${failed.length} 个 Offer 确认发出失败`);
+            message.error(reason || `${failed.length} 个 Offer 状态变更失败`);
             fetchOffers();
             fetchStats();
             return;
           }
-          message.success(`已确认发出 ${selectedRowKeys.length} 个Offer`);
+          message.success(`已将 ${selectedRowKeys.length} 个Offer标记为“Offer待确认”`);
           setSelectedRowKeys([]);
           fetchOffers();
           fetchStats();
         } catch (error) {
-          message.error('批量发送失败');
+          message.error('批量状态变更失败');
         }
       },
     });
@@ -503,15 +503,15 @@ const OffersList: React.FC = () => {
           <Tooltip title="查看详情">
             <Button type="text" icon={<EyeOutlined />} onClick={() => openDetailDrawer(record)} />
           </Tooltip>
-          {record.status === 'draft' && (
+          {['draft', 'pending'].includes(record.status) && (
             <>
-              {canManageOffer && <Tooltip title="编辑">
+              {canManageOffer && record.status === 'draft' && <Tooltip title="编辑">
                 <Button type="text" icon={<EditOutlined />} onClick={() => openEditModal(record)} />
               </Tooltip>}
-              {canManageOffer && <Tooltip title="确认已发出">
-                <Button type="text" icon={<MailOutlined />} onClick={() => {
+              {canManageOffer && <Tooltip title="变更为Offer待确认">
+                <Button type="text" icon={<SwapOutlined />} onClick={() => {
                   setCurrentOffer(record);
-                  setSendModalVisible(true);
+                  setStatusModalVisible(true);
                 }} />
               </Tooltip>}
             </>
@@ -637,7 +637,7 @@ const OffersList: React.FC = () => {
             {canManageOffer && selectedRowKeys.length > 0 && (
               <>
                 <span style={{ color: '#64748B', lineHeight: '32px' }}>已选 {selectedRowKeys.length} 项</span>
-                <Button type="primary" onClick={handleBatchSend}>批量发送</Button>
+                <Button type="primary" onClick={handleBatchMarkPendingConfirmation}>批量标记待确认</Button>
                 <Button danger onClick={handleBatchDelete}>批量删除</Button>
                 <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
               </>
@@ -921,14 +921,14 @@ const OffersList: React.FC = () => {
       </Modal>
 
       <Modal
-        title="确认Offer已发出"
-        open={sendModalVisible}
-        onCancel={() => setSendModalVisible(false)}
-        onOk={handleSend}
-        okText="确认已发出"
+        title="变更Offer状态"
+        open={statusModalVisible}
+        onCancel={() => setStatusModalVisible(false)}
+        onOk={handleMarkPendingConfirmation}
+        okText="变更为Offer待确认"
         cancelText="取消"
       >
-        <p>请确认已通过线下渠道将 Offer 发给候选人。确认后状态将变为“Offer待确认”，由该岗位招聘负责人登记候选人的最终结果。</p>
+        <p>系统不会发送 Offer 邮件。请确认已通过线下渠道将 Offer 交付候选人，再将状态变更为“Offer待确认”。之后由该岗位招聘负责人登记候选人的最终结果。</p>
       </Modal>
 
       <Modal

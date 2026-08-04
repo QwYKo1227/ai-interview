@@ -89,15 +89,15 @@ def update_offer(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/{offer_id}/send")
-def send_offer(
+@router.post("/{offer_id}/mark-pending-confirmation")
+def mark_offer_pending_confirmation(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
-        result = offer_service.send_offer(db, offer_id)
+        result = offer_service.mark_offer_pending_confirmation(db, offer_id)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

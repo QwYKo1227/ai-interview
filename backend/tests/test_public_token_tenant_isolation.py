@@ -396,7 +396,7 @@ def test_public_route_source_has_no_direct_unscoped_business_query():
         assert "Depends(get_unscoped_db)" not in source or "db.query(Resume)" not in source
 
 
-def test_internal_offer_send_does_not_use_mail_or_public_tokens(
+def test_mark_offer_pending_confirmation_does_not_use_mail_or_public_tokens(
     db, tenant_a, test_resume, monkeypatch
 ):
     offer = _offer(db, tenant_a)
@@ -407,14 +407,11 @@ def test_internal_offer_send_does_not_use_mail_or_public_tokens(
     known_raw = "A" * 43
     monkeypatch.setattr("app.services.public_token_service.secrets.token_urlsafe", lambda _n: known_raw)
 
-    result = offer_service.send_offer(db, offer.id, send_email=True)
+    result = offer_service.mark_offer_pending_confirmation(db, offer.id)
 
     db.refresh(offer)
     assert result == {
         "success": True,
-        "email_sent": False,
-        "error": None,
-        "token": None,
         "status": "sent",
     }
     assert offer.status == OfferStatus.SENT
@@ -426,9 +423,8 @@ def test_internal_offer_send_does_not_use_mail_or_public_tokens(
     assert invalid.value.status_code == 404
 
 
-@pytest.mark.parametrize("send_email", [False, True])
-def test_successful_offer_send_moves_resume_to_offer_pending(
-    db, tenant_a, test_resume, send_email
+def test_mark_offer_pending_confirmation_moves_resume_to_offer_pending(
+    db, tenant_a, test_resume
 ):
     offer = _offer(db, tenant_a)
     test_resume.status = ResumeStatus.INTERVIEW_PASSED
@@ -436,12 +432,10 @@ def test_successful_offer_send_moves_resume_to_offer_pending(
     offer.status = OfferStatus.PENDING
     db.commit()
 
-    result = offer_service.send_offer(db, offer.id, send_email=send_email)
+    result = offer_service.mark_offer_pending_confirmation(db, offer.id)
 
     db.refresh(test_resume)
     assert result["success"] is True
-    assert result["email_sent"] is False
-    assert result["token"] is None
     assert test_resume.status == ResumeStatus.OFFER_PENDING
 
 
@@ -450,10 +444,10 @@ def test_offer_cannot_be_confirmed_sent_twice(db, tenant_a):
     offer.status = OfferStatus.PENDING
     db.commit()
 
-    first = offer_service.send_offer(db, offer.id, send_email=True)
+    first = offer_service.mark_offer_pending_confirmation(db, offer.id)
     assert first["success"] is True
     with pytest.raises(ValueError):
-        offer_service.send_offer(db, offer.id, send_email=True)
+        offer_service.mark_offer_pending_confirmation(db, offer.id)
 
 
 @pytest.mark.parametrize("raw", ["", "x" * 39, "x" * 129, "bad token!" * 5])

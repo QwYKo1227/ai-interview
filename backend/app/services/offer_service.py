@@ -276,7 +276,7 @@ def update_offer(db: Session, offer_id: UUID, offer_data: OfferUpdate) -> Option
     
     return offer
 
-def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_message: Optional[str] = None, base_url: str = "http://localhost:5173") -> Dict[str, Any]:
+def mark_offer_pending_confirmation(db: Session, offer_id: UUID) -> Dict[str, Any]:
     offer = db.query(Offer).filter(Offer.id == offer_id).first()
     if not offer:
         raise ValueError("Offer不存在")
@@ -295,9 +295,6 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
     
     return {
         "success": True,
-        "email_sent": False,
-        "error": None,
-        "token": None,
         "status": OfferStatus.SENT.value,
     }
 

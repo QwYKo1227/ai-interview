@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildInterviewSchedulePayload, getInterviewProgress, normalizeInterviewResult } from './List';
+import {
+  buildInterviewSchedulePayload,
+  createEmptyInterviewListFilters,
+  getInterviewMemberIds,
+  getInterviewProgress,
+  matchesInterviewFilters,
+  normalizeInterviewResult,
+} from './List';
 
 
 describe('interview list status presentation', () => {
@@ -17,6 +24,31 @@ describe('interview list status presentation', () => {
   it('normalizes retired interview results for historical records', () => {
     expect(normalizeInterviewResult('hired')).toBe('passed');
     expect(normalizeInterviewResult('waitlist')).toBe('pending');
+  });
+
+  it('filters interviews by candidate, position, and any assigned interviewer', () => {
+    const interview = {
+      resume_id: 'resume-1',
+      position_id: 'position-1',
+      panel_members: ['interviewer-1'],
+      panels: [{ interviewer_id: 'interviewer-2' }],
+      lifecycle_state: 'scheduled',
+      result: 'pending',
+    };
+
+    expect(getInterviewMemberIds(interview)).toEqual(['interviewer-1', 'interviewer-2']);
+    expect(matchesInterviewFilters(interview, {
+      candidateId: 'resume-1',
+      positionId: 'position-1',
+      interviewerId: 'interviewer-2',
+    })).toBe(true);
+    expect(matchesInterviewFilters(interview, { candidateId: 'resume-2' })).toBe(false);
+    expect(matchesInterviewFilters(interview, { positionId: 'position-2' })).toBe(false);
+    expect(matchesInterviewFilters(interview, { interviewerId: 'interviewer-3' })).toBe(false);
+  });
+
+  it('resets every interview filter', () => {
+    expect(createEmptyInterviewListFilters()).toEqual({});
   });
 
   it('clears schedule fields that do not apply to the selected interview form', () => {

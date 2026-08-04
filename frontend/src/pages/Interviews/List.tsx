@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography } from 'antd';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography, Card } from 'antd';
 import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined, EditOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
@@ -22,6 +22,41 @@ export const normalizeInterviewResult = (result?: string) => {
   return result || 'pending';
 };
 
+export type InterviewListFilters = {
+  candidateId?: string;
+  positionId?: string;
+  interviewerId?: string;
+  status?: string;
+  result?: string;
+};
+
+export const createEmptyInterviewListFilters = (): InterviewListFilters => ({});
+
+export const getInterviewMemberIds = (record: any): string[] => {
+  const panelMemberIds = Array.isArray(record?.panel_members) ? record.panel_members : [];
+  const panelIds = Array.isArray(record?.panels)
+    ? record.panels.map((panel: any) => panel?.interviewer_id)
+    : [];
+
+  return Array.from(new Set([...panelMemberIds, ...panelIds]
+    .filter(Boolean)
+    .map((id) => String(id))));
+};
+
+export const matchesInterviewFilters = (
+  record: any,
+  filters: InterviewListFilters,
+) => {
+  const resumeId = String(record?.resume_id || record?.resume?.id || '');
+  const positionId = String(record?.position_id || record?.position?.id || '');
+
+  return (!filters.candidateId || resumeId === filters.candidateId)
+    && (!filters.positionId || positionId === filters.positionId)
+    && (!filters.interviewerId || getInterviewMemberIds(record).includes(filters.interviewerId))
+    && (!filters.status || getInterviewProgress(record) === filters.status)
+    && (!filters.result || normalizeInterviewResult(record?.result) === filters.result);
+};
+
 export const buildInterviewSchedulePayload = (values: any) => ({
   panel_members: values.panel_members,
   interview_time: values.interview_time.toISOString(),
@@ -33,8 +68,7 @@ export const buildInterviewSchedulePayload = (values: any) => ({
 const InterviewsList: React.FC = () => {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
-  const [resultFilter, setResultFilter] = useState<string | undefined>(undefined);
+  const [filters, setFilters] = useState<InterviewListFilters>(createEmptyInterviewListFilters);
   const [interviewerNameMap, setInterviewerNameMap] = useState<Record<string, string>>({});
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -210,10 +244,33 @@ const InterviewsList: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  const filteredData = (data as any[]).filter((interview) => (
-    (!statusFilter || getInterviewProgress(interview) === statusFilter)
-    && (!resultFilter || normalizeInterviewResult(interview.result) === resultFilter)
-  ));
+  const candidateOptions = useMemo(() => Array.from(
+    new Map((data as any[])
+      .map((interview) => {
+        const value = String(interview?.resume_id || interview?.resume?.id || '');
+        return [value, { value, label: interview?.resume?.candidate_name || '未知候选人' }] as const;
+      })
+      .filter(([value]) => value)).values(),
+  ), [data]);
+
+  const positionOptions = useMemo(() => Array.from(
+    new Map((data as any[])
+      .map((interview) => {
+        const value = String(interview?.position_id || interview?.position?.id || '');
+        return [value, { value, label: interview?.position?.title || '未知岗位' }] as const;
+      })
+      .filter(([value]) => value)).values(),
+  ), [data]);
+
+  const interviewerOptions = useMemo(() => (interviewers as any[]).map((interviewer) => ({
+    value: String(interviewer.id),
+    label: interviewer.full_name || interviewer.email || String(interviewer.id),
+  })), [interviewers]);
+
+  const filteredData = useMemo(
+    () => (data as any[]).filter((interview) => matchesInterviewFilters(interview, filters)),
+    [data, filters],
+  );
 
   const getInterviewerText = (record: any) => {
     const members = Array.isArray(record?.panel_members) ? record.panel_members : [];
@@ -628,13 +685,59 @@ const InterviewsList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-        <Space>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'flex-end' }}>
+        {(user?.role === 'admin' || user?.role === 'hr') && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenSelectResume}>安排面试</Button>
+        )}
+      </div>
+      <Card
+        className="interviews-filter-bar"
+        style={{ marginBottom: 24, borderRadius: '8px' }}
+        styles={{ body: { padding: '24px' } }}
+      >
+        <Form layout="inline">
+          <Form.Item label="候选人">
+            <Select
+              placeholder="请选择候选人"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={filters.candidateId}
+              options={candidateOptions}
+              onChange={(candidateId) => setFilters((current) => ({ ...current, candidateId }))}
+              style={{ width: 180 }}
+            />
+          </Form.Item>
+          <Form.Item label="岗位">
+            <Select
+              placeholder="请选择岗位"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={filters.positionId}
+              options={positionOptions}
+              onChange={(positionId) => setFilters((current) => ({ ...current, positionId }))}
+              style={{ width: 180 }}
+            />
+          </Form.Item>
+          <Form.Item label="面试官">
+            <Select
+              placeholder="请选择面试官"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={filters.interviewerId}
+              options={interviewerOptions}
+              onChange={(interviewerId) => setFilters((current) => ({ ...current, interviewerId }))}
+              style={{ width: 180 }}
+            />
+          </Form.Item>
+          <Form.Item label="面试进度">
           <Select
             placeholder="筛选面试进度"
             allowClear
-            value={statusFilter}
-            onChange={(val) => setStatusFilter(val)}
+            value={filters.status}
+            onChange={(status) => setFilters((current) => ({ ...current, status }))}
             style={{ width: 160 }}
             options={[
               { value: 'scheduled', label: '待面试' },
@@ -645,11 +748,13 @@ const InterviewsList: React.FC = () => {
               { value: 'cancelled', label: '已取消' },
             ]}
           />
+          </Form.Item>
+          <Form.Item label="面试结果">
           <Select
             placeholder="筛选面试结果"
             allowClear
-            value={resultFilter}
-            onChange={(val) => setResultFilter(val)}
+            value={filters.result}
+            onChange={(result) => setFilters((current) => ({ ...current, result }))}
             style={{ width: 160 }}
             options={[
               { value: 'pending', label: '未出结果' },
@@ -658,18 +763,19 @@ const InterviewsList: React.FC = () => {
               { value: 'rejected', label: '淘汰' },
             ]}
           />
+          </Form.Item>
           {selectedRowKeys.length > 0 && canDeleteInterview && (
             <>
-              <span style={{ lineHeight: '32px' }}>已选 {selectedRowKeys.length} 项</span>
-              <Button danger onClick={handleBatchDelete}>批量删除</Button>
-              <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+              <Form.Item><span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span></Form.Item>
+              <Form.Item><Button danger onClick={handleBatchDelete}>批量删除</Button></Form.Item>
+              <Form.Item><Button onClick={() => setSelectedRowKeys([])}>取消选择</Button></Form.Item>
             </>
           )}
-        </Space>
-        {(user?.role === 'admin' || user?.role === 'hr') && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenSelectResume}>安排面试</Button>
-        )}
-      </div>
+          <Form.Item>
+            <Button onClick={() => setFilters(createEmptyInterviewListFilters())}>重置</Button>
+          </Form.Item>
+        </Form>
+      </Card>
       <Table
         columns={columns}
         dataSource={filteredData}

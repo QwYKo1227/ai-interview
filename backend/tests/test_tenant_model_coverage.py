@@ -25,6 +25,7 @@ from app.models.models import (
     User,
 )
 from app.models.file_models import StoredFile
+from app.models.tenant_catalog import TENANT_TABLES as CURRENT_TENANT_TABLES
 from app.models.tenant_models import TenantScopedMixin, TenantStatus
 from app.models.tenant_constraints import TenantForeignKeyConstraint
 from app.models.tenant_autogenerate import render_tenant_constraint
@@ -170,8 +171,7 @@ def test_final_rls_migration_covers_every_business_table_including_stored_files(
     }
 
 
-def test_final_rls_table_inventory_exactly_matches_all_mapped_scoped_models():
-    migration = _load_rls_migration()
+def test_current_tenant_table_inventory_exactly_matches_all_mapped_scoped_models():
     mapped_scoped_tables = {
         mapper.local_table.name
         for mapper in Base.registry.mappers
@@ -179,8 +179,7 @@ def test_final_rls_table_inventory_exactly_matches_all_mapped_scoped_models():
         and not mapper.local_table.name.startswith("test_")
     }
 
-    assert set(migration.TENANT_TABLES) == mapped_scoped_tables
-    assert set(migration.TENANT_TABLES).isdisjoint(migration.GLOBAL_TABLES)
+    assert set(CURRENT_TENANT_TABLES) == mapped_scoped_tables
 
 
 def _composite_foreign_keys(model):

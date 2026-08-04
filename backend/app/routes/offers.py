@@ -1,33 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from uuid import UUID
-from pydantic import BaseModel
-from datetime import datetime
-from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.offer import (
     OfferCreate, OfferUpdate, OfferResponse, OfferListResponse,
-    OfferSendRequest, OfferAcceptRequest, OfferRejectRequest, OfferStats
+    OfferStats,
+    OfferDecisionRequest
 )
 from app.services import offer_service
 from app.core.security import check_roles
 from app.models.models import User, UserRole
-from app.services.public_token_service import enforce_public_request_tenant, resolve_public_token
-from app.core.proxy import resolve_request_host
 
 router = APIRouter(
     prefix="/offers",
     tags=["offers"],
     responses={404: {"description": "Not found"}},
 )
-
-class OfferConfirmRequest(BaseModel):
-    action: str
-    reason: Optional[str] = None
-    accepted_salary: Optional[float] = None
-    accepted_onboard_date: Optional[datetime] = None
-
 
 def _require_offer(db: Session, offer_id: UUID) -> None:
     if offer_service.get_offer(db, offer_id) is None:
@@ -41,7 +30,7 @@ def create_offer(
 ):
     try:
         offer = offer_service.create_offer(db, offer_data, current_user.id)
-        return offer_service.get_offer(db, offer.id)
+        return offer_service.get_offer(db, offer.id, current_user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -53,24 +42,34 @@ def list_offers(
     position_id: Optional[UUID] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
 ):
-    return offer_service.get_offers(db, page, page_size, status, position_id, search)
+    return offer_service.get_offers(
+        db, page, page_size, status, position_id, search, current_user
+    )
 
 @router.get("/stats", response_model=OfferStats)
 def get_offer_stats(
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
 ):
-    return offer_service.get_offer_stats(db)
+    return offer_service.get_offer_stats(db, current_user)
+
+
+@router.get("/my-pending-count")
+def get_my_pending_offer_count(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+):
+    return {"count": offer_service.get_my_pending_offer_count(db, current_user)}
 
 @router.get("/{offer_id}", response_model=OfferResponse)
 def get_offer(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
 ):
-    offer = offer_service.get_offer(db, offer_id)
+    offer = offer_service.get_offer(db, offer_id, current_user)
     if not offer:
         raise HTTPException(status_code=404, detail="Offer不存在")
     return offer
@@ -86,61 +85,60 @@ def update_offer(
         offer = offer_service.update_offer(db, offer_id, offer_data)
         if not offer:
             raise HTTPException(status_code=404, detail="Offer不存在")
-        return offer_service.get_offer(db, offer.id)
+        return offer_service.get_offer(db, offer.id, current_user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{offer_id}/send")
 def send_offer(
     offer_id: UUID,
-    request: OfferSendRequest = OfferSendRequest(),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     _require_offer(db, offer_id)
     try:
-        from app.services.system_config_service import get_system_config
-        config = get_system_config(db)
-        base_url = "http://localhost:5173"
-        if config and hasattr(config, 'frontend_url') and config.frontend_url:
-            base_url = config.frontend_url
-        result = offer_service.send_offer(db, offer_id, request.send_email, request.custom_message, base_url)
+        result = offer_service.send_offer(db, offer_id)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/{offer_id}/accept")
-def accept_offer(
+@router.post("/{offer_id}/decision")
+def record_offer_decision(
     offer_id: UUID,
-    request: OfferAcceptRequest,
+    request: OfferDecisionRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
 ):
-    _require_offer(db, offer_id)
     try:
-        offer = offer_service.accept_offer(
-            db, offer_id, 
-            request.accepted_salary,
-            request.accepted_onboard_date,
-            request.notes
+        offer = offer_service.record_offer_decision(
+            db,
+            offer_id,
+            current_user,
+            request.decision,
+            request.rejection_reason,
+            request.rejection_detail,
+            request.correction_reason,
         )
-        return {"success": True, "message": "Offer已接受", "offer_id": str(offer.id)}
+        return {
+            "success": True,
+            "status": offer.status.value,
+            "offer_id": str(offer.id),
+        }
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/{offer_id}/reject")
-def reject_offer(
+
+@router.get("/{offer_id}/decision-audits")
+def list_offer_decision_audits(
     offer_id: UUID,
-    request: OfferRejectRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
 ):
-    _require_offer(db, offer_id)
-    try:
-        offer = offer_service.reject_offer(db, offer_id, request.reason, request.feedback)
-        return {"success": True, "message": "Offer已拒绝", "offer_id": str(offer.id)}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    if offer_service.get_offer(db, offer_id, current_user) is None:
+        raise HTTPException(status_code=404, detail="Offer不存在")
+    return offer_service.get_offer_decision_audits(db, offer_id)
 
 @router.post("/{offer_id}/withdraw")
 def withdraw_offer(
@@ -195,33 +193,11 @@ public_router = APIRouter(
 @public_router.get("/confirm/{token}")
 def get_offer_by_token(
     token: str,
-    request: Request,
-    db: Session = Depends(get_unscoped_db)
 ):
-    resolved = resolve_public_token(db, token, "offer")
-    enforce_public_request_tenant(
-        db, request_host=resolve_request_host(request), tenant_id=resolved.tenant_id
-    )
-    offer = offer_service.get_offer_by_token(db, token)
-    if not offer:
-        raise HTTPException(status_code=404, detail="无效的确认链接")
-    return offer
+    raise HTTPException(status_code=410, detail="候选人Offer确认入口已停用")
 
 @public_router.post("/confirm/{token}")
 def confirm_offer_by_token(
     token: str,
-    request: OfferConfirmRequest,
-    http_request: Request,
-    db: Session = Depends(get_unscoped_db)
 ):
-    resolved = resolve_public_token(db, token, "offer")
-    enforce_public_request_tenant(
-        db, request_host=resolve_request_host(http_request), tenant_id=resolved.tenant_id
-    )
-    result = offer_service.confirm_offer_by_token(
-        db, token, request.action, request.reason,
-        request.accepted_salary, request.accepted_onboard_date
-    )
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error"))
-    return result
+    raise HTTPException(status_code=410, detail="候选人Offer确认入口已停用")

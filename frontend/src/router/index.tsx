@@ -19,7 +19,6 @@ import PublicCodingTest from '../pages/Public/CodingTest';
 import CodingTestsList from '../pages/CodingTests/List';
 import OffersList from '../pages/Offers/List';
 import OfferTemplates from '../pages/Offers/Templates';
-import OfferConfirm from '../pages/Offers/Confirm';
 import UsersList from '../pages/Settings/Users';
 import ProfileSettings from '../pages/Settings/Profile';
 import SystemSettingsPage from '../pages/Settings/System';
@@ -79,10 +78,6 @@ const router = createBrowserRouter([
   {
     path: '/public/coding-tests/:token',
     element: <PublicCodingTest />,
-  },
-  {
-    path: '/offer-confirm/:token',
-    element: <OfferConfirm />,
   },
   {
     path: '/public/review/:token',

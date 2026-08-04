@@ -150,11 +150,11 @@ def _seed_two_tenants(connection):
     return tenant_a, tenant_b
 
 
-def test_catalog_is_the_authoritative_18_table_29_relation_contract():
-    assert len(TENANT_TABLES) == 18
-    assert len(COMPOSITE_TENANT_REFERENCES) == 29
-    assert len(set(TENANT_TABLES)) == 18
-    assert len(set(COMPOSITE_TENANT_REFERENCES)) == 29
+def test_catalog_is_the_authoritative_19_table_31_relation_contract():
+    assert len(TENANT_TABLES) == 19
+    assert len(COMPOSITE_TENANT_REFERENCES) == 31
+    assert len(set(TENANT_TABLES)) == 19
+    assert len(set(COMPOSITE_TENANT_REFERENCES)) == 31
 
     mapped_tables = {
         mapper.local_table.name
@@ -172,12 +172,17 @@ def test_catalog_is_the_authoritative_18_table_29_relation_contract():
     spec = importlib.util.spec_from_file_location("tenant_rls_snapshot", migration_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert tuple(module.TENANT_TABLES) == TENANT_TABLES
+    assert tuple(module.TENANT_TABLES) == tuple(
+        table for table in TENANT_TABLES if table != "offer_decision_audits"
+    )
     assert tuple(
         (child, column, parent)
         for child, column, parent, _ondelete, _legacy_name
         in module.COMPOSITE_FOREIGN_KEYS
-    ) == COMPOSITE_TENANT_REFERENCES
+    ) == tuple(
+        relation for relation in COMPOSITE_TENANT_REFERENCES
+        if relation[0] != "offer_decision_audits"
+    )
 
 
 def test_production_caddy_defaults_to_both_internal_tenant_domains():

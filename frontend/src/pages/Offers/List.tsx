@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Table, Button, Space, Tag, Modal, Form, Input, InputNumber, DatePicker,
   Select, message, Popconfirm, Badge, Tooltip, Typography, Row, Col, Statistic,
-  Drawer, Descriptions, Divider
+  Drawer, Descriptions, Divider, Timeline
 } from 'antd';
 import {
   PlusOutlined, MailOutlined, CheckOutlined, CloseOutlined, RollbackOutlined,
@@ -10,14 +10,13 @@ import {
   FileTextOutlined, DollarOutlined, EnvironmentOutlined, ClockCircleOutlined,
   RedoOutlined
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import dayjs from 'dayjs';
+import { useAuth } from '../../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
-const { RangePicker } = DatePicker;
 
 interface Offer {
   id: string;
@@ -47,6 +46,9 @@ interface Offer {
   rejected_reason: string | null;
   created_at: string;
   updated_at: string | null;
+  hiring_manager_id: string | null;
+  hiring_manager_name: string | null;
+  can_decide: boolean;
   position_info: {
     id: string;
     title: string;
@@ -73,10 +75,39 @@ interface OfferStats {
   avg_response_days: number | null;
 }
 
+interface OfferDecisionAudit {
+  id: string;
+  previous_status: string;
+  new_status: string;
+  rejection_reason: string | null;
+  rejection_detail: string | null;
+  correction_reason: string | null;
+  actor_name: string;
+  created_at: string;
+}
+
+const rejectionReasonLabels: Record<string, string> = {
+  salary: '薪资不符',
+  other_offer: '接受其他 Offer',
+  position_mismatch: '岗位不匹配',
+  location: '地点/通勤原因',
+  onboard_date: '入职时间不符',
+  personal: '个人原因',
+  unreachable: '无法联系',
+  other: '其他',
+};
+
+const formatRejectedReason = (value: string | null) => {
+  if (!value) return '-';
+  const [reason, ...detail] = value.split(': ');
+  const label = rejectionReasonLabels[reason] || reason;
+  return detail.length > 0 ? `${label}（${detail.join(': ')}）` : label;
+};
+
 const statusConfig: Record<string, { color: string; text: string }> = {
   draft: { color: 'default', text: '草稿' },
-  pending: { color: 'processing', text: '待发送' },
-  sent: { color: 'warning', text: '已发送' },
+  pending: { color: 'processing', text: '待发出' },
+  sent: { color: 'warning', text: 'Offer待确认' },
   accepted: { color: 'success', text: '已接受' },
   rejected: { color: 'error', text: '已拒绝' },
   expired: { color: 'default', text: '已过期' },
@@ -84,7 +115,8 @@ const statusConfig: Record<string, { color: string; text: string }> = {
 };
 
 const OffersList: React.FC = () => {
-  const navigate = useNavigate();
+  const { user } = useAuth();
+  const canManageOffer = user?.role === 'admin' || user?.role === 'hr';
   const [offers, setOffers] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(false);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
@@ -101,9 +133,9 @@ const OffersList: React.FC = () => {
   const [acceptModalVisible, setAcceptModalVisible] = useState(false);
   
   const [currentOffer, setCurrentOffer] = useState<Offer | null>(null);
+  const [decisionAudits, setDecisionAudits] = useState<OfferDecisionAudit[]>([]);
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
-  const [sendForm] = Form.useForm();
   const [rejectForm] = Form.useForm();
   const [acceptForm] = Form.useForm();
 
@@ -196,9 +228,11 @@ const OffersList: React.FC = () => {
   useEffect(() => {
     fetchOffers();
     fetchStats();
-    fetchPositions();
-    fetchPassedResumes();
-  }, [fetchOffers]);
+    if (canManageOffer) {
+      fetchPositions();
+      fetchPassedResumes();
+    }
+  }, [fetchOffers, canManageOffer]);
 
   const handleCreate = async (values: any) => {
     try {
@@ -236,55 +270,19 @@ const OffersList: React.FC = () => {
     }
   };
 
-  const copyOfferLink = async (url: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      message.success('Offer 链接已复制');
-    } catch (_error) {
-      message.info(url);
-    }
-  };
-
-  const showOfferLink = (rawToken: string) => {
-    const url = `${window.location.origin}/offer-confirm/${rawToken}`;
-    Modal.info({
-      title: 'Offer 链接已生成',
-      width: 720,
-      content: (
-        <Space.Compact style={{ width: '100%', marginTop: 16 }}>
-          <Input value={url} readOnly aria-label="Offer 一次性链接" />
-          <Button type="primary" onClick={() => copyOfferLink(url)}>复制</Button>
-        </Space.Compact>
-      ),
-    });
-  };
-
-  const handleSend = async (values: any) => {
+  const handleSend = async () => {
     if (!currentOffer) return;
     try {
-      const result = await request.post(`/offers/${currentOffer.id}/send`, values);
+      const result = await request.post(`/offers/${currentOffer.id}/send`, {});
       if (!result?.success) {
-        message.error(result?.error || 'Offer 发送失败');
+        message.error(result?.error || '确认发出失败');
         return;
       }
-      if (values.send_email && !result?.email_sent) {
-        message.error(result?.error || 'Offer 邮件发送失败');
-        return;
-      }
-      if (!values.send_email) {
-        if (!result?.token) {
-          message.error('Offer 链接生成失败');
-          return;
-        }
-        showOfferLink(result.token);
-        message.success('链接已生成');
-      } else {
-        message.success('Offer发送成功');
-      }
+      message.success('已确认Offer发出，等待候选人结果');
       setSendModalVisible(false);
-      sendForm.resetFields();
       fetchOffers();
       fetchStats();
+      window.dispatchEvent(new Event('offer-pending-updated'));
     } catch (error: any) {
       message.error(error.response?.data?.detail || '发送失败');
     }
@@ -293,16 +291,16 @@ const OffersList: React.FC = () => {
   const handleAccept = async (values: any) => {
     if (!currentOffer) return;
     try {
-      const data = {
-        ...values,
-        accepted_onboard_date: values.accepted_onboard_date?.toISOString(),
-      };
-      await request.post(`/offers/${currentOffer.id}/accept`, data);
-      message.success('Offer已接受');
+      await request.post(`/offers/${currentOffer.id}/decision`, {
+        decision: 'accepted',
+        correction_reason: values.correction_reason,
+      });
+      message.success(currentOffer.status === 'rejected' ? 'Offer结果已更正为接受' : '已登记候选人接受Offer');
       setAcceptModalVisible(false);
       acceptForm.resetFields();
       fetchOffers();
       fetchStats();
+      window.dispatchEvent(new Event('offer-pending-updated'));
     } catch (error: any) {
       message.error(error.response?.data?.detail || '操作失败');
     }
@@ -311,12 +309,18 @@ const OffersList: React.FC = () => {
   const handleReject = async (values: any) => {
     if (!currentOffer) return;
     try {
-      await request.post(`/offers/${currentOffer.id}/reject`, values);
-      message.success('Offer已拒绝');
+      await request.post(`/offers/${currentOffer.id}/decision`, {
+        decision: 'rejected',
+        rejection_reason: values.rejection_reason,
+        rejection_detail: values.rejection_detail,
+        correction_reason: values.correction_reason,
+      });
+      message.success(currentOffer.status === 'accepted' ? 'Offer结果已更正为拒绝' : '已登记候选人拒绝Offer');
       setRejectModalVisible(false);
       rejectForm.resetFields();
       fetchOffers();
       fetchStats();
+      window.dispatchEvent(new Event('offer-pending-updated'));
     } catch (error: any) {
       message.error(error.response?.data?.detail || '操作失败');
     }
@@ -395,15 +399,15 @@ const OffersList: React.FC = () => {
           const results = await Promise.all(
             selectedRowKeys.map(id => request.post(`/offers/${id}/send`))
           );
-          const failed = results.filter(result => !result?.email_sent);
+          const failed = results.filter(result => !result?.success);
           if (failed.length > 0) {
             const reason = failed.find(result => result?.error)?.error;
-            message.error(reason || `${failed.length} 个 Offer 邮件发送失败`);
+            message.error(reason || `${failed.length} 个 Offer 确认发出失败`);
             fetchOffers();
             fetchStats();
             return;
           }
-          message.success(`成功发送 ${selectedRowKeys.length} 个Offer`);
+          message.success(`已确认发出 ${selectedRowKeys.length} 个Offer`);
           setSelectedRowKeys([]);
           fetchOffers();
           fetchStats();
@@ -424,9 +428,15 @@ const OffersList: React.FC = () => {
     setEditModalVisible(true);
   };
 
-  const openDetailDrawer = (offer: Offer) => {
+  const openDetailDrawer = async (offer: Offer) => {
     setCurrentOffer(offer);
     setDetailDrawerVisible(true);
+    try {
+      const response = await request.get(`/offers/${offer.id}/decision-audits`);
+      setDecisionAudits(Array.isArray(response) ? response : []);
+    } catch {
+      setDecisionAudits([]);
+    }
   };
 
   const columns = [
@@ -495,28 +505,23 @@ const OffersList: React.FC = () => {
           </Tooltip>
           {record.status === 'draft' && (
             <>
-              <Tooltip title="编辑">
+              {canManageOffer && <Tooltip title="编辑">
                 <Button type="text" icon={<EditOutlined />} onClick={() => openEditModal(record)} />
-              </Tooltip>
-              <Tooltip title="发送Offer">
+              </Tooltip>}
+              {canManageOffer && <Tooltip title="确认已发出">
                 <Button type="text" icon={<MailOutlined />} onClick={() => {
                   setCurrentOffer(record);
-                  sendForm.setFieldsValue({ send_email: true, custom_message: '' });
                   setSendModalVisible(true);
                 }} />
-              </Tooltip>
+              </Tooltip>}
             </>
           )}
-          {record.status === 'sent' && (
+          {['sent', 'expired'].includes(record.status) && record.can_decide && (
             <>
               <Tooltip title="接受">
                 <Button type="text" style={{ color: '#52c41a' }} icon={<CheckOutlined />} onClick={() => {
                   setCurrentOffer(record);
-                  acceptForm.setFieldsValue({
-                    accepted_salary: record.salary_monthly,
-                    accepted_onboard_date: record.onboard_date ? dayjs(record.onboard_date) : null,
-                    notes: ''
-                  });
+                  acceptForm.resetFields();
                   setAcceptModalVisible(true);
                 }} />
               </Tooltip>
@@ -529,25 +534,43 @@ const OffersList: React.FC = () => {
               </Tooltip>
             </>
           )}
-          {['draft', 'pending', 'sent'].includes(record.status) && (
+          {record.status === 'accepted' && record.can_decide && (
+            <Tooltip title="更正为拒绝">
+              <Button type="text" danger icon={<CloseOutlined />} onClick={() => {
+                setCurrentOffer(record);
+                rejectForm.resetFields();
+                setRejectModalVisible(true);
+              }} />
+            </Tooltip>
+          )}
+          {record.status === 'rejected' && record.can_decide && (
+            <Tooltip title="更正为接受">
+              <Button type="text" style={{ color: '#52c41a' }} icon={<CheckOutlined />} onClick={() => {
+                setCurrentOffer(record);
+                acceptForm.resetFields();
+                setAcceptModalVisible(true);
+              }} />
+            </Tooltip>
+          )}
+          {canManageOffer && ['draft', 'pending', 'sent'].includes(record.status) && (
             <Popconfirm title="确定撤回此Offer？" onConfirm={() => handleWithdraw(record.id)}>
               <Tooltip title="撤回">
                 <Button type="text" icon={<RollbackOutlined />} />
               </Tooltip>
             </Popconfirm>
           )}
-          {['accepted', 'rejected', 'withdrawn', 'expired'].includes(record.status) && (
-            <Popconfirm title="确定重新打开此Offer？重新打开后状态将变为已发送。" onConfirm={() => handleReopen(record.id)}>
+          {canManageOffer && ['withdrawn'].includes(record.status) && (
+            <Popconfirm title="确定重新打开此Offer？重新打开后状态将变为待发出。" onConfirm={() => handleReopen(record.id)}>
               <Tooltip title="重新打开">
                 <Button type="text" icon={<RedoOutlined />} style={{ color: '#1890ff' }} />
               </Tooltip>
             </Popconfirm>
           )}
-          <Popconfirm title="确定删除此Offer？此操作不可恢复。" onConfirm={() => handleDelete(record.id)}>
+          {canManageOffer && <Popconfirm title="确定删除此Offer？此操作不可恢复。" onConfirm={() => handleDelete(record.id)}>
             <Tooltip title="删除">
               <Button type="text" danger icon={<DeleteOutlined />} />
             </Tooltip>
-          </Popconfirm>
+          </Popconfirm>}
         </Space>
       ),
     },
@@ -611,7 +634,7 @@ const OffersList: React.FC = () => {
               ))}
             </Select>
             <Button icon={<ReloadOutlined />} onClick={() => { fetchOffers(); fetchStats(); }}>刷新</Button>
-            {selectedRowKeys.length > 0 && (
+            {canManageOffer && selectedRowKeys.length > 0 && (
               <>
                 <span style={{ color: '#64748B', lineHeight: '32px' }}>已选 {selectedRowKeys.length} 项</span>
                 <Button type="primary" onClick={handleBatchSend}>批量发送</Button>
@@ -620,10 +643,10 @@ const OffersList: React.FC = () => {
               </>
             )}
           </Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+          {canManageOffer && <Button type="primary" icon={<PlusOutlined />} onClick={() => {
             createForm.resetFields();
             setCreateModalVisible(true);
-          }}>新建Offer</Button>
+          }}>新建Offer</Button>}
         </div>
 
         <Table
@@ -631,10 +654,10 @@ const OffersList: React.FC = () => {
           dataSource={offers}
           rowKey="id"
           loading={loading}
-          rowSelection={{
+          rowSelection={canManageOffer ? {
             selectedRowKeys,
             onChange: setSelectedRowKeys,
-          }}
+          } : undefined}
           pagination={{
             ...pagination,
             showSizeChanger: true,
@@ -898,62 +921,63 @@ const OffersList: React.FC = () => {
       </Modal>
 
       <Modal
-        title="发送Offer"
+        title="确认Offer已发出"
         open={sendModalVisible}
         onCancel={() => setSendModalVisible(false)}
-        onOk={() => sendForm.submit()}
+        onOk={handleSend}
+        okText="确认已发出"
+        cancelText="取消"
       >
-        <Form form={sendForm} layout="vertical" onFinish={handleSend}>
-          <Form.Item name="send_email" label="发送邮件通知" valuePropName="checked">
-            <Select defaultValue={true}>
-              <Option value={true}>是</Option>
-              <Option value={false}>否</Option>
-            </Select>
-          </Form.Item>
-          <Form.Item name="custom_message" label="自定义邮件内容">
-            <TextArea rows={4} placeholder="可选，添加自定义消息内容" />
-          </Form.Item>
-        </Form>
+        <p>请确认已通过线下渠道将 Offer 发给候选人。确认后状态将变为“Offer待确认”，由该岗位招聘负责人登记候选人的最终结果。</p>
       </Modal>
 
       <Modal
-        title="接受Offer"
+        title={currentOffer?.status === 'rejected' ? '更正为接受Offer' : '确认候选人接受Offer'}
         open={acceptModalVisible}
         onCancel={() => setAcceptModalVisible(false)}
         onOk={() => acceptForm.submit()}
       >
         <Form form={acceptForm} layout="vertical" onFinish={handleAccept}>
-          <Form.Item name="accepted_salary" label="确认薪资(月薪)">
-            <InputNumber style={{ width: '100%' }} min={0} />
-          </Form.Item>
-          <Form.Item name="accepted_onboard_date" label="确认入职日期">
-            <DatePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="notes" label="备注">
-            <TextArea rows={2} />
-          </Form.Item>
+          <p>请确认候选人已接受“{currentOffer?.position_title}”岗位的 Offer。提交后系统将同步更新简历及统计状态。</p>
+          {currentOffer?.status === 'rejected' && (
+            <Form.Item name="correction_reason" label="更正原因" rules={[{ required: true, message: '请填写更正原因' }]}>
+              <TextArea rows={3} placeholder="请说明本次更正原因" />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
       <Modal
-        title="拒绝Offer"
+        title={currentOffer?.status === 'accepted' ? '更正为拒绝Offer' : '登记候选人拒绝Offer'}
         open={rejectModalVisible}
         onCancel={() => setRejectModalVisible(false)}
         onOk={() => rejectForm.submit()}
       >
         <Form form={rejectForm} layout="vertical" onFinish={handleReject}>
-          <Form.Item name="reason" label="拒绝原因" rules={[{ required: true }]}>
+          <Form.Item name="rejection_reason" label="拒绝原因" rules={[{ required: true, message: '请选择拒绝原因' }]}>
             <Select>
-              <Option value="薪资不满意">薪资不满意</Option>
-              <Option value="接受其他offer">接受其他offer</Option>
-              <Option value="工作地点不满意">工作地点不满意</Option>
-              <Option value="个人原因">个人原因</Option>
-              <Option value="其他">其他</Option>
+              <Option value="salary">薪资不符</Option>
+              <Option value="other_offer">接受其他 Offer</Option>
+              <Option value="position_mismatch">岗位不匹配</Option>
+              <Option value="location">地点/通勤原因</Option>
+              <Option value="onboard_date">入职时间不符</Option>
+              <Option value="personal">个人原因</Option>
+              <Option value="unreachable">无法联系</Option>
+              <Option value="other">其他</Option>
             </Select>
           </Form.Item>
-          <Form.Item name="feedback" label="候选人反馈">
-            <TextArea rows={3} />
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.rejection_reason !== next.rejection_reason}>
+            {({ getFieldValue }) => getFieldValue('rejection_reason') === 'other' ? (
+              <Form.Item name="rejection_detail" label="其他原因说明" rules={[{ required: true, message: '请填写其他原因说明' }]}>
+                <TextArea rows={3} />
+              </Form.Item>
+            ) : null}
           </Form.Item>
+          {currentOffer?.status === 'accepted' && (
+            <Form.Item name="correction_reason" label="更正原因" rules={[{ required: true, message: '请填写更正原因' }]}>
+              <TextArea rows={3} placeholder="请说明本次更正原因" />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
@@ -1012,11 +1036,31 @@ const OffersList: React.FC = () => {
                     {dayjs(currentOffer.rejected_at).format('YYYY-MM-DD HH:mm')}
                   </Descriptions.Item>
                   <Descriptions.Item label="拒绝原因" span={2}>
-                    {currentOffer.rejected_reason}
+                    {formatRejectedReason(currentOffer.rejected_reason)}
                   </Descriptions.Item>
                 </>
               )}
             </Descriptions>
+            <Divider>结果变更记录</Divider>
+            {decisionAudits.length > 0 ? (
+              <Timeline
+                items={decisionAudits.map((audit) => ({
+                  color: audit.new_status === 'accepted' ? 'green' : 'red',
+                  children: (
+                    <div>
+                      <Text strong>
+                        {statusConfig[audit.previous_status]?.text || audit.previous_status}
+                        {' → '}
+                        {statusConfig[audit.new_status]?.text || audit.new_status}
+                      </Text>
+                      <div><Text type="secondary">{audit.actor_name} · {dayjs(audit.created_at).format('YYYY-MM-DD HH:mm')}</Text></div>
+                      {audit.rejection_reason && <div>拒绝原因：{rejectionReasonLabels[audit.rejection_reason] || audit.rejection_reason}{audit.rejection_detail ? `（${audit.rejection_detail}）` : ''}</div>}
+                      {audit.correction_reason && <div>更正原因：{audit.correction_reason}</div>}
+                    </div>
+                  ),
+                }))}
+              />
+            ) : <Text type="secondary">暂无结果变更记录</Text>}
 
             {currentOffer.salary_structure && (
               <>

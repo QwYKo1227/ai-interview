@@ -203,7 +203,7 @@ def _client(db, *routers, current_user=None):
     return TestClient(app)
 
 
-def test_offer_public_route_confirms_with_token_and_rejects_domain_mismatch(db, tenant_a, tenant_b):
+def test_offer_public_confirmation_route_is_disabled(db, tenant_a, tenant_b):
     offer = _offer(db, tenant_a)
     raw = issue_public_token(
         db, tenant_a.id, "offer", offer.id,
@@ -214,8 +214,8 @@ def test_offer_public_route_confirms_with_token_and_rejects_domain_mismatch(db, 
     db.expunge_all()
     client = _client(db, offer_public_router)
 
-    mismatch = client.get(f"/api/public/offers/confirm/{raw}", headers={"host": "other.example.com"})
-    assert mismatch.status_code == 403
+    response = client.get(f"/api/public/offers/confirm/{raw}", headers={"host": "other.example.com"})
+    assert response.status_code == 410
 
 
 def test_coding_public_routes_use_hashed_token_and_copy_tenant_to_submission(db, tenant_a):
@@ -396,9 +396,8 @@ def test_public_route_source_has_no_direct_unscoped_business_query():
         assert "Depends(get_unscoped_db)" not in source or "db.query(Resume)" not in source
 
 
-@pytest.mark.parametrize("mail_behavior", [False, RuntimeError("smtp failed")])
-def test_offer_mail_failure_revokes_token_and_restores_retryable_state(
-    db, tenant_a, test_resume, monkeypatch, mail_behavior
+def test_internal_offer_send_does_not_use_mail_or_public_tokens(
+    db, tenant_a, test_resume, monkeypatch
 ):
     offer = _offer(db, tenant_a)
     test_resume.status = ResumeStatus.INTERVIEW_PASSED
@@ -408,28 +407,19 @@ def test_offer_mail_failure_revokes_token_and_restores_retryable_state(
     known_raw = "A" * 43
     monkeypatch.setattr("app.services.public_token_service.secrets.token_urlsafe", lambda _n: known_raw)
 
-    class Mailer:
-        def __init__(self, _db):
-            pass
-
-        def send_offer_email(self, **_kwargs):
-            if isinstance(mail_behavior, Exception):
-                raise mail_behavior
-            return mail_behavior
-
-    monkeypatch.setattr(offer_service, "MailService", Mailer)
     result = offer_service.send_offer(db, offer.id, send_email=True)
 
     db.refresh(offer)
     assert result == {
-        "success": False,
+        "success": True,
         "email_sent": False,
-        "error": "Failed to send offer email",
+        "error": None,
         "token": None,
+        "status": "sent",
     }
-    assert offer.status == OfferStatus.PENDING
+    assert offer.status == OfferStatus.SENT
     db.refresh(test_resume)
-    assert test_resume.status == ResumeStatus.INTERVIEW_PASSED
+    assert test_resume.status == ResumeStatus.OFFER_PENDING
     db.expunge_all()
     with pytest.raises(HTTPException) as invalid:
         resolve_public_token(db, known_raw, "offer")
@@ -438,7 +428,7 @@ def test_offer_mail_failure_revokes_token_and_restores_retryable_state(
 
 @pytest.mark.parametrize("send_email", [False, True])
 def test_successful_offer_send_moves_resume_to_offer_pending(
-    db, tenant_a, test_resume, monkeypatch, send_email
+    db, tenant_a, test_resume, send_email
 ):
     offer = _offer(db, tenant_a)
     test_resume.status = ResumeStatus.INTERVIEW_PASSED
@@ -446,46 +436,24 @@ def test_successful_offer_send_moves_resume_to_offer_pending(
     offer.status = OfferStatus.PENDING
     db.commit()
 
-    class Mailer:
-        def __init__(self, _db):
-            pass
-
-        def send_offer_email(self, **_kwargs):
-            return True
-
-    monkeypatch.setattr(offer_service, "MailService", Mailer)
     result = offer_service.send_offer(db, offer.id, send_email=send_email)
 
     db.refresh(test_resume)
     assert result["success"] is True
-    assert result["email_sent"] is send_email
-    assert result["token"]
+    assert result["email_sent"] is False
+    assert result["token"] is None
     assert test_resume.status == ResumeStatus.OFFER_PENDING
 
 
-def test_offer_can_be_sent_successfully_after_mail_failure(db, tenant_a, monkeypatch):
+def test_offer_cannot_be_confirmed_sent_twice(db, tenant_a):
     offer = _offer(db, tenant_a)
     offer.status = OfferStatus.PENDING
     db.commit()
 
-    outcomes = iter([False, True])
-
-    class Mailer:
-        def __init__(self, _db):
-            pass
-
-        def send_offer_email(self, **_kwargs):
-            return next(outcomes)
-
-    monkeypatch.setattr(offer_service, "MailService", Mailer)
     first = offer_service.send_offer(db, offer.id, send_email=True)
-    second = offer_service.send_offer(db, offer.id, send_email=True)
-    offer_id = offer.id
-    assert first["success"] is False
-    assert second["success"] is True
-    assert second["email_sent"] is True
-    db.expunge_all()
-    assert resolve_public_token(db, second["token"], "offer").resource_id == offer_id
+    assert first["success"] is True
+    with pytest.raises(ValueError):
+        offer_service.send_offer(db, offer.id, send_email=True)
 
 
 @pytest.mark.parametrize("raw", ["", "x" * 39, "x" * 129, "bad token!" * 5])

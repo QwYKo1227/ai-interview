@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, ConfigDict, Field
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
@@ -45,6 +45,8 @@ class OfferCreate(OfferBase):
     pass
 
 class OfferUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     salary_monthly: Optional[Decimal] = None
     salary_annual: Optional[Decimal] = None
     salary_structure: Optional[str] = None
@@ -60,7 +62,6 @@ class OfferUpdate(BaseModel):
     special_terms: Optional[str] = None
     notes: Optional[str] = None
     valid_until: Optional[datetime] = None
-    status: Optional[str] = None
 
 class OfferResponse(BaseModel):
     id: UUID
@@ -103,6 +104,9 @@ class OfferResponse(BaseModel):
     
     position_info: Optional[Dict[str, Any]] = None
     resume_info: Optional[Dict[str, Any]] = None
+    hiring_manager_id: Optional[UUID] = None
+    hiring_manager_name: Optional[str] = None
+    can_decide: bool = False
 
     class Config:
         from_attributes = True
@@ -114,18 +118,13 @@ class OfferListResponse(BaseModel):
     page_size: int
     total_pages: int
 
-class OfferSendRequest(BaseModel):
-    send_email: bool = Field(default=True, description="是否发送邮件通知")
-    custom_message: Optional[str] = Field(None, description="自定义邮件内容")
+class OfferDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-class OfferAcceptRequest(BaseModel):
-    accepted_salary: Optional[Decimal] = Field(None, description="确认薪资")
-    accepted_onboard_date: Optional[datetime] = Field(None, description="确认入职日期")
-    notes: Optional[str] = Field(None, description="备注")
-
-class OfferRejectRequest(BaseModel):
-    reason: str = Field(..., description="拒绝原因")
-    feedback: Optional[str] = Field(None, description="候选人反馈")
+    decision: Literal["accepted", "rejected"]
+    rejection_reason: Optional[str] = None
+    rejection_detail: Optional[str] = None
+    correction_reason: Optional[str] = None
 
 class OfferStats(BaseModel):
     total_offers: int

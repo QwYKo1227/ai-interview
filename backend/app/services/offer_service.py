@@ -1,20 +1,53 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_, or_, update
+from sqlalchemy import desc, or_, update, case
 from app.models.models import (
-    Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User
+    Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User,
+    UserRole, OfferDecisionAudit
 )
 from app.schemas.offer import OfferCreate, OfferUpdate, OfferStats
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from uuid import UUID
-import logging
 from fastapi import HTTPException
 
-from app.services.mail_service import MailService
-from app.services.public_token_service import issue_public_token, resolve_public_token, revoke_public_tokens
+from app.services.public_token_service import resolve_public_token, revoke_public_tokens
 from app.config.tenant_session import get_tenant_id
 
-logger = logging.getLogger(__name__)
+DECISION_REASONS = {
+    "salary",
+    "other_offer",
+    "position_mismatch",
+    "location",
+    "onboard_date",
+    "personal",
+    "unreachable",
+    "other",
+}
+
+
+def can_decide_offer(offer: Offer, user: User) -> bool:
+    manager_id = offer.position.hiring_manager_id if offer.position else None
+    if manager_id is not None:
+        return manager_id == user.id
+    return user.role == UserRole.ADMIN
+
+
+def _offer_access_query(db: Session, user: User):
+    query = db.query(Offer)
+    if user.role == UserRole.INTERVIEWER:
+        query = query.join(Position, Offer.position_id == Position.id).filter(
+            Position.hiring_manager_id == user.id
+        )
+    return query
+
+
+def _decision_fields(offer: Offer, current_user: Optional[User]) -> Dict[str, Any]:
+    manager = offer.position.hiring_manager if offer.position else None
+    return {
+        "hiring_manager_id": str(manager.id) if manager else None,
+        "hiring_manager_name": (manager.full_name or manager.email) if manager else None,
+        "can_decide": bool(current_user and can_decide_offer(offer, current_user)),
+    }
 
 def create_offer(db: Session, offer_data: OfferCreate, user_id: UUID) -> Offer:
     resume = db.query(Resume).filter(Resume.id == offer_data.resume_id).first()
@@ -68,9 +101,10 @@ def get_offers(
     page_size: int = 10,
     status: Optional[str] = None,
     position_id: Optional[UUID] = None,
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    current_user: Optional[User] = None,
 ) -> Dict[str, Any]:
-    query = db.query(Offer)
+    query = _offer_access_query(db, current_user) if current_user else db.query(Offer)
     
     if status:
         query = query.filter(Offer.status == status)
@@ -90,7 +124,21 @@ def get_offers(
     total = query.count()
     total_pages = (total + page_size - 1) // page_size
     
-    offers = query.order_by(desc(Offer.created_at)).offset((page - 1) * page_size).limit(page_size).all()
+    if current_user:
+        manager_first = case(
+            (Position.hiring_manager_id == current_user.id, 0),
+            else_=1,
+        )
+        if current_user.role != UserRole.INTERVIEWER:
+            query = query.outerjoin(Position, Offer.position_id == Position.id)
+        query = query.order_by(
+            case((Offer.status == OfferStatus.SENT, 0), else_=1),
+            manager_first,
+            desc(Offer.created_at),
+        )
+    else:
+        query = query.order_by(desc(Offer.created_at))
+    offers = query.offset((page - 1) * page_size).limit(page_size).all()
     
     items = []
     for offer in offers:
@@ -137,6 +185,7 @@ def get_offers(
                 "match_score": offer.resume.match_score
             } if offer.resume else None
         }
+        item.update(_decision_fields(offer, current_user))
         items.append(item)
     
     return {
@@ -147,12 +196,15 @@ def get_offers(
         "total_pages": total_pages
     }
 
-def get_offer(db: Session, offer_id: UUID) -> Optional[Dict[str, Any]]:
-    offer = db.query(Offer).filter(Offer.id == offer_id).first()
+def get_offer(
+    db: Session, offer_id: UUID, current_user: Optional[User] = None
+) -> Optional[Dict[str, Any]]:
+    query = _offer_access_query(db, current_user) if current_user else db.query(Offer)
+    offer = query.filter(Offer.id == offer_id).first()
     if not offer:
         return None
     
-    return {
+    result = {
         "id": str(offer.id),
         "resume_id": str(offer.resume_id),
         "position_id": str(offer.position_id),
@@ -195,6 +247,8 @@ def get_offer(db: Session, offer_id: UUID) -> Optional[Dict[str, Any]]:
             "match_score": offer.resume.match_score
         } if offer.resume else None
     }
+    result.update(_decision_fields(offer, current_user))
+    return result
 
 def update_offer(db: Session, offer_id: UUID, offer_data: OfferUpdate) -> Optional[Offer]:
     offer = db.query(Offer).filter(Offer.id == offer_id).first()
@@ -207,7 +261,7 @@ def update_offer(db: Session, offer_id: UUID, offer_data: OfferUpdate) -> Option
     update_fields = [
         'salary_monthly', 'salary_annual', 'salary_structure', 'position_title',
         'department', 'report_to', 'work_location', 'work_hours', 'onboard_date',
-        'probation_months', 'benefits', 'bonus', 'special_terms', 'notes', 'valid_until', 'status'
+        'probation_months', 'benefits', 'bonus', 'special_terms', 'notes', 'valid_until'
     ]
     
     for field in update_fields:
@@ -231,14 +285,7 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
         raise ValueError("当前状态不允许发送")
     
     resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
-    resume_original_status = resume.status if resume else None
-
-    expiry = offer.valid_until
-    if expiry is None:
-        expiry = datetime.now(timezone.utc) + timedelta(days=7)
-    elif expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
-    token = issue_public_token(db, offer.tenant_id, "offer", offer.id, expiry)
+    revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
     offer.token = None
     offer.status = OfferStatus.SENT
     offer.sent_at = datetime.utcnow()
@@ -246,94 +293,111 @@ def send_offer(db: Session, offer_id: UUID, send_email: bool = True, custom_mess
         resume.status = ResumeStatus.OFFER_PENDING
     db.commit()
     
-    result = {
+    return {
         "success": True,
         "email_sent": False,
         "error": None,
-        "token": token
+        "token": None,
+        "status": OfferStatus.SENT.value,
     }
-    
-    if send_email:
-        try:
-            mail_service = MailService(db)
-            confirm_url = f"{base_url}/offer-confirm/{token}"
-            email_result = mail_service.send_offer_email(
-                offer=offer,
-                custom_message=custom_message,
-                confirm_url=confirm_url
-            )
-            result["email_sent"] = email_result
-            if not email_result:
-                raise RuntimeError("mail delivery returned false")
-        except Exception as e:
-            logger.error("Failed to send offer email (%s)", type(e).__name__)
-            revoke_public_tokens(db, offer.tenant_id, "offer", offer.id)
-            offer.status = OfferStatus.PENDING
-            offer.sent_at = None
-            if resume and resume_original_status is not None:
-                resume.status = resume_original_status
-            db.commit()
-            result["success"] = False
-            result["error"] = "Failed to send offer email"
-            result["token"] = None
-    
-    return result
 
-def accept_offer(db: Session, offer_id: UUID, accepted_salary: Optional[float] = None, 
-                 accepted_onboard_date: Optional[datetime] = None, notes: Optional[str] = None) -> Offer:
+
+def record_offer_decision(
+    db: Session,
+    offer_id: UUID,
+    actor: User,
+    decision: str,
+    rejection_reason: Optional[str] = None,
+    rejection_detail: Optional[str] = None,
+    correction_reason: Optional[str] = None,
+) -> Offer:
     offer = db.query(Offer).filter(Offer.id == offer_id).first()
     if not offer:
         raise ValueError("Offer不存在")
-    
-    if offer.status != OfferStatus.SENT:
-        raise ValueError("当前状态不允许接受")
-    
-    if offer.valid_until and datetime.utcnow() > offer.valid_until:
-        offer.status = OfferStatus.EXPIRED
-        db.commit()
-        raise ValueError("Offer已过期")
-    
-    offer.status = OfferStatus.ACCEPTED
-    offer.accepted_at = datetime.utcnow()
-    
-    if accepted_salary:
-        offer.salary_monthly = accepted_salary
-    if accepted_onboard_date:
-        offer.onboard_date = accepted_onboard_date
-    if notes:
-        offer.notes = notes
-    
-    db.commit()
-    
+    if not can_decide_offer(offer, actor):
+        raise PermissionError("只有该岗位的招聘负责人可以登记Offer结果")
+
+    allowed_statuses = {
+        OfferStatus.SENT,
+        OfferStatus.EXPIRED,
+        OfferStatus.ACCEPTED,
+        OfferStatus.REJECTED,
+    }
+    if offer.status not in allowed_statuses:
+        raise ValueError("当前状态不允许登记Offer结果")
+
+    new_status = OfferStatus.ACCEPTED if decision == "accepted" else OfferStatus.REJECTED
+    previous_status = offer.status
+    is_correction = previous_status in {OfferStatus.ACCEPTED, OfferStatus.REJECTED}
+    if is_correction:
+        if previous_status == new_status:
+            raise ValueError("更正结果必须与当前结果不同")
+        if not correction_reason or not correction_reason.strip():
+            raise ValueError("更正结果时必须填写更正原因")
+
+    if new_status == OfferStatus.REJECTED:
+        if rejection_reason not in DECISION_REASONS:
+            raise ValueError("请选择有效的拒绝原因")
+        if rejection_reason == "other" and not (rejection_detail or "").strip():
+            raise ValueError("选择其他原因时必须填写说明")
+
+    now = datetime.utcnow()
+    offer.status = new_status
+    if new_status == OfferStatus.ACCEPTED:
+        offer.accepted_at = now
+        offer.rejected_at = None
+        offer.rejected_reason = None
+    else:
+        offer.rejected_at = now
+        offer.accepted_at = None
+        offer.rejected_reason = rejection_reason
+        if rejection_detail:
+            offer.rejected_reason = f"{rejection_reason}: {rejection_detail.strip()}"
+
     resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
     if resume:
-        resume.status = ResumeStatus.OFFER_ACCEPTED
-        db.commit()
-    
+        resume.status = (
+            ResumeStatus.OFFER_ACCEPTED
+            if new_status == OfferStatus.ACCEPTED
+            else ResumeStatus.OFFER_REJECTED
+        )
+
+    db.add(OfferDecisionAudit(
+        tenant_id=offer.tenant_id,
+        offer_id=offer.id,
+        actor_id=actor.id,
+        previous_status=previous_status.value,
+        new_status=new_status.value,
+        rejection_reason=rejection_reason if new_status == OfferStatus.REJECTED else None,
+        rejection_detail=(rejection_detail or "").strip() or None,
+        correction_reason=(correction_reason or "").strip() or None,
+    ))
+    db.commit()
+    db.refresh(offer)
     return offer
 
-def reject_offer(db: Session, offer_id: UUID, reason: str, feedback: Optional[str] = None) -> Offer:
-    offer = db.query(Offer).filter(Offer.id == offer_id).first()
-    if not offer:
-        raise ValueError("Offer不存在")
-    
-    if offer.status not in [OfferStatus.SENT, OfferStatus.PENDING]:
-        raise ValueError("当前状态不允许拒绝")
-    
-    offer.status = OfferStatus.REJECTED
-    offer.rejected_at = datetime.utcnow()
-    offer.rejected_reason = reason
-    if feedback:
-        offer.notes = (offer.notes or "") + f"\n候选人反馈: {feedback}"
-    
-    db.commit()
-    
-    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
-    if resume:
-        resume.status = ResumeStatus.OFFER_REJECTED
-        db.commit()
-    
-    return offer
+
+def get_offer_decision_audits(db: Session, offer_id: UUID) -> List[Dict[str, Any]]:
+    rows = (
+        db.query(OfferDecisionAudit)
+        .filter(OfferDecisionAudit.offer_id == offer_id)
+        .order_by(desc(OfferDecisionAudit.created_at))
+        .all()
+    )
+    return [
+        {
+            "id": str(row.id),
+            "previous_status": row.previous_status,
+            "new_status": row.new_status,
+            "rejection_reason": row.rejection_reason,
+            "rejection_detail": row.rejection_detail,
+            "correction_reason": row.correction_reason,
+            "actor_id": str(row.actor_id),
+            "actor_name": row.actor.full_name or row.actor.email,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
 
 def withdraw_offer(db: Session, offer_id: UUID, reason: Optional[str] = None) -> Offer:
     offer = db.query(Offer).filter(Offer.id == offer_id).first()
@@ -356,7 +420,7 @@ def reopen_offer(db: Session, offer_id: UUID) -> Offer:
     if not offer:
         raise ValueError("Offer不存在")
     
-    if offer.status not in [OfferStatus.ACCEPTED, OfferStatus.REJECTED, OfferStatus.WITHDRAWN, OfferStatus.EXPIRED]:
+    if offer.status != OfferStatus.WITHDRAWN:
         raise ValueError("当前状态不允许重新打开")
     
     old_status = offer.status.value
@@ -376,18 +440,19 @@ def reopen_offer(db: Session, offer_id: UUID) -> Offer:
     
     return offer
 
-def get_offer_stats(db: Session) -> Dict[str, Any]:
-    total_offers = db.query(Offer).count()
-    pending_offers = db.query(Offer).filter(Offer.status == OfferStatus.PENDING).count()
-    sent_offers = db.query(Offer).filter(Offer.status == OfferStatus.SENT).count()
-    accepted_offers = db.query(Offer).filter(Offer.status == OfferStatus.ACCEPTED).count()
-    rejected_offers = db.query(Offer).filter(Offer.status == OfferStatus.REJECTED).count()
-    expired_offers = db.query(Offer).filter(Offer.status == OfferStatus.EXPIRED).count()
+def get_offer_stats(db: Session, current_user: Optional[User] = None) -> Dict[str, Any]:
+    query = _offer_access_query(db, current_user) if current_user else db.query(Offer)
+    total_offers = query.count()
+    pending_offers = query.filter(Offer.status == OfferStatus.PENDING).count()
+    sent_offers = query.filter(Offer.status == OfferStatus.SENT).count()
+    accepted_offers = query.filter(Offer.status == OfferStatus.ACCEPTED).count()
+    rejected_offers = query.filter(Offer.status == OfferStatus.REJECTED).count()
+    expired_offers = query.filter(Offer.status == OfferStatus.EXPIRED).count()
     
     total_decided = accepted_offers + rejected_offers
     acceptance_rate = round(accepted_offers / total_decided * 100, 1) if total_decided > 0 else 0
     
-    accepted_offers_list = db.query(Offer).filter(
+    accepted_offers_list = query.filter(
         Offer.status == OfferStatus.ACCEPTED,
         Offer.sent_at.isnot(None),
         Offer.accepted_at.isnot(None)
@@ -411,6 +476,22 @@ def get_offer_stats(db: Session) -> Dict[str, Any]:
         "acceptance_rate": acceptance_rate,
         "avg_response_days": avg_response_days
     }
+
+
+def get_my_pending_offer_count(db: Session, current_user: User) -> int:
+    query = db.query(Offer).join(Position, Offer.position_id == Position.id).filter(
+        Offer.status == OfferStatus.SENT
+    )
+    if current_user.role == UserRole.ADMIN:
+        query = query.filter(
+            or_(
+                Position.hiring_manager_id == current_user.id,
+                Position.hiring_manager_id.is_(None),
+            )
+        )
+    else:
+        query = query.filter(Position.hiring_manager_id == current_user.id)
+    return query.count()
 
 def get_pending_offers_for_resume(db: Session, resume_id: UUID) -> List[Offer]:
     return db.query(Offer).filter(

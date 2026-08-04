@@ -468,6 +468,27 @@ class Offer(TenantScopedMixin, Base):
     position = relationship("Position", foreign_keys=[position_id])
     creator = relationship("User", foreign_keys=[created_by])
 
+class OfferDecisionAudit(TenantScopedMixin, Base):
+    __tablename__ = "offer_decision_audits"
+    __table_args__ = (
+        _tenant_identity("offer_decision_audits"),
+        _tenant_reference("offer_decision_audits", "offer_id", "offers", ondelete="CASCADE"),
+        _tenant_reference("offer_decision_audits", "actor_id", "users"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    offer_id = Column(UUID(as_uuid=True), nullable=False)
+    actor_id = Column(UUID(as_uuid=True), nullable=False)
+    previous_status = Column(String, nullable=False)
+    new_status = Column(String, nullable=False)
+    rejection_reason = Column(String)
+    rejection_detail = Column(Text)
+    correction_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    offer = relationship("Offer", foreign_keys=[offer_id])
+    actor = relationship("User", foreign_keys=[actor_id])
+
 class OfferTemplate(TenantScopedMixin, Base):
     __tablename__ = "offer_templates"
     __table_args__ = (

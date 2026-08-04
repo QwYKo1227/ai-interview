@@ -1,5 +1,5 @@
-import React from 'react';
-import { Layout, Menu, Button, Avatar, Space, Dropdown, Grid } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Layout, Menu, Button, Avatar, Space, Dropdown, Grid, Badge } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -16,6 +16,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import request from '../../utils/request';
 
 const { Header, Sider, Content } = Layout;
 
@@ -27,6 +28,19 @@ const AppLayout: React.FC = () => {
   const isLaptop = !screens.xxl;
   const siderWidth = isLaptop ? 80 : 240;
   const role = (user as any)?.role?.value ?? (user as any)?.role;
+  const [pendingOfferCount, setPendingOfferCount] = useState(0);
+
+  useEffect(() => {
+    if (!user) return;
+    const loadPendingCount = () => {
+      request.get('/offers/my-pending-count')
+        .then((response) => setPendingOfferCount(response?.count || 0))
+        .catch(() => setPendingOfferCount(0));
+    };
+    loadPendingCount();
+    window.addEventListener('offer-pending-updated', loadPendingCount);
+    return () => window.removeEventListener('offer-pending-updated', loadPendingCount);
+  }, [user, location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -75,8 +89,7 @@ const AppLayout: React.FC = () => {
     {
       key: '/offers',
       icon: <FileAddOutlined aria-hidden="true" />,
-      label: 'Offer管理',
-      roles: ['admin', 'hr'],
+      label: <Badge count={pendingOfferCount} size="small" offset={[10, 0]}>Offer管理</Badge>,
     },
     {
       key: '/offers/templates',

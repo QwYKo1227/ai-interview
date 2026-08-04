@@ -4,16 +4,15 @@ from pathlib import Path
 FRONTEND = Path(__file__).parents[2] / "frontend" / "src" / "pages"
 
 
-def test_manual_offer_send_preserves_one_time_link_contract():
+def test_offer_send_is_an_internal_confirmation_without_public_delivery():
     source = (FRONTEND / "Offers" / "List.tsx").read_text(encoding="utf-8")
 
-    success_check = source.index("if (!result?.success)")
-    email_check = source.index("if (values.send_email && !result?.email_sent)")
-    link_delivery = source.index("showOfferLink(result.token")
-
-    assert success_check < email_check < link_delivery
+    assert "确认Offer已发出" in source
+    assert "Offer待确认" in source
+    assert "showOfferLink" not in source
+    assert "result.token" not in source
+    assert "send_email" not in source
     assert "localStorage.setItem" not in source
-    assert "console.log(result.token" not in source
 
 
 def test_batch_review_links_keep_reviewer_identity_and_partial_results():

@@ -17,6 +17,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 
 const resume = {
   id: 'resume-1',
+  position_id: 'position-1',
   candidate_name: '冬云龙',
   email: 'candidate@example.com',
   contact: '13800000000',
@@ -111,6 +112,33 @@ describe('ResumeDetail laptop layout', () => {
     await waitFor(() => {
       expect(request.put).toHaveBeenCalledWith('/resumes/resume-1', { status: 'pending_review' })
     })
+  })
+
+  it('opens the interview scheduling dialog without leaving the detail page', async () => {
+    const user = userEvent.setup()
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1') {
+        return { ...resume, status: 'pending_interview' }
+      }
+      if (url === '/auth/interviewers') return []
+      if (url === '/interviews') return []
+      if (url === '/question-banks') return []
+      return {}
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('冬云龙')
+    await user.click(screen.getByRole('button', { name: /安排面试/ }))
+
+    expect(await screen.findByRole('dialog', { name: '安排面试' })).toBeInTheDocument()
+    expect(screen.getByText('冬云龙')).toBeInTheDocument()
+    expect(request.get).toHaveBeenCalledWith('/interviews')
+    expect(request.get).toHaveBeenCalledWith('/question-banks')
   })
 
   it('supports changing a pending reviewer and showing a rotated review link', async () => {

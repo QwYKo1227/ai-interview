@@ -10,6 +10,7 @@ import RejectReasonSelector, { REJECT_REASONS } from '../../components/RejectRea
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
 import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
+import ScheduleInterviewModal from '../../components/ScheduleInterviewModal';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
@@ -65,6 +66,7 @@ const ResumeDetail: React.FC = () => {
   const [myReview, setMyReview] = useState<any>(null);
   const [submitReviewForm] = Form.useForm();
   const [changeReviewerForm] = Form.useForm();
+  const [isScheduleInterviewModalVisible, setIsScheduleInterviewModalVisible] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -553,7 +555,14 @@ const ResumeDetail: React.FC = () => {
     } else if (resume.status === 'pending_interview') {
       // 初审通过，可以安排面试
       buttons.push(
-        <Button key="schedule-interview" type="primary" icon={<TeamOutlined />} onClick={() => navigate('/resumes')}>安排面试</Button>
+        <Button
+          key="schedule-interview"
+          type="primary"
+          icon={<TeamOutlined />}
+          onClick={() => setIsScheduleInterviewModalVisible(true)}
+        >
+          安排面试
+        </Button>
       );
     } else if (resume.status !== 'rejected' && resume.status !== 'completed') {
       buttons.push(
@@ -1097,6 +1106,14 @@ const ResumeDetail: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      {isScheduleInterviewModalVisible && (
+        <ScheduleInterviewModal
+          open
+          resume={{ id: resume.id, position_id: resume.position_id }}
+          onClose={() => setIsScheduleInterviewModalVisible(false)}
+        />
+      )}
     </div>
   );
 };

@@ -1,10 +1,19 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography, Card } from 'antd';
-import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined, EditOutlined } from '@ant-design/icons';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography, Card, Segmented } from 'antd';
+import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined, EditOutlined, UnorderedListOutlined, CalendarOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import dayjs from 'dayjs';
+import InterviewCalendar from './InterviewCalendar';
+import {
+  buildInterviewTimePayload,
+  defaultInterviewEnd,
+  formatInterviewRange,
+  getScheduleErrorMessage,
+  toBeijingTime,
+  validateInterviewTimeRange,
+} from './interviewSchedule';
 
 const { Text } = Typography;
 
@@ -59,7 +68,7 @@ export const matchesInterviewFilters = (
 
 export const buildInterviewSchedulePayload = (values: any) => ({
   panel_members: values.panel_members,
-  interview_time: values.interview_time.toISOString(),
+  ...buildInterviewTimePayload(values),
   interview_type: values.interview_type,
   interview_location: values.interview_type === 'onsite' ? values.interview_location : null,
   meeting_link: values.interview_type === 'video' ? values.meeting_link : null,
@@ -68,6 +77,13 @@ export const buildInterviewSchedulePayload = (values: any) => ({
 const InterviewsList: React.FC = () => {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [calendarData, setCalendarData] = useState<any[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarRange, setCalendarRange] = useState<{ start: Date; end: Date } | null>(null);
+  const [calendarDraft, setCalendarDraft] = useState<{ date: dayjs.Dayjs; start: dayjs.Dayjs | null } | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>(() => (
+    localStorage.getItem('interview-management-view') === 'calendar' ? 'calendar' : 'list'
+  ));
   const [filters, setFilters] = useState<InterviewListFilters>(createEmptyInterviewListFilters);
   const [interviewerNameMap, setInterviewerNameMap] = useState<Record<string, string>>({});
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
@@ -118,6 +134,9 @@ const InterviewsList: React.FC = () => {
     scheduleForm.setFieldsValue({
       panel_members: record.panel_members || [],
       interview_time: record.interview_time ? dayjs(record.interview_time) : null,
+      interview_end_time: record.interview_end_time
+        ? dayjs(record.interview_end_time)
+        : (record.interview_time ? dayjs(record.interview_time).add(60, 'minute') : null),
       interview_type: record.interview_type || 'onsite',
       interview_location: record.interview_location || undefined,
       meeting_link: record.meeting_link || undefined,
@@ -145,7 +164,7 @@ const InterviewsList: React.FC = () => {
       setScheduleModalVisible(false);
       setScheduleEmailVisible(true);
     } catch (error) {
-      message.error('无法预览面试安排变更');
+      message.error(getScheduleErrorMessage(error, '无法预览面试安排变更'));
     } finally {
       setScheduleSaving(false);
     }
@@ -181,7 +200,7 @@ const InterviewsList: React.FC = () => {
       if (!scheduleSaved) {
         await request.put(`/interviews/${editingInterview.id}/schedule`, pendingSchedule);
         setScheduleSaved(true);
-        await fetchInterviews();
+        await refreshInterviews();
       }
       const currentFailures = await sendScheduleNotificationGroup(
         'current', values, notificationFailures.current,
@@ -200,7 +219,7 @@ const InterviewsList: React.FC = () => {
       setEditingInterview(null);
       setPendingSchedule(null);
     } catch (error) {
-      message.error(scheduleSaved ? '邮件重试失败' : '更新面试安排失败');
+      message.error(getScheduleErrorMessage(error, scheduleSaved ? '邮件重试失败' : '更新面试安排失败'));
     } finally {
       setScheduleSaving(false);
     }
@@ -216,6 +235,34 @@ const InterviewsList: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchCalendarInterviews = useCallback(async (start: Date, end: Date) => {
+    setCalendarLoading(true);
+    try {
+      const res = await request.get('/interviews', {
+        params: { start: start.toISOString(), end: end.toISOString(), limit: 10000 },
+      });
+      setCalendarData(res || []);
+    } catch {
+      message.error('获取面试日历失败');
+    } finally {
+      setCalendarLoading(false);
+    }
+  }, []);
+
+  const handleCalendarRangeChange = useCallback((start: Date, end: Date) => {
+    setCalendarRange((current) => {
+      if (current?.start.getTime() === start.getTime() && current?.end.getTime() === end.getTime()) return current;
+      void fetchCalendarInterviews(start, end);
+      return { start, end };
+    });
+  }, [fetchCalendarInterviews]);
+
+  const refreshInterviews = async () => {
+    const tasks: Promise<unknown>[] = [fetchInterviews()];
+    if (calendarRange) tasks.push(fetchCalendarInterviews(calendarRange.start, calendarRange.end));
+    await Promise.all(tasks);
   };
 
   useEffect(() => {
@@ -244,23 +291,27 @@ const InterviewsList: React.FC = () => {
       .catch(() => {});
   }, []);
 
+  const filterOptionSource = useMemo(() => (
+    Array.from(new Map([...(data as any[]), ...calendarData].map((item) => [String(item.id), item])).values())
+  ), [data, calendarData]);
+
   const candidateOptions = useMemo(() => Array.from(
-    new Map((data as any[])
+    new Map(filterOptionSource
       .map((interview) => {
         const value = String(interview?.resume_id || interview?.resume?.id || '');
         return [value, { value, label: interview?.resume?.candidate_name || '未知候选人' }] as const;
       })
       .filter(([value]) => value)).values(),
-  ), [data]);
+  ), [filterOptionSource]);
 
   const positionOptions = useMemo(() => Array.from(
-    new Map((data as any[])
+    new Map(filterOptionSource
       .map((interview) => {
         const value = String(interview?.position_id || interview?.position?.id || '');
         return [value, { value, label: interview?.position?.title || '未知岗位' }] as const;
       })
       .filter(([value]) => value)).values(),
-  ), [data]);
+  ), [filterOptionSource]);
 
   const interviewerOptions = useMemo(() => (interviewers as any[]).map((interviewer) => ({
     value: String(interviewer.id),
@@ -270,6 +321,11 @@ const InterviewsList: React.FC = () => {
   const filteredData = useMemo(
     () => (data as any[]).filter((interview) => matchesInterviewFilters(interview, filters)),
     [data, filters],
+  );
+
+  const filteredCalendarData = useMemo(
+    () => calendarData.filter((interview) => matchesInterviewFilters(interview, filters)),
+    [calendarData, filters],
   );
 
   const getInterviewerText = (record: any) => {
@@ -291,7 +347,7 @@ const InterviewsList: React.FC = () => {
         try {
           await request.delete(`/interviews/${id}`);
           message.success('删除成功');
-          fetchInterviews();
+          refreshInterviews();
         } catch (error) {
           message.error('删除失败');
         }
@@ -327,7 +383,7 @@ const InterviewsList: React.FC = () => {
       setCancelModalVisible(false);
       setCancelReason('');
       setSelectedInterviewId(null);
-      fetchInterviews();
+      refreshInterviews();
     } catch (error) {
       message.error('取消面试失败');
     } finally {
@@ -348,7 +404,7 @@ const InterviewsList: React.FC = () => {
     }
   };
 
-  const handleOpenSelectResume = async () => {
+  const openSelectResume = async () => {
     setLoadingResumes(true);
     setSelectResumeModalVisible(true);
     try {
@@ -359,6 +415,22 @@ const InterviewsList: React.FC = () => {
     } finally {
       setLoadingResumes(false);
     }
+  };
+
+  const handleOpenSelectResume = () => {
+    setCalendarDraft(null);
+    void openSelectResume();
+  };
+
+  const handleCalendarEmptyDoubleClick = (date: Date, allDay: boolean) => {
+    if (!canCancelInterview) return;
+    const beijingDate = toBeijingTime(date);
+    if (!beijingDate) return;
+    setCalendarDraft({
+      date: beijingDate.startOf('day'),
+      start: allDay ? null : beijingDate,
+    });
+    void openSelectResume();
   };
 
   const handleSelectResume = (record: any) => {
@@ -380,14 +452,18 @@ const InterviewsList: React.FC = () => {
         question_count: 5,
         interview_type: 'onsite',
         interview_category: 'technical',
-        round: maxRound + 1
+        round: maxRound + 1,
+        interview_time: calendarDraft?.start,
+        interview_end_time: calendarDraft?.start ? defaultInterviewEnd(calendarDraft.start) : null,
       });
     } catch (error) {
       console.error('获取面试记录失败', error);
       interviewForm.setFieldsValue({
         question_count: 5,
         interview_type: 'onsite',
-        round: 1
+        round: 1,
+        interview_time: calendarDraft?.start,
+        interview_end_time: calendarDraft?.start ? defaultInterviewEnd(calendarDraft.start) : null,
       });
     }
 
@@ -404,7 +480,7 @@ const InterviewsList: React.FC = () => {
         position_id: selectedResume.position_id,
         interviewer: '面试小组',
         panel_members: values.panel_members,
-        interview_time: values.interview_time ? values.interview_time.toISOString() : new Date().toISOString(),
+        ...buildInterviewTimePayload(values),
         question_bank_ids: values.question_bank_ids,
         question_count: values.question_count,
         round: values.round || 1,
@@ -421,7 +497,8 @@ const InterviewsList: React.FC = () => {
         const emailPreview = await request.post('/interviews/email-preview', {
           resume_id: selectedResume.id,
           position_id: selectedResume.position_id,
-          interview_time: values.interview_time ? values.interview_time.toISOString() : null,
+          panel_members: values.panel_members,
+          ...buildInterviewTimePayload(values),
           round: values.round || 1,
           interview_type: values.interview_type || 'onsite',
           interview_category: values.interview_category || 'technical',
@@ -445,11 +522,11 @@ const InterviewsList: React.FC = () => {
         });
         message.success('面试安排成功');
         setInterviewModalVisible(false);
-        fetchInterviews();
+        refreshInterviews();
         navigate(`/interviews/${res.id}/score`);
       }
     } catch (error) {
-      message.error('安排面试失败');
+      message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
       setSubmitting(false);
     }
@@ -480,10 +557,10 @@ const InterviewsList: React.FC = () => {
       }
 
       setEmailPreviewVisible(false);
-      fetchInterviews();
+      refreshInterviews();
       navigate(`/interviews/${res.id}/score`);
     } catch (error) {
-      message.error('安排面试失败');
+      message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
       setSendingEmail(false);
     }
@@ -510,12 +587,58 @@ const InterviewsList: React.FC = () => {
           await Promise.all(selectedRowKeys.map(id => request.delete(`/interviews/${id}`)));
           message.success(`成功删除 ${selectedRowKeys.length} 个面试`);
           setSelectedRowKeys([]);
-          fetchInterviews();
+          refreshInterviews();
         } catch (error) {
           message.error('批量删除失败');
         }
       },
     });
+  };
+
+  const renderInterviewActions = (record: any) => {
+    const isPendingConfirmation = record.status !== 'completed'
+      && record.result === 'pending'
+      && record.scores
+      && Object.keys(record.scores).length > 0;
+    return (
+      <Space size="small">
+        {(record.lifecycle_state || record.status) === 'scheduled' && (
+          <Tooltip title="进入面试">
+            <Button type="text" icon={<PlayCircleOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
+          </Tooltip>
+        )}
+        {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
+          <Tooltip title="编辑面试安排">
+            <Button type="text" icon={<EditOutlined />} onClick={() => handleOpenScheduleEdit(record)} />
+          </Tooltip>
+        )}
+        {(record.lifecycle_state || record.status) === 'in_progress' && (
+          <Tooltip title="继续面试">
+            <Button type="text" icon={<PlayCircleOutlined style={{ color: '#F97316' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
+          </Tooltip>
+        )}
+        {(record.lifecycle_state === 'ended' || record.status === 'completed' || isPendingConfirmation) && (
+          <Tooltip title={isPendingConfirmation ? '确认结果' : '查看结果'}>
+            <Button type="text" icon={<EyeOutlined style={{ color: isPendingConfirmation ? '#F59E0B' : '#10B981' }} />} onClick={() => navigate(`/interviews/${record.id}/result`)} />
+          </Tooltip>
+        )}
+        {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
+          <Tooltip title="取消面试">
+            <Button type="text" danger icon={<StopOutlined />} onClick={() => handleOpenCancelModal(record.id)} />
+          </Tooltip>
+        )}
+        {canCancelInterview && getInterviewProgress(record) === 'cancelled' && (
+          <Tooltip title="重新发送取消通知">
+            <Button type="text" icon={<SendOutlined />} onClick={() => handleRetryCancelNotification(record.id)} />
+          </Tooltip>
+        )}
+        {canDeleteInterview && ['scheduled', 'cancelled'].includes(getInterviewProgress(record)) && (
+          <Tooltip title="删除">
+            <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
+          </Tooltip>
+        )}
+      </Space>
+    );
   };
 
   const columns = [
@@ -574,7 +697,12 @@ const InterviewsList: React.FC = () => {
         const bt = b?.interview_time ? new Date(b.interview_time).getTime() : 0;
         return at - bt;
       },
-      render: (time: string) => time ? new Date(time).toLocaleString() : '-'
+      render: (_: string, record: any) => {
+        const range = formatInterviewRange(record);
+        return range.estimated
+          ? <Tooltip title="历史记录未填写结束时间，按 60 分钟预计"><span>{range.text}（预计）</span></Tooltip>
+          : range.text;
+      }
     },
     {
       title: '总分',
@@ -630,62 +758,25 @@ const InterviewsList: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      render: (_, record: any) => {
-        // Check if interview is pending confirmation (has scores but status not completed)
-        const isPendingConfirmation = record.status !== 'completed' &&
-                                      (record.result === 'pending' && record.scores && Object.keys(record.scores).length > 0);
-
-        return (
-        <Space size="small">
-          {(record.lifecycle_state || record.status) === 'scheduled' && (
-            <Tooltip title="进入面试">
-              <Button type="text" icon={<PlayCircleOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
-            </Tooltip>
-          )}
-
-          {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
-            <Tooltip title="编辑面试安排">
-              <Button type="text" icon={<EditOutlined />} onClick={() => handleOpenScheduleEdit(record)} />
-            </Tooltip>
-          )}
-
-          {(record.lifecycle_state || record.status) === 'in_progress' && (
-            <Tooltip title="继续面试">
-              <Button type="text" icon={<PlayCircleOutlined style={{ color: '#F97316' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
-            </Tooltip>
-          )}
-
-          {(record.lifecycle_state === 'ended' || record.status === 'completed' || isPendingConfirmation) && (
-             <Tooltip title={isPendingConfirmation ? "确认结果" : "查看结果"}>
-               <Button type="text" icon={<EyeOutlined style={{ color: isPendingConfirmation ? '#F59E0B' : '#10B981' }} />} onClick={() => navigate(`/interviews/${record.id}/result`)} />
-             </Tooltip>
-          )}
-
-          {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
-            <Tooltip title="取消面试">
-              <Button type="text" danger icon={<StopOutlined />} onClick={() => handleOpenCancelModal(record.id)} />
-            </Tooltip>
-          )}
-
-          {canCancelInterview && getInterviewProgress(record) === 'cancelled' && (
-            <Tooltip title="重新发送取消通知">
-              <Button type="text" icon={<SendOutlined />} onClick={() => handleRetryCancelNotification(record.id)} />
-            </Tooltip>
-          )}
-
-          {canDeleteInterview && ['scheduled', 'cancelled'].includes(getInterviewProgress(record)) && (
-            <Tooltip title="删除">
-              <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
-            </Tooltip>
-          )}
-        </Space>
-      )},
+      render: (_: unknown, record: any) => renderInterviewActions(record),
     },
   ];
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Segmented
+          value={viewMode}
+          options={[
+            { value: 'list', label: '列表', icon: <UnorderedListOutlined /> },
+            { value: 'calendar', label: '日历', icon: <CalendarOutlined /> },
+          ]}
+          onChange={(value) => {
+            const nextMode = value as 'list' | 'calendar';
+            localStorage.setItem('interview-management-view', nextMode);
+            setViewMode(nextMode);
+          }}
+        />
         {(user?.role === 'admin' || user?.role === 'hr') && (
           <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenSelectResume}>安排面试</Button>
         )}
@@ -764,7 +855,7 @@ const InterviewsList: React.FC = () => {
             ]}
           />
           </Form.Item>
-          {selectedRowKeys.length > 0 && canDeleteInterview && (
+          {viewMode === 'list' && selectedRowKeys.length > 0 && canDeleteInterview && (
             <>
               <Form.Item><span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span></Form.Item>
               <Form.Item><Button danger onClick={handleBatchDelete}>批量删除</Button></Form.Item>
@@ -776,20 +867,31 @@ const InterviewsList: React.FC = () => {
           </Form.Item>
         </Form>
       </Card>
-      <Table
-        columns={columns}
-        dataSource={filteredData}
-        loading={loading}
-        rowKey="id"
-        pagination={{ pageSize: 10, showSizeChanger: true }}
-        rowSelection={{
-          selectedRowKeys,
-          onChange: (keys) => setSelectedRowKeys(keys),
-          getCheckboxProps: (record: any) => ({
-            disabled: !canDeleteInterview || !['scheduled', 'cancelled'].includes(getInterviewProgress(record)),
-          }),
-        }}
-      />
+      {viewMode === 'list' ? (
+        <Table
+          columns={columns}
+          dataSource={filteredData}
+          loading={loading}
+          rowKey="id"
+          pagination={{ pageSize: 10, showSizeChanger: true }}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys) => setSelectedRowKeys(keys),
+            getCheckboxProps: (record: any) => ({
+              disabled: !canDeleteInterview || !['scheduled', 'cancelled'].includes(getInterviewProgress(record)),
+            }),
+          }}
+        />
+      ) : (
+        <InterviewCalendar
+          interviews={filteredCalendarData}
+          loading={calendarLoading}
+          interviewerNameMap={interviewerNameMap}
+          onRangeChange={handleCalendarRangeChange}
+          onEmptyDoubleClick={handleCalendarEmptyDoubleClick}
+          renderActions={renderInterviewActions}
+        />
+      )}
 
       <Modal
         title="编辑面试安排"
@@ -816,13 +918,45 @@ const InterviewsList: React.FC = () => {
               ))}
             </Select>
           </Form.Item>
-          <Form.Item
-            name="interview_time"
-            label="面试时间"
-            rules={[{ required: true, message: '请选择面试时间' }]}
-          >
-            <DatePicker showTime style={{ width: '100%' }} />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                name="interview_time"
+                label="开始时间"
+                rules={[{ required: true, message: '请选择开始时间' }]}
+              >
+                <DatePicker
+                  showTime={{ format: 'HH:mm', minuteStep: 30 }}
+                  format="YYYY-MM-DD HH:mm"
+                  style={{ width: '100%' }}
+                  onChange={(value) => {
+                    const currentEnd = scheduleForm.getFieldValue('interview_end_time');
+                    if (value && (!currentEnd || !currentEnd.isAfter(value))) {
+                      scheduleForm.setFieldValue('interview_end_time', defaultInterviewEnd(value));
+                    }
+                  }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="interview_end_time"
+                label="结束时间"
+                dependencies={['interview_time']}
+                rules={[
+                  { required: true, message: '请选择结束时间' },
+                  ({ getFieldValue }) => ({
+                    validator: (_, value) => {
+                      const error = validateInterviewTimeRange(getFieldValue('interview_time'), value);
+                      return error ? Promise.reject(new Error(error)) : Promise.resolve();
+                    },
+                  }),
+                ]}
+              >
+                <DatePicker showTime={{ format: 'HH:mm', minuteStep: 30 }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
           <Form.Item
             name="interview_type"
             label="面试形式"
@@ -1043,6 +1177,12 @@ const InterviewsList: React.FC = () => {
           </div>
         )}
 
+        {calendarDraft && !calendarDraft.start && (
+          <div style={{ marginBottom: 16, padding: '10px 12px', background: '#eef5ff', borderRadius: 8, color: '#174ea6' }}>
+            已选择 {calendarDraft.date.format('YYYY年M月D日')}，请选择具体开始时间
+          </div>
+        )}
+
         <Form
           form={interviewForm}
           layout="vertical"
@@ -1113,13 +1253,54 @@ const InterviewsList: React.FC = () => {
             </Select>
           </Form.Item>
 
-          <Form.Item
-            name="interview_time"
-            label="面试时间"
-            rules={[{ required: true, message: '请选择面试时间' }]}
-          >
-            <DatePicker showTime style={{ width: '100%' }} size="large" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                name="interview_time"
+                label="开始时间"
+                rules={[{ required: true, message: '请选择开始时间' }]}
+              >
+                <DatePicker
+                  showTime={{ format: 'HH:mm', minuteStep: 30 }}
+                  format="YYYY-MM-DD HH:mm"
+                  style={{ width: '100%' }}
+                  size="large"
+                  autoFocus={Boolean(calendarDraft)}
+                  defaultPickerValue={calendarDraft?.date}
+                  onChange={(value) => {
+                    const currentEnd = interviewForm.getFieldValue('interview_end_time');
+                    if (value && (!currentEnd || !currentEnd.isAfter(value))) {
+                      interviewForm.setFieldValue('interview_end_time', defaultInterviewEnd(value));
+                    }
+                  }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="interview_end_time"
+                label="结束时间"
+                dependencies={['interview_time']}
+                rules={[
+                  { required: true, message: '请选择结束时间' },
+                  ({ getFieldValue }) => ({
+                    validator: (_, value) => {
+                      const error = validateInterviewTimeRange(getFieldValue('interview_time'), value);
+                      return error ? Promise.reject(new Error(error)) : Promise.resolve();
+                    },
+                  }),
+                ]}
+              >
+                <DatePicker
+                  showTime={{ format: 'HH:mm', minuteStep: 30 }}
+                  format="YYYY-MM-DD HH:mm"
+                  style={{ width: '100%' }}
+                  size="large"
+                  defaultPickerValue={calendarDraft?.date}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item
             noStyle

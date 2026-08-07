@@ -5,7 +5,8 @@ from app.config.tenant_session import tenant_session
 from app.services.interview_service import (
     create_interview, get_interviews, get_interview, update_interview, update_interview_schedule, delete_interview,
     submit_interview_score, update_interview_questions, export_interview_result,
-    submit_interview_panel_score, aggregate_panel_scores, start_interview, cancel_interview, get_submission_status
+    submit_interview_panel_score, aggregate_panel_scores, start_interview, cancel_interview, get_submission_status,
+    require_schedule_available,
 )
 from app.schemas.interview import (
     InterviewResponse, InterviewDetailResponse, InterviewCreate, InterviewUpdate,
@@ -14,7 +15,7 @@ from app.schemas.interview import (
     ForceEndInterviewRequest, LiveNotesRequest,
     NoteSupplementRequest, HumanReviewRequest, FinalDecisionRequest,
     FinalDecisionCorrectionRequest, CancelInterviewResponse,
-    ReviewerReplacementRequest,
+    ReviewerReplacementRequest, validate_interview_time_range,
     CorrectedTranscriptRequest, SpeakerLabelsRequest, InterviewScheduleUpdate,
     InterviewScheduleNotificationRequest,
 )
@@ -24,8 +25,9 @@ from app.core.security import check_roles
 
 from typing import Annotated, List, Optional
 from uuid import UUID
+from datetime import datetime
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 import logging
 from html import escape
 from app.core.observability import background_task_context
@@ -89,7 +91,9 @@ class EmailSendRequest(BaseModel):
 class EmailPreviewRequest(BaseModel):
     resume_id: UUID
     position_id: UUID
-    interview_time: RequiredText
+    interview_time: datetime
+    interview_end_time: datetime
+    panel_members: List[UUID] = Field(default_factory=list)
     round: int = 1
     interview_type: str = 'onsite'
     interview_category: str = 'technical'
@@ -98,6 +102,7 @@ class EmailPreviewRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_scheduling_details(self):
+        validate_interview_time_range(self.interview_time, self.interview_end_time)
         if self.interview_type == "onsite" and not (self.interview_location or "").strip():
             raise ValueError("现场面试必须填写面试地点")
         if self.interview_type == "video" and not (self.meeting_link or "").strip():
@@ -637,9 +642,13 @@ def get_interviews_route(
     skip: int = 0, 
     limit: int = 100, 
     status: str = None,
+    range_start: Optional[datetime] = Query(default=None, alias="start"),
+    range_end: Optional[datetime] = Query(default=None, alias="end"),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
+    if range_start and range_end and as_utc(range_end) <= as_utc(range_start):
+        raise HTTPException(status_code=422, detail="日期范围结束时间必须晚于开始时间")
     # Filter for interviewers: only see interviews where they are panel members
     if current_user.role == UserRole.INTERVIEWER:
         # We need to implement a filter in get_interviews or do it here
@@ -647,12 +656,26 @@ def get_interviews_route(
         # But we can fetch all and filter in python for now (assuming not huge volume) or use specific query.
         # Better: Update get_interviews service to handle filtering.
         from app.services.interview_service import get_interviews_for_interviewer
-        interviews = get_interviews_for_interviewer(db, current_user.id, skip=0, limit=10000)
+        interviews = get_interviews_for_interviewer(
+            db,
+            current_user.id,
+            skip=0,
+            limit=10000,
+            range_start=range_start,
+            range_end=range_end,
+        )
         if status:
             interviews = [i for i in interviews if str(i.status) == status or getattr(i.status, "value", None) == status]
         return interviews[skip: skip + limit]
         
-    return get_interviews(db, skip=skip, limit=limit, status=status)
+    return get_interviews(
+        db,
+        skip=skip,
+        limit=limit,
+        status=status,
+        range_start=range_start,
+        range_end=range_end,
+    )
 
 @router.post("/email-preview")
 def preview_email_before_create(
@@ -661,7 +684,7 @@ def preview_email_before_create(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """在创建面试前预览邮件内容"""
-    from app.services.mail_service import get_mail_service, format_interview_time
+    from app.services.mail_service import get_mail_service, format_interview_time_range
     from datetime import datetime
 
     # 获取简历和岗位信息
@@ -670,6 +693,15 @@ def preview_email_before_create(
 
     if not resume or not position:
         raise HTTPException(status_code=404, detail="简历或岗位不存在")
+
+    require_schedule_available(
+        db,
+        tenant_id=resume.tenant_id,
+        resume_id=resume.id,
+        panel_member_ids=list(preview_data.panel_members),
+        start=preview_data.interview_time,
+        end=preview_data.interview_end_time,
+    )
 
     mail_service = get_mail_service(db)
 
@@ -691,14 +723,10 @@ def preview_email_before_create(
     }
     interview_type_text = type_map.get(preview_data.interview_type, "现场面试")
 
-    # 格式化面试时间
-    time_str = "待定"
-    if preview_data.interview_time:
-        try:
-            dt = datetime.fromisoformat(preview_data.interview_time.replace('Z', '+00:00'))
-            time_str = format_interview_time(dt)
-        except:
-            time_str = preview_data.interview_time
+    time_str = format_interview_time_range(
+        preview_data.interview_time,
+        preview_data.interview_end_time,
+    )
 
     # 渲染邮件模板
     context = {
@@ -774,7 +802,7 @@ def _schedule_notification_html(
     schedule: InterviewScheduleUpdate,
     interview_url: str | None = None,
 ) -> str:
-    from app.services.mail_service import format_interview_time
+    from app.services.mail_service import format_interview_time_range
 
     candidate_name = interview.resume.candidate_name if interview.resume else "候选人"
     position_title = interview.position.title if interview.position else "岗位"
@@ -792,13 +820,21 @@ def _schedule_notification_html(
         if interview_url
         else ""
     )
+    previous_range = format_interview_time_range(interview.interview_time, interview.interview_end_time)
+    proposed_range = format_interview_time_range(schedule.interview_time, schedule.interview_end_time)
+    time_detail = (
+        f"<li><strong>原面试时间：</strong>{escape(previous_range)}</li>"
+        f"<li><strong>新面试时间：</strong>{escape(proposed_range)}</li>"
+        if previous_range != proposed_range
+        else f"<li><strong>面试时间：</strong>{escape(proposed_range)}</li>"
+    )
     return (
         '<div style="font-family:Arial,sans-serif;line-height:1.7;color:#1f2937">'
         f"<h2>{escape(heading)}</h2><p>{escape(intro)}</p><ul>"
         f"<li><strong>候选人：</strong>{escape(candidate_name or '候选人')}</li>"
         f"<li><strong>应聘岗位：</strong>{escape(position_title or '岗位')}</li>"
         f"<li><strong>面试轮次：</strong>第 {interview.round or 1} 轮</li>"
-        f"<li><strong>面试时间：</strong>{escape(format_interview_time(schedule.interview_time))}</li>"
+        f"{time_detail}"
         f"<li><strong>面试形式：</strong>{type_text}</li>{detail}</ul>"
         f"{interview_link}<p>如有疑问，请联系招聘负责人。</p></div>"
     )
@@ -829,10 +865,23 @@ def preview_schedule_update_email(
     if any(member_id not in users_by_id for member_id in proposed_ids):
         raise HTTPException(status_code=422, detail="面试官不存在、已停用或不可分配")
 
+    require_schedule_available(
+        db,
+        tenant_id=interview.tenant_id,
+        resume_id=interview.resume_id,
+        panel_member_ids=list(schedule.panel_members),
+        start=schedule.interview_time,
+        end=schedule.interview_end_time,
+        exclude_interview_id=interview.id,
+    )
+
     previous_time = as_utc(interview.interview_time) if interview.interview_time else None
+    previous_end_time = as_utc(interview.interview_end_time) if interview.interview_end_time else None
     proposed_time = as_utc(schedule.interview_time)
+    proposed_end_time = as_utc(schedule.interview_end_time)
     schedule_changed = any([
         previous_time != proposed_time,
+        previous_end_time != proposed_end_time,
         interview.interview_type != schedule.interview_type,
         (interview.interview_location or "") != (schedule.interview_location or ""),
         (interview.meeting_link or "") != (schedule.meeting_link or ""),
@@ -1042,7 +1091,7 @@ def get_email_preview(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     """获取面试邀请邮件预览"""
-    from app.services.mail_service import get_mail_service, format_interview_time
+    from app.services.mail_service import get_mail_service, format_interview_time_range
 
     interview = require_interview_access(db, interview_id, current_user)
 
@@ -1081,7 +1130,7 @@ def get_email_preview(
     interview_type_text = type_map.get(interview_type, "现场面试")
 
     # 格式化面试时间
-    time_str = format_interview_time(interview.interview_time)
+    time_str = format_interview_time_range(interview.interview_time, interview.interview_end_time)
 
     # 渲染邮件模板
     context = {

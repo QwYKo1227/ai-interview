@@ -20,6 +20,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@fullcalendar/react": "^7.0.2",
     "@uiw/react-codemirror": "^4.24.0",
     "antd": "^6.3.1",
     "axios": "^1.13.5",
@@ -35,6 +36,7 @@
     "reactflow": "^11.11.4",
     "recharts": "^3.7.0",
     "remark-gfm": "^4.0.1",
+    "temporal-polyfill": "^1.0.3",
     "zustand": "^5.0.11"
   },
   "devDependencies": {

@@ -137,6 +137,24 @@ def test_authenticated_download_is_tenant_scoped_and_has_safe_headers(
     assert denied.status_code == 404
 
 
+def test_authenticated_download_supports_byte_ranges(db, tenant_a, tmp_path, test_interview):
+    own = save_upload_file(_upload("recording.webm", b"0123456789", "audio/webm"), tenant_a.id, "interview_audio", root=tmp_path)
+    own.resource_type = "interview"
+    own.resource_id = test_interview.id
+    db.add(own)
+    db.commit()
+
+    with TestClient(_app(db, tenant_a, tmp_path)) as client:
+        response = client.get(f"/api/files/{own.id}", headers={"Range": "bytes=2-5"})
+
+    assert response.status_code == 206
+    assert response.content == b"2345"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert response.headers["content-length"] == "4"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
 def test_public_download_requires_valid_token_and_matching_host(
     db, tenant_a, tenant_b, tmp_path
 ):

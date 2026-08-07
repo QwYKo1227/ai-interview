@@ -135,6 +135,7 @@ class ReminderService:
                 candidate_name=resume.candidate_name,
                 position_title=position.title,
                 interview_time=interview.interview_time,
+                interview_end_time=interview.interview_end_time,
                 interview_round=interview.round or 1,
                 reminder_type=reminder_text,
                 company_name="公司"
@@ -158,6 +159,7 @@ class ReminderService:
                         candidate_name=resume.candidate_name,
                         position_title=position.title,
                         interview_time=interview.interview_time,
+                        interview_end_time=interview.interview_end_time,
                         interview_round=interview.round or 1,
                         reminder_type=reminder_text,
                         company_name="公司"

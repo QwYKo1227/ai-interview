@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.config.database import get_unscoped_db
@@ -34,7 +35,7 @@ def _not_found():
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
 
-def _response(record: StoredFile) -> FileResponse:
+def _response(record: StoredFile, request: Request):
     try:
         path = resolve_object_path(Path(UPLOAD_ROOT), record.tenant_id, record.object_key)
     except ValueError as exc:
@@ -42,11 +43,57 @@ def _response(record: StoredFile) -> FileResponse:
     if not path.is_file():
         raise _not_found()
     safe_name = record.original_filename.replace("\r", "").replace("\n", "")
-    disposition = f"attachment; filename*=UTF-8''{quote(safe_name, safe='')}"
+    content_type = sanitize_content_type(record.original_filename, record.content_type)
+    disposition_type = "inline" if content_type.startswith(("audio/", "video/")) else "attachment"
+    disposition = f"{disposition_type}; filename*=UTF-8''{quote(safe_name, safe='')}"
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": disposition,
+        "X-Content-Type-Options": "nosniff",
+    }
+    range_header = request.headers.get("range")
+    if range_header:
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+        size = path.stat().st_size
+        if match is None or not any(match.groups()):
+            return Response(status_code=416, headers={**common_headers, "Content-Range": f"bytes */{size}"})
+
+        first, last = match.groups()
+        if first:
+            start = int(first)
+            end = min(int(last), size - 1) if last else size - 1
+        else:
+            suffix_length = int(last)
+            start = max(0, size - suffix_length)
+            end = size - 1
+        if start >= size or start > end:
+            return Response(status_code=416, headers={**common_headers, "Content-Range": f"bytes */{size}"})
+
+        def content():
+            remaining = end - start + 1
+            with path.open("rb") as source:
+                source.seek(start)
+                while remaining > 0:
+                    chunk = source.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            content(),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                **common_headers,
+                "Content-Length": str(end - start + 1),
+                "Content-Range": f"bytes {start}-{end}/{size}",
+            },
+        )
     return FileResponse(
         path,
-        media_type=sanitize_content_type(record.original_filename, record.content_type),
-        headers={"Content-Disposition": disposition, "X-Content-Type-Options": "nosniff"},
+        media_type=content_type,
+        headers=common_headers,
     )
 
 
@@ -116,6 +163,7 @@ def _can_access_file(
 @router.get("/{file_id}")
 def download_file(
     file_id: UUID,
+    request: Request,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user_dep),
 ):
@@ -126,7 +174,7 @@ def download_file(
         db, current_user, record, allow_assigned_resume=True
     ):
         raise _not_found()
-    return _response(record)
+    return _response(record, request)
 
 
 @router.post("/{file_id}/public-token", response_model=PublicFileTokenResponse)
@@ -162,4 +210,4 @@ def download_public_file(
         db, request_host=resolve_request_host(request),
         tenant_id=resolved.tenant_id, tenant_code=tenant_code,
     )
-    return _response(resolved.resource)
+    return _response(resolved.resource, request)

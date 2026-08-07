@@ -30,6 +30,7 @@ class TestCreateInterview:
             position_id=test_position.id,
             interviewer="主面试官",
             interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 15, 11, 0, tzinfo=timezone.utc),
             interview_location="上海办公室",
             meeting_link="https://meeting.example.com/interview",
             panel_members=[]
@@ -41,6 +42,7 @@ class TestCreateInterview:
         assert result.resume_id == test_resume.id
         assert result.position_id == test_position.id
         assert result.status == InterviewStatus.SCHEDULED
+        assert result.interview_end_time.replace(tzinfo=timezone.utc) == datetime(2024, 12, 15, 11, 0, tzinfo=timezone.utc)
         assert result.result == InterviewResult.PENDING
         assert test_resume.status == ResumeStatus.INTERVIEW_SCHEDULED
         assert result.questions is None
@@ -54,6 +56,7 @@ class TestCreateInterview:
             position_id=test_position.id,
             interviewer="主面试官",
             interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 15, 11, 0, tzinfo=timezone.utc),
             interview_location="上海办公室",
             meeting_link="https://meeting.example.com/interview",
             panel_members=[str(test_interviewer.id)]
@@ -71,6 +74,7 @@ class TestCreateInterview:
             position_id=test_position.id,
             interviewer="主面试官",
             interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 15, 11, 0, tzinfo=timezone.utc),
             interview_location="上海办公室",
             meeting_link="https://meeting.example.com/interview",
         )
@@ -88,6 +92,7 @@ class TestCreateInterview:
             position_id=uuid4(),  # 不存在的岗位ID
             interviewer="主面试官",
             interview_time=datetime(2024, 12, 15, 10, 0, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 15, 11, 0, tzinfo=timezone.utc),
             interview_location="上海办公室",
             meeting_link="https://meeting.example.com/interview",
         )
@@ -97,6 +102,89 @@ class TestCreateInterview:
 
         assert exc_info.value.status_code == 404
         assert "Position not found" in exc_info.value.detail
+
+    def test_create_interview_rejects_candidate_overlap(
+        self,
+        db: Session,
+        test_interview: Interview,
+        test_resume: Resume,
+        test_position: Position,
+        mock_background_tasks,
+    ):
+        payload = InterviewCreate(
+            resume_id=test_resume.id,
+            position_id=test_position.id,
+            interview_time=datetime(2024, 12, 1, 10, 30, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 1, 11, 30, tzinfo=timezone.utc),
+            interview_type="phone",
+            panel_members=[],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            interview_service.create_interview(db, payload, mock_background_tasks)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["conflicts"][0]["reasons"] == ["候选人"]
+
+    def test_cancelled_interview_does_not_block_same_candidate(
+        self,
+        db: Session,
+        test_interview: Interview,
+        test_resume: Resume,
+        test_position: Position,
+        mock_background_tasks,
+    ):
+        test_interview.lifecycle_state = "cancelled"
+        test_interview.status = InterviewStatus.CANCELLED
+        db.commit()
+        payload = InterviewCreate(
+            resume_id=test_resume.id,
+            position_id=test_position.id,
+            interview_time=datetime(2024, 12, 1, 10, 30, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 1, 11, 30, tzinfo=timezone.utc),
+            interview_type="phone",
+            panel_members=[],
+            skip_ai_questions=True,
+            skip_email=True,
+        )
+
+        created = interview_service.create_interview(db, payload, mock_background_tasks)
+
+        assert created.id != test_interview.id
+
+    def test_create_interview_rejects_interviewer_overlap_for_another_candidate(
+        self,
+        db: Session,
+        test_interview: Interview,
+        test_position: Position,
+        test_interviewer: User,
+        mock_background_tasks,
+    ):
+        other_resume = Resume(
+            id=uuid4(),
+            tenant_id=test_position.tenant_id,
+            candidate_name="李四",
+            email="lisi@example.com",
+            position_id=test_position.id,
+            status=ResumeStatus.PENDING_INTERVIEW,
+            screening_result=ScreeningResult.PASSED,
+        )
+        db.add(other_resume)
+        db.commit()
+        payload = InterviewCreate(
+            resume_id=other_resume.id,
+            position_id=test_position.id,
+            interview_time=datetime(2024, 12, 1, 10, 30, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 1, 11, 30, tzinfo=timezone.utc),
+            interview_type="phone",
+            panel_members=[str(test_interviewer.id)],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            interview_service.create_interview(db, payload, mock_background_tasks)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["conflicts"][0]["reasons"] == ["面试官"]
 
 
 class TestGetInterviews:
@@ -128,6 +216,21 @@ class TestGetInterviews:
 
         assert len(result) == 0
 
+    def test_get_interviews_filters_by_overlapping_date_range(self, db: Session, test_interview: Interview):
+        result = interview_service.get_interviews(
+            db,
+            range_start=datetime(2024, 12, 1, 10, 30, tzinfo=timezone.utc),
+            range_end=datetime(2024, 12, 1, 11, 30, tzinfo=timezone.utc),
+        )
+        assert [item.id for item in result] == [test_interview.id]
+
+        result = interview_service.get_interviews(
+            db,
+            range_start=datetime(2024, 12, 1, 11, 0, tzinfo=timezone.utc),
+            range_end=datetime(2024, 12, 1, 12, 0, tzinfo=timezone.utc),
+        )
+        assert result == []
+
 
 class TestGetInterview:
     """测试获取单个面试功能"""
@@ -155,7 +258,8 @@ class TestUpdateInterview:
         """测试成功更新面试"""
         update_data = InterviewUpdate(
             interviewer="新面试官",
-            interview_time=datetime(2024, 12, 20, 14, 0, tzinfo=timezone.utc)
+            interview_time=datetime(2024, 12, 20, 14, 0, tzinfo=timezone.utc),
+            interview_end_time=datetime(2024, 12, 20, 15, 0, tzinfo=timezone.utc),
         )
 
         result = interview_service.update_interview(db, test_interview.id, update_data)

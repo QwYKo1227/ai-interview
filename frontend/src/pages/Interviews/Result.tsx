@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Card, Col, Descriptions, Button, Result, Typography, Divider, Tag, List, Space, message, Dropdown, Spin, Input, Modal, Row, Select } from 'antd';
 import type { MenuProps } from 'antd';
 import { useParams, useNavigate } from 'react-router-dom';
-import { DownloadOutlined, FileMarkdownOutlined, FilePdfOutlined, DownOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FileMarkdownOutlined, FilePdfOutlined, DownOutlined, PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useOptionalAuth } from '../../contexts/AuthContext';
 import ReactMarkdown from 'react-markdown';
@@ -101,8 +101,15 @@ type TranscriptPaneProps = {
   text: string;
   emptyText: string;
   getSpeakerName: (speaker: string | number | undefined) => string;
+  playbackReady?: boolean;
+  playingSegmentKey?: string | null;
+  onTogglePlayback?: (segment: TranscriptSegment, index: number) => void;
   maxHeight?: number;
 };
+
+const transcriptSegmentKey = (segment: TranscriptSegment, index: number) => (
+  segment.id || `${segment.start}-${segment.end}-${index}`
+);
 
 const TranscriptPane: React.FC<TranscriptPaneProps> = ({
   title,
@@ -113,6 +120,9 @@ const TranscriptPane: React.FC<TranscriptPaneProps> = ({
   text,
   emptyText,
   getSpeakerName,
+  playbackReady = false,
+  playingSegmentKey,
+  onTogglePlayback,
   maxHeight = 560,
 }) => {
   const palette = accent === 'blue'
@@ -134,12 +144,31 @@ const TranscriptPane: React.FC<TranscriptPaneProps> = ({
           const end = formatTranscriptTime(segment.end);
           const timeRange = start && end ? `${start}–${end}` : start;
           const speaker = getSpeakerName(segment.speaker);
+          const segmentKey = transcriptSegmentKey(segment, index);
+          const canPlay = typeof segment.start === 'number'
+            && Number.isFinite(segment.start)
+            && typeof segment.end === 'number'
+            && Number.isFinite(segment.end)
+            && segment.end > segment.start;
+          const isPlaying = playingSegmentKey === segmentKey;
           return (
-            <div key={segment.id || `${segment.start}-${index}`} style={{ padding: '12px 0', borderBottom: index === segments.length - 1 ? undefined : '1px solid #E2E8F0' }}>
+            <div key={segmentKey} style={{ padding: '12px 0', borderBottom: index === segments.length - 1 ? undefined : '1px solid #E2E8F0' }}>
               {(timeRange || speaker) && (
                 <Space size={6} wrap style={{ marginBottom: 6 }}>
                   {timeRange && <Text type="secondary" style={{ fontSize: 12 }}>{timeRange}</Text>}
                   {speaker && <Tag style={{ marginInlineEnd: 0 }}>{speaker}</Tag>}
+                  {onTogglePlayback && canPlay && (
+                    <Button
+                      type="text"
+                      size="small"
+                      disabled={!playbackReady}
+                      icon={isPlaying ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                      aria-label={isPlaying ? `暂停 ${timeRange}` : `播放 ${timeRange}`}
+                      title={playbackReady ? (isPlaying ? '暂停录音分片' : '播放录音分片') : '录音加载中'}
+                      onClick={() => onTogglePlayback(segment, index)}
+                      style={{ color: playbackReady ? '#16A34A' : undefined, paddingInline: 4 }}
+                    />
+                  )}
                 </Space>
               )}
               <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.75, color: '#1E293B' }}>{transcriptText(segment)}</div>
@@ -180,12 +209,70 @@ const InterviewResultPage: React.FC = () => {
   const [speakerLabelsOpen, setSpeakerLabelsOpen] = useState(false);
   const [speakerLabelDraft, setSpeakerLabelDraft] = useState<Record<string, string>>({});
   const [savingSpeakerLabels, setSavingSpeakerLabels] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackEndRef = useRef<number | null>(null);
+  const [playbackUrl, setPlaybackUrl] = useState('');
+  const [playbackReady, setPlaybackReady] = useState(false);
+  const [playingSegmentKey, setPlayingSegmentKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) {
       fetchInterview(id);
     }
   }, [id]);
+
+  useEffect(() => {
+    const fullRecording = interview?.audio_records?.full_interview;
+    const match = typeof fullRecording === 'string'
+      ? /\/api\/files\/([0-9a-f-]{36})$/i.exec(fullRecording)
+      : null;
+    if (!match) {
+      setPlaybackUrl('');
+      setPlaybackReady(false);
+      return;
+    }
+    setPlaybackUrl('');
+    setPlaybackReady(false);
+    let cancelled = false;
+    request.post(`/files/${match[1]}/public-token`, { ttl_seconds: 3600 })
+      .then((value: any) => {
+        if (!cancelled && typeof value?.url === 'string') setPlaybackUrl(value.url);
+      })
+      .catch(() => {
+        if (!cancelled) setPlaybackUrl('');
+      });
+    return () => { cancelled = true; };
+  }, [interview?.audio_records?.full_interview]);
+
+  useEffect(() => () => {
+    audioRef.current?.pause();
+  }, []);
+
+  const toggleSegmentPlayback = (segment: TranscriptSegment, index: number) => {
+    const audio = audioRef.current;
+    if (!audio || !playbackReady || typeof segment.start !== 'number' || typeof segment.end !== 'number') return;
+    const segmentKey = transcriptSegmentKey(segment, index);
+    if (playingSegmentKey === segmentKey && !audio.paused) {
+      audio.pause();
+      setPlayingSegmentKey(null);
+      return;
+    }
+    playbackEndRef.current = segment.end;
+    audio.currentTime = segment.start;
+    audio.play()
+      .then(() => setPlayingSegmentKey(segmentKey))
+      .catch(() => message.error('录音播放失败，请稍后重试'));
+  };
+
+  const stopAtSegmentEnd = () => {
+    const audio = audioRef.current;
+    if (!audio || playbackEndRef.current === null) return;
+    if (audio.currentTime >= playbackEndRef.current) {
+      audio.pause();
+      playbackEndRef.current = null;
+      setPlayingSegmentKey(null);
+    }
+  };
 
   useEffect(() => {
     if (!id || interview?.lifecycle_state !== 'ended') return;
@@ -595,6 +682,21 @@ const InterviewResultPage: React.FC = () => {
   const hasTranscripts = hasRealtimeTranscript
     || hasOfflineTranscript
     || questionTranscripts.length > 0;
+  const recordingPlayer = playbackUrl ? (
+    <audio
+      ref={audioRef}
+      src={playbackUrl}
+      preload="metadata"
+      onLoadedMetadata={() => setPlaybackReady(true)}
+      onTimeUpdate={stopAtSegmentEnd}
+      onPause={() => setPlayingSegmentKey(null)}
+      onEnded={() => {
+        playbackEndRef.current = null;
+        setPlayingSegmentKey(null);
+      }}
+      style={{ display: 'none' }}
+    />
+  ) : null;
 
   if (interview.lifecycle_state === 'ended') {
     const isHr = user?.role === 'admin' || user?.role === 'hr';
@@ -617,6 +719,7 @@ const InterviewResultPage: React.FC = () => {
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {recordingPlayer}
         <Card>
           <Space style={{ justifyContent: 'space-between', width: '100%' }} wrap>
             <div>
@@ -772,6 +875,9 @@ const InterviewResultPage: React.FC = () => {
                 text={offlineInterviewText}
                 emptyText="离线转写尚未生成"
                 getSpeakerName={speakerName}
+                playbackReady={playbackReady}
+                playingSegmentKey={playingSegmentKey}
+                onTogglePlayback={toggleSegmentPlayback}
               />
             </div>
           </Card>
@@ -909,6 +1015,7 @@ const InterviewResultPage: React.FC = () => {
 
   return (
     <Card id="interview-result-content">
+      {recordingPlayer}
       {isPendingReview ? (
          // Pending review state
          <>
@@ -1024,6 +1131,9 @@ const InterviewResultPage: React.FC = () => {
               text={offlineInterviewText}
               emptyText="离线转写尚未生成"
               getSpeakerName={speakerName}
+              playbackReady={playbackReady}
+              playingSegmentKey={playingSegmentKey}
+              onTogglePlayback={toggleSegmentPlayback}
             />
           </div>
 

@@ -81,6 +81,7 @@ def test_interviewer_cannot_preview_candidate_email_before_interview_creation(
             "resume_id": str(test_resume.id),
             "position_id": str(test_position.id),
             "interview_time": "2026-08-01T10:00:00Z",
+            "interview_end_time": "2026-08-01T11:00:00Z",
             "interview_type": "phone",
         },
     )
@@ -106,6 +107,7 @@ class TestCreateInterviewRoute:
                 "position_id": str(test_position.id),
                 "interviewer": "主面试官",
                 "interview_time": "2024-12-15T10:00:00Z",
+                "interview_end_time": "2024-12-15T11:00:00Z",
                 "interview_location": "上海办公室",
                 "meeting_link": "https://meeting.example.com/interview",
                 "panel_members": []
@@ -146,6 +148,7 @@ class TestCreateInterviewRoute:
                 "resume_id": str(test_resume.id),
                 "position_id": str(test_position.id),
                 "interview_time": "2024-12-15T10:00:00Z",
+                "interview_end_time": "2024-12-15T11:00:00Z",
                 "interview_location": "上海办公室",
                 "meeting_link": "https://meeting.example.com/interview"
             },
@@ -591,7 +594,8 @@ class TestUpdateInterviewRoute:
             f"/api/interviews/{test_interview.id}",
             json={
                 "interviewer": "新面试官",
-                "interview_time": "2024-12-20T14:00:00Z"
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z"
             },
             headers=auth_headers
         )
@@ -615,6 +619,7 @@ class TestUpdateInterviewRoute:
             json={
                 "panel_members": [str(test_user.id)],
                 "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z",
                 "interview_type": "video",
                 "meeting_link": "https://meeting.example.com/updated",
             },
@@ -648,6 +653,7 @@ class TestUpdateInterviewRoute:
             json={
                 "panel_members": [str(test_interviewer.id)],
                 "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z",
                 "interview_type": "phone",
             },
             headers=interviewer_auth_headers,
@@ -667,6 +673,7 @@ class TestUpdateInterviewRoute:
             json={
                 "panel_members": [str(test_user.id)],
                 "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z",
                 "interview_type": "phone",
             },
             headers=auth_headers,
@@ -687,6 +694,7 @@ class TestUpdateInterviewRoute:
             json={
                 "panel_members": [str(test_user.id)],
                 "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z",
                 "interview_type": "onsite",
                 "interview_location": "上海办公室",
             },
@@ -701,6 +709,8 @@ class TestUpdateInterviewRoute:
         assert data["removed"]["default_enabled"] is True
         assert f"/interviews/{test_interview.id}/score" in data["current"]["content"]
         assert "进入面试" in data["current"]["content"]
+        assert "原面试时间" in data["current"]["content"]
+        assert "新面试时间" in data["current"]["content"]
         assert f"/interviews/{test_interview.id}/score" not in data["removed"]["content"]
 
     def test_schedule_notification_returns_per_recipient_failures(
@@ -724,6 +734,7 @@ class TestUpdateInterviewRoute:
         schedule = {
             "panel_members": [str(test_user.id), str(test_interviewer.id)],
             "interview_time": "2024-12-20T14:00:00Z",
+            "interview_end_time": "2024-12-20T15:00:00Z",
             "interview_type": "phone",
         }
         preview = client.post(
@@ -778,6 +789,7 @@ class TestUpdateInterviewRoute:
         schedule = {
             "panel_members": [str(test_interviewer.id)],
             "interview_time": "2024-12-20T14:00:00Z",
+            "interview_end_time": "2024-12-20T15:00:00Z",
             "interview_type": "phone",
         }
         preview = client.post(
@@ -817,6 +829,7 @@ class TestUpdateInterviewRoute:
         schedule = {
             "panel_members": [str(test_interviewer.id)],
             "interview_time": "2024-12-20T14:00:00Z",
+            "interview_end_time": "2024-12-20T15:00:00Z",
             "interview_type": "phone",
         }
         preview = client.post(
@@ -851,6 +864,7 @@ class TestUpdateInterviewRoute:
             json={
                 "panel_members": [str(test_interviewer.id)],
                 "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z",
                 "interview_type": "phone",
             },
             headers=auth_headers,
@@ -1125,6 +1139,7 @@ class TestPermissionControl:
                 "resume_id": str(test_resume.id),
                 "position_id": str(test_position.id),
                 "interview_time": "2024-12-15T10:00:00Z",
+                "interview_end_time": "2024-12-15T11:00:00Z",
                 "interview_location": "上海办公室",
                 "meeting_link": "https://meeting.example.com/interview"
             },

@@ -1,16 +1,33 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Optional, List, Dict, Any, Union, Literal
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from app.models.models import InterviewStatus, InterviewResult
 from app.schemas.resume import ResumeResponse
 from app.schemas.position import PositionResponse
+
+
+CHINA_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def validate_interview_time_range(start: datetime, end: datetime) -> None:
+    """Validate the user-facing Beijing-time interview slot."""
+    start_cn = start.replace(tzinfo=timezone.utc).astimezone(CHINA_TIMEZONE) if start.tzinfo is None else start.astimezone(CHINA_TIMEZONE)
+    end_cn = end.replace(tzinfo=timezone.utc).astimezone(CHINA_TIMEZONE) if end.tzinfo is None else end.astimezone(CHINA_TIMEZONE)
+    if end_cn <= start_cn:
+        raise ValueError("面试结束时间必须晚于开始时间")
+    if end_cn.date() != start_cn.date():
+        raise ValueError("面试开始和结束时间必须在同一天")
+    for value in (start_cn, end_cn):
+        if value.minute not in (0, 30) or value.second or value.microsecond:
+            raise ValueError("面试时间必须使用 30 分钟刻度")
 
 class InterviewBase(BaseModel):
     resume_id: UUID
     position_id: UUID
     interviewer: Optional[str] = None
     interview_time: Optional[datetime] = None
+    interview_end_time: Optional[datetime] = None
     panel_members: Optional[List[str]] = [] # List of user IDs for the panel (strings or UUIDs)
     round: Optional[int] = 1
     interview_type: Optional[str] = 'onsite'  # onsite, video, phone - 面试形式
@@ -20,6 +37,7 @@ class InterviewBase(BaseModel):
 
 class InterviewCreate(InterviewBase):
     interview_time: datetime
+    interview_end_time: datetime
     question_bank_ids: Optional[List[UUID]] = []
     question_count: Optional[int] = 5
     skip_ai_questions: Optional[bool] = False
@@ -27,6 +45,7 @@ class InterviewCreate(InterviewBase):
 
     @model_validator(mode="after")
     def validate_scheduling_details(self):
+        validate_interview_time_range(self.interview_time, self.interview_end_time)
         if self.interview_type == "onsite" and not (self.interview_location or "").strip():
             raise ValueError("现场面试必须填写面试地点")
         if self.interview_type == "video" and not (self.meeting_link or "").strip():
@@ -36,21 +55,32 @@ class InterviewCreate(InterviewBase):
 class InterviewUpdate(BaseModel):
     interviewer: Optional[str] = None
     interview_time: Optional[datetime] = None
+    interview_end_time: Optional[datetime] = None
     status: Optional[InterviewStatus] = None
     result: Optional[InterviewResult] = None
     evaluation: Optional[str] = None
     suggestion: Optional[str] = None
 
+    @model_validator(mode="after")
+    def validate_optional_time_range(self):
+        if (self.interview_time is None) != (self.interview_end_time is None):
+            raise ValueError("修改面试时间时必须同时提供开始和结束时间")
+        if self.interview_time is not None and self.interview_end_time is not None:
+            validate_interview_time_range(self.interview_time, self.interview_end_time)
+        return self
+
 
 class InterviewScheduleUpdate(BaseModel):
     panel_members: List[UUID] = Field(min_length=1)
     interview_time: datetime
+    interview_end_time: datetime
     interview_type: Literal["onsite", "video", "phone"]
     interview_location: Optional[str] = None
     meeting_link: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_scheduling_details(self):
+        validate_interview_time_range(self.interview_time, self.interview_end_time)
         if len(set(self.panel_members)) != len(self.panel_members):
             raise ValueError("面试官不能重复")
         if self.interview_type == "onsite" and not (self.interview_location or "").strip():
@@ -134,6 +164,7 @@ class InterviewResponse(InterviewBase):
 
 class InterviewDetailResponse(InterviewResponse):
     transcripts: Optional[Dict[str, Any]] = None
+    audio_records: Optional[Dict[str, Any]] = None
 
 
 class RecordingSessionResponse(BaseModel):

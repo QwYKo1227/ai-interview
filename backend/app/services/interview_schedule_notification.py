@@ -25,6 +25,7 @@ def _schedule_snapshot(
     *,
     panel_members,
     interview_time: datetime,
+    interview_end_time: datetime | None,
     interview_type: str,
     interview_location: str | None,
     meeting_link: str | None,
@@ -32,6 +33,7 @@ def _schedule_snapshot(
     return {
         "panel_members": sorted(str(member_id) for member_id in panel_members),
         "interview_time": _utc_iso(interview_time),
+        "interview_end_time": _utc_iso(interview_end_time) if interview_end_time else None,
         "interview_type": interview_type,
         "interview_location": (interview_location or "").strip(),
         "meeting_link": (meeting_link or "").strip(),
@@ -42,6 +44,7 @@ def _proposed_snapshot(schedule: InterviewScheduleUpdate) -> dict:
     return _schedule_snapshot(
         panel_members=schedule.panel_members,
         interview_time=schedule.interview_time,
+        interview_end_time=schedule.interview_end_time,
         interview_type=schedule.interview_type,
         interview_location=schedule.interview_location,
         meeting_link=schedule.meeting_link,
@@ -52,6 +55,7 @@ def _current_snapshot(interview: Interview) -> dict:
     return _schedule_snapshot(
         panel_members=interview.panel_members or [],
         interview_time=interview.interview_time,
+        interview_end_time=interview.interview_end_time,
         interview_type=interview.interview_type,
         interview_location=interview.interview_location,
         meeting_link=interview.meeting_link,

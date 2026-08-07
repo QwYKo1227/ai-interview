@@ -306,6 +306,7 @@ class Interview(TenantScopedMixin, Base):
     interviewer = Column(String) # Keep for backward compatibility or display name
     round = Column(Integer, default=1) # Interview round
     interview_time = Column(DateTime(timezone=True))
+    interview_end_time = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True) # 面试实际开始时间
     interview_type = Column(String, default="onsite")  # onsite, video, phone - 面试形式
     interview_category = Column(String, default="technical")  # hr, technical, manager, ceo, comprehensive - 面试类型

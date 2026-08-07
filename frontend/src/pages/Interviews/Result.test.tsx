@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import InterviewResultPage, { mergeAdjacentTranscriptSegments } from './Result'
@@ -137,6 +137,39 @@ describe('InterviewResultPage', () => {
           & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy()
     })
+  })
+
+  it('plays an offline transcript segment and stops at its end time', async () => {
+    vi.mocked(request.get).mockResolvedValue({
+      ...interviewPayload,
+      audio_records: {
+        full_interview: '/api/files/11111111-1111-1111-1111-111111111111',
+      },
+    })
+    vi.mocked(request.post).mockResolvedValue({
+      url: '/api/public/files/playback-token',
+    })
+
+    const view = renderResult()
+
+    await waitFor(() => expect(request.post).toHaveBeenCalledWith(
+      '/files/11111111-1111-1111-1111-111111111111/public-token',
+      { ttl_seconds: 3600 },
+    ))
+    const audio = view.container.querySelector('audio') as HTMLAudioElement
+    audio.play = vi.fn().mockResolvedValue(undefined)
+    audio.pause = vi.fn()
+    fireEvent.loadedMetadata(audio)
+
+    const playButton = await screen.findByRole('button', { name: '播放 00:00–00:04' })
+    fireEvent.click(playButton)
+
+    await waitFor(() => expect(audio.play).toHaveBeenCalledOnce())
+    expect(audio.currentTime).toBe(0)
+
+    audio.currentTime = 4.2
+    fireEvent.timeUpdate(audio)
+    expect(audio.pause).toHaveBeenCalledOnce()
   })
 
   it('uses a compact human review form and displays interviewer names', async () => {

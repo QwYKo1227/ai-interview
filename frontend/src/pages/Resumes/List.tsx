@@ -15,6 +15,12 @@ import {
   getResumeFileValidationError,
   MAX_RESUME_FILE_SIZE_MB,
 } from './uploadRequest';
+import {
+  buildInterviewTimePayload,
+  defaultInterviewEnd,
+  getScheduleErrorMessage,
+  validateInterviewTimeRange,
+} from '../Interviews/interviewSchedule';
 
 const { Title, Text } = Typography;
 
@@ -113,7 +119,7 @@ const DuplicateResumePopover: React.FC<{
         `/resumes/${resume.id}/duplicates`,
       ) as DuplicateResumeSummary[];
       setDuplicates(result);
-    } catch {
+    } catch (error) {
       setLoadError(true);
     } finally {
       setLoading(false);
@@ -288,7 +294,7 @@ const ResumesList: React.FC = () => {
     try {
       const res = await request.get('/positions');
       setPositions(res);
-    } catch {
+    } catch (error) {
       console.error('获取岗位列表失败');
     }
   }, []);
@@ -384,7 +390,7 @@ const ResumesList: React.FC = () => {
         position_id: interviewRecord.position_id,
         interviewer: '面试小组',
         panel_members: values.panel_members,
-        interview_time: values.interview_time ? values.interview_time.toISOString() : new Date().toISOString(),
+        ...buildInterviewTimePayload(values),
         question_bank_ids: values.question_bank_ids,
         question_count: values.question_count,
         round: values.round || 1,
@@ -403,7 +409,8 @@ const ResumesList: React.FC = () => {
         const emailPreview = await request.post('/interviews/email-preview', {
           resume_id: interviewRecord.id,
           position_id: interviewRecord.position_id,
-          interview_time: values.interview_time ? values.interview_time.toISOString() : null,
+          panel_members: values.panel_members,
+          ...buildInterviewTimePayload(values),
           round: values.round || 1,
           interview_type: values.interview_type || 'onsite',
           interview_category: values.interview_category || 'technical',
@@ -429,8 +436,8 @@ const ResumesList: React.FC = () => {
         message.success('面试安排成功');
         navigate(`/interviews/${res.id}/score`);
       }
-    } catch {
-      message.error('安排面试失败');
+    } catch (error) {
+      message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
       setSubmitting(false);
     }
@@ -464,8 +471,8 @@ const ResumesList: React.FC = () => {
 
       setEmailPreviewVisible(false);
       navigate(`/interviews/${res.id}/score`);
-    } catch {
-      message.error('安排面试失败');
+    } catch (error) {
+      message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
       setSendingEmail(false);
     }
@@ -1073,13 +1080,42 @@ const ResumesList: React.FC = () => {
             </Select>
           </Form.Item>
 
-          <Form.Item
-            name="interview_time"
-            label="面试时间"
-            rules={[{ required: true, message: '请选择面试时间' }]}
-          >
-            <DatePicker showTime style={{ width: '100%' }} size="large" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="interview_time" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
+                <DatePicker
+                  showTime={{ format: 'HH:mm', minuteStep: 30 }}
+                  format="YYYY-MM-DD HH:mm"
+                  style={{ width: '100%' }}
+                  size="large"
+                  onChange={(value) => {
+                    const currentEnd = interviewForm.getFieldValue('interview_end_time');
+                    if (value && (!currentEnd || !currentEnd.isAfter(value))) {
+                      interviewForm.setFieldValue('interview_end_time', defaultInterviewEnd(value));
+                    }
+                  }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="interview_end_time"
+                label="结束时间"
+                dependencies={['interview_time']}
+                rules={[
+                  { required: true, message: '请选择结束时间' },
+                  ({ getFieldValue }) => ({
+                    validator: (_, value) => {
+                      const error = validateInterviewTimeRange(getFieldValue('interview_time'), value);
+                      return error ? Promise.reject(new Error(error)) : Promise.resolve();
+                    },
+                  }),
+                ]}
+              >
+                <DatePicker showTime={{ format: 'HH:mm', minuteStep: 30 }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} size="large" />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item
             noStyle

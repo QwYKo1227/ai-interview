@@ -16,6 +16,12 @@ import {
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import request from '../utils/request';
+import {
+  buildInterviewTimePayload,
+  defaultInterviewEnd,
+  getScheduleErrorMessage,
+  validateInterviewTimeRange,
+} from '../pages/Interviews/interviewSchedule';
 
 const { Text } = Typography;
 
@@ -127,7 +133,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
         position_id: resume.position_id,
         interviewer: '面试小组',
         panel_members: values.panel_members,
-        interview_time: values.interview_time.toISOString(),
+        ...buildInterviewTimePayload(values),
         question_bank_ids: values.question_bank_ids,
         question_count: values.question_count,
         round: values.round || 1,
@@ -143,7 +149,8 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
         const emailPreview = await request.post('/interviews/email-preview', {
           resume_id: resume.id,
           position_id: resume.position_id,
-          interview_time: values.interview_time.toISOString(),
+          panel_members: values.panel_members,
+          ...buildInterviewTimePayload(values),
           round: values.round || 1,
           interview_type: values.interview_type || 'onsite',
           interview_category: values.interview_category || 'technical',
@@ -170,7 +177,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
       }
     } catch (error) {
       if (error && typeof error === 'object' && 'errorFields' in error) return;
-      message.error('安排面试失败');
+      message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
       setSubmitting(false);
     }
@@ -204,7 +211,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
       navigate(`/interviews/${result.id}/score`);
     } catch (error) {
       if (error && typeof error === 'object' && 'errorFields' in error) return;
-      message.error('安排面试失败');
+      message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
       setSendingEmail(false);
     }
@@ -292,9 +299,42 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
             </Select>
           </Form.Item>
 
-          <Form.Item name="interview_time" label="面试时间" rules={[{ required: true, message: '请选择面试时间' }]}>
-            <DatePicker showTime style={{ width: '100%' }} size="large" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="interview_time" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
+                <DatePicker
+                  showTime={{ format: 'HH:mm', minuteStep: 30 }}
+                  format="YYYY-MM-DD HH:mm"
+                  style={{ width: '100%' }}
+                  size="large"
+                  onChange={(value) => {
+                    const currentEnd = interviewForm.getFieldValue('interview_end_time');
+                    if (value && (!currentEnd || !currentEnd.isAfter(value))) {
+                      interviewForm.setFieldValue('interview_end_time', defaultInterviewEnd(value));
+                    }
+                  }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="interview_end_time"
+                label="结束时间"
+                dependencies={['interview_time']}
+                rules={[
+                  { required: true, message: '请选择结束时间' },
+                  ({ getFieldValue }) => ({
+                    validator: (_, value) => {
+                      const error = validateInterviewTimeRange(getFieldValue('interview_time'), value);
+                      return error ? Promise.reject(new Error(error)) : Promise.resolve();
+                    },
+                  }),
+                ]}
+              >
+                <DatePicker showTime={{ format: 'HH:mm', minuteStep: 30 }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} size="large" />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item noStyle shouldUpdate={(previous, current) => previous.interview_type !== current.interview_type}>
             {({ getFieldValue }) => {

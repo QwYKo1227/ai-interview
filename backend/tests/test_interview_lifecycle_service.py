@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -27,6 +28,28 @@ from app.services.interview_lifecycle_monitor import (
     release_expired_recording_reservations_for_tenant,
 )
 from app.services.resume_interview_status import mark_legacy_interview_completed
+
+
+def test_remux_seekable_webm_replaces_source_atomically(tmp_path, monkeypatch):
+    source = tmp_path / "recording.webm"
+    source.write_bytes(b"raw-webm")
+    captured = {}
+
+    monkeypatch.setattr(interview_lifecycle_service.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        Path(command[-1]).write_bytes(b"seekable-webm")
+
+    monkeypatch.setattr(interview_lifecycle_service.subprocess, "run", fake_run)
+
+    interview_lifecycle_service.remux_seekable_webm(source)
+
+    assert source.read_bytes() == b"seekable-webm"
+    assert captured["command"][captured["command"].index("-c:a") + 1] == "copy"
+    assert captured["kwargs"]["check"] is True
+    assert not list(tmp_path.glob("*.seekable.webm"))
 
 
 def test_recording_reservation_only_starts_interview_after_confirmation(

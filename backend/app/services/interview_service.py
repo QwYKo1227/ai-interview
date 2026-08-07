@@ -252,6 +252,94 @@ def _normalize_dt_utc(dt):
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
+
+def _interview_member_ids(interview: Interview) -> set[UUID]:
+    values = list(interview.panel_members or [])
+    values.extend(panel.interviewer_id for panel in (interview.panels or []))
+    if interview.interviewer_id:
+        values.append(interview.interviewer_id)
+    result = set()
+    for value in values:
+        try:
+            result.add(value if isinstance(value, UUID) else UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _effective_interview_end(interview: Interview) -> datetime | None:
+    start = _normalize_dt_utc(interview.interview_time)
+    if start is None:
+        return None
+    return _normalize_dt_utc(interview.interview_end_time) or start + timedelta(hours=1)
+
+
+def _is_active_schedule(interview: Interview) -> bool:
+    lifecycle = interview.lifecycle_state or ""
+    status_value = getattr(interview.status, "value", interview.status)
+    if lifecycle in {"cancelled", "ending", "ended"}:
+        return False
+    if lifecycle in {"scheduled", "in_progress"}:
+        return True
+    return status_value in {"scheduled", "in_progress"}
+
+
+def require_schedule_available(
+    db: Session,
+    *,
+    tenant_id: UUID,
+    resume_id: UUID,
+    panel_member_ids: list[UUID],
+    start: datetime,
+    end: datetime,
+    exclude_interview_id: UUID | None = None,
+) -> None:
+    proposed_start = _normalize_dt_utc(start)
+    proposed_end = _normalize_dt_utc(end)
+    proposed_members = set(panel_member_ids)
+    conflicts = []
+    existing_interviews = db.query(Interview).options(
+        joinedload(Interview.resume),
+        joinedload(Interview.position),
+        joinedload(Interview.panels),
+    ).filter(Interview.tenant_id == tenant_id).all()
+
+    for existing in existing_interviews:
+        if existing.id == exclude_interview_id or not _is_active_schedule(existing):
+            continue
+        existing_start = _normalize_dt_utc(existing.interview_time)
+        existing_end = _effective_interview_end(existing)
+        if existing_start is None or existing_end is None:
+            continue
+        if proposed_start >= existing_end or proposed_end <= existing_start:
+            continue
+
+        reasons = []
+        if existing.resume_id == resume_id:
+            reasons.append("候选人")
+        shared_members = proposed_members & _interview_member_ids(existing)
+        if shared_members:
+            reasons.append("面试官")
+        if not reasons:
+            continue
+        conflicts.append({
+            "id": str(existing.id),
+            "candidate_name": existing.resume.candidate_name if existing.resume else "候选人",
+            "position_title": existing.position.title if existing.position else "岗位",
+            "interview_time": existing_start.isoformat(),
+            "interview_end_time": existing_end.isoformat(),
+            "reasons": reasons,
+        })
+
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "面试时间冲突，请调整候选人或面试官的安排",
+                "conflicts": conflicts,
+            },
+        )
+
 @background_task_context
 def generate_questions_background(tenant_id: UUID, interview_id: UUID, question_bank_ids: list, question_count: int, interview_category: str = 'technical'):
     with tenant_session(tenant_id) as db:
@@ -345,12 +433,22 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
 
     interview_category = interview.interview_category or 'technical'
 
+    require_schedule_available(
+        db,
+        tenant_id=resume.tenant_id,
+        resume_id=interview.resume_id,
+        panel_member_ids=panel_member_ids,
+        start=interview.interview_time,
+        end=interview.interview_end_time,
+    )
+
     db_interview = Interview(
         tenant_id=resume.tenant_id,
         resume_id=interview.resume_id,
         position_id=interview.position_id,
         interviewer=interview.interviewer,
         interview_time=_normalize_dt_utc(interview.interview_time),
+        interview_end_time=_normalize_dt_utc(interview.interview_end_time),
         questions=None if not interview.skip_ai_questions else [], # None means generating, [] means skipped
         status=InterviewStatus.SCHEDULED,
         panel_members=[str(member_id) for member_id in panel_member_ids],
@@ -537,16 +635,49 @@ def export_interview_result(db: Session, interview_id: UUID, format: str = "mark
         
     return content
 
-def get_interviews(db: Session, skip: int = 0, limit: int = 100, status: str = None):
+def _matches_date_range(interview: Interview, range_start: datetime | None, range_end: datetime | None) -> bool:
+    interview_start = _normalize_dt_utc(interview.interview_time)
+    interview_end = _effective_interview_end(interview)
+    if interview_start is None or interview_end is None:
+        return False if (range_start or range_end) else True
+    normalized_start = _normalize_dt_utc(range_start)
+    normalized_end = _normalize_dt_utc(range_end)
+    return (normalized_start is None or interview_end > normalized_start) and (
+        normalized_end is None or interview_start < normalized_end
+    )
+
+
+def get_interviews(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    status: str = None,
+    range_start: datetime | None = None,
+    range_end: datetime | None = None,
+):
     query = db.query(Interview).options(
         joinedload(Interview.resume),
-        joinedload(Interview.position)
+        joinedload(Interview.position),
+        joinedload(Interview.panels),
     )
     if status:
         query = query.filter(Interview.status == status)
-    return query.offset(skip).limit(limit).all()
+    if range_start is None and range_end is None:
+        return query.order_by(Interview.interview_time.asc()).offset(skip).limit(limit).all()
+    if range_end:
+        query = query.filter(Interview.interview_time < _normalize_dt_utc(range_end))
+    interviews = query.order_by(Interview.interview_time.asc()).all()
+    filtered = [item for item in interviews if _matches_date_range(item, range_start, range_end)]
+    return filtered[skip: skip + limit]
 
-def get_interviews_for_interviewer(db: Session, interviewer_id: UUID, skip: int = 0, limit: int = 100):
+def get_interviews_for_interviewer(
+    db: Session,
+    interviewer_id: UUID,
+    skip: int = 0,
+    limit: int = 100,
+    range_start: datetime | None = None,
+    range_end: datetime | None = None,
+):
     """
     Fetch interviews where the user is a panel member.
     Since panel_members is a JSON column storing a list of IDs, we need to filter in memory 
@@ -557,14 +688,15 @@ def get_interviews_for_interviewer(db: Session, interviewer_id: UUID, skip: int 
     # Optimization: Filter by status if needed, but here we want all.
     all_interviews = db.query(Interview).options(
         joinedload(Interview.resume),
-        joinedload(Interview.position)
-    ).all()
+        joinedload(Interview.position),
+        joinedload(Interview.panels),
+    ).order_by(Interview.interview_time.asc()).all()
     
     filtered = []
     str_id = str(interviewer_id)
     
     for interview in all_interviews:
-        if interview.panel_members and str_id in [str(m) for m in interview.panel_members]:
+        if str_id in {str(member_id) for member_id in _interview_member_ids(interview)} and _matches_date_range(interview, range_start, range_end):
             filtered.append(interview)
             
     # Apply skip/limit
@@ -582,9 +714,19 @@ def update_interview(db: Session, interview_id: UUID, interview: InterviewUpdate
     if not db_interview:
         return None
     
-    update_data = interview.dict(exclude_unset=True)
+    update_data = interview.model_dump(exclude_unset=True)
+    if interview.interview_time is not None and interview.interview_end_time is not None:
+        require_schedule_available(
+            db,
+            tenant_id=db_interview.tenant_id,
+            resume_id=db_interview.resume_id,
+            panel_member_ids=list(_interview_member_ids(db_interview)),
+            start=interview.interview_time,
+            end=interview.interview_end_time,
+            exclude_interview_id=db_interview.id,
+        )
     for key, value in update_data.items():
-        if key == "interview_time":
+        if key in {"interview_time", "interview_end_time"}:
             value = _normalize_dt_utc(value)
         setattr(db_interview, key, value)
     
@@ -616,6 +758,16 @@ def update_interview_schedule(
     if missing_ids:
         raise HTTPException(status_code=422, detail="面试官不存在、已停用或不可分配")
 
+    require_schedule_available(
+        db,
+        tenant_id=db_interview.tenant_id,
+        resume_id=db_interview.resume_id,
+        panel_member_ids=member_ids,
+        start=schedule.interview_time,
+        end=schedule.interview_end_time,
+        exclude_interview_id=db_interview.id,
+    )
+
     new_member_set = set(member_ids)
     existing_panels = {
         panel.interviewer_id: panel
@@ -636,6 +788,7 @@ def update_interview_schedule(
     db_interview.panel_members = [str(member_id) for member_id in member_ids]
     db_interview.interviewer = "面试小组"
     db_interview.interview_time = _normalize_dt_utc(schedule.interview_time)
+    db_interview.interview_end_time = _normalize_dt_utc(schedule.interview_end_time)
     db_interview.interview_type = schedule.interview_type
     db_interview.interview_location = (
         schedule.interview_location.strip()

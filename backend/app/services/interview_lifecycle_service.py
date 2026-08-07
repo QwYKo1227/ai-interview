@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from uuid import UUID, uuid4
 
@@ -83,6 +86,36 @@ def as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def remux_seekable_webm(path: Path) -> None:
+    """Rewrite a MediaRecorder WebM with duration/cues so browsers can seek it."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is required to finalize interview recordings")
+    output = path.with_name(f"{path.stem}.seekable{path.suffix}")
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-i", str(path),
+                "-map", "0:a:0",
+                "-c:a", "copy",
+                "-map_metadata", "-1",
+                str(output),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=600,
+        )
+        if not output.is_file() or output.stat().st_size == 0:
+            raise RuntimeError("ffmpeg produced an empty interview recording")
+        output.replace(path)
+    finally:
+        output.unlink(missing_ok=True)
 
 
 def _role_value(user: User) -> str:
@@ -384,6 +417,8 @@ def seal_recording(db: Session, interview_id: UUID, session_id: UUID, user: User
             resource_id=interview.id,
             max_size=MAX_RECORDING_SIZE,
         )
+        remux_seekable_webm(stored_file_path(stored))
+        stored.size = stored_file_path(stored).stat().st_size
         db.add(stored)
         locations = stage_file_deletions(db, records)
         interview.audio_records = {**(interview.audio_records or {}), "full_interview": f"/api/files/{stored.id}"}

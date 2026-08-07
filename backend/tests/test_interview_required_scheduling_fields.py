@@ -13,6 +13,7 @@ def test_interview_create_requires_interview_time():
         "resume_id": uuid4(),
         "position_id": uuid4(),
         "interview_time": datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
+        "interview_end_time": datetime(2026, 8, 1, 11, 0, tzinfo=timezone.utc),
         "interview_type": "onsite",
         "interview_location": "上海办公室",
     }
@@ -33,6 +34,7 @@ def test_interview_create_requires_details_for_selected_type(
         "resume_id": uuid4(),
         "position_id": uuid4(),
         "interview_time": datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
+        "interview_end_time": datetime(2026, 8, 1, 11, 0, tzinfo=timezone.utc),
         "interview_type": interview_type,
         "interview_location": "上海办公室",
         "meeting_link": "https://meeting.example.com/interview",
@@ -54,6 +56,7 @@ def test_email_preview_requires_details_for_selected_type(
         "resume_id": uuid4(),
         "position_id": uuid4(),
         "interview_time": "2026-08-01T10:00:00+08:00",
+        "interview_end_time": "2026-08-01T11:00:00+08:00",
         "interview_type": interview_type,
         "interview_location": "上海办公室",
         "meeting_link": "https://meeting.example.com/interview",
@@ -87,11 +90,15 @@ def test_required_detail_rejects_empty_values(
             "interview_time": datetime(
                 2026, 8, 1, 10, 0, tzinfo=timezone.utc
             ),
+            "interview_end_time": datetime(
+                2026, 8, 1, 11, 0, tzinfo=timezone.utc
+            ),
         })
     with pytest.raises(ValidationError):
         EmailPreviewRequest.model_validate({
             **common,
             "interview_time": "2026-08-01T10:00:00+08:00",
+            "interview_end_time": "2026-08-01T11:00:00+08:00",
         })
 
 
@@ -110,8 +117,29 @@ def test_scheduling_fields_accept_values_required_by_type(interview_type):
     InterviewCreate.model_validate({
         **common,
         "interview_time": datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
+        "interview_end_time": datetime(2026, 8, 1, 11, 0, tzinfo=timezone.utc),
     })
     EmailPreviewRequest.model_validate({
         **common,
         "interview_time": "2026-08-01T10:00:00+08:00",
+        "interview_end_time": "2026-08-01T11:00:00+08:00",
     })
+
+
+@pytest.mark.parametrize(
+    ("end_time", "message"),
+    [
+        ("2026-08-01T10:00:00+08:00", "晚于"),
+        ("2026-08-02T10:00:00+08:00", "同一天"),
+        ("2026-08-01T10:45:00+08:00", "30 分钟"),
+    ],
+)
+def test_interview_create_validates_beijing_time_range(end_time, message):
+    with pytest.raises(ValidationError, match=message):
+        InterviewCreate.model_validate({
+            "resume_id": uuid4(),
+            "position_id": uuid4(),
+            "interview_time": "2026-08-01T10:00:00+08:00",
+            "interview_end_time": end_time,
+            "interview_type": "phone",
+        })

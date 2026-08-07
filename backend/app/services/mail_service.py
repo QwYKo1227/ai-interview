@@ -44,6 +44,26 @@ def format_interview_time(interview_time: Optional[datetime]) -> str:
     return interview_time.astimezone(CHINA_TIMEZONE).strftime("%Y年%m月%d日 %H:%M")
 
 
+def format_interview_time_range(
+    interview_time: Optional[datetime],
+    interview_end_time: Optional[datetime],
+) -> str:
+    """Format an interview range in Beijing time, using one hour for legacy rows."""
+    if not interview_time:
+        return "待定"
+    if interview_time.tzinfo is None:
+        interview_time = interview_time.replace(tzinfo=timezone.utc)
+    start_cn = interview_time.astimezone(CHINA_TIMEZONE)
+    if interview_end_time is None:
+        interview_end_time = interview_time + timedelta(hours=1)
+    elif interview_end_time.tzinfo is None:
+        interview_end_time = interview_end_time.replace(tzinfo=timezone.utc)
+    end_cn = interview_end_time.astimezone(CHINA_TIMEZONE)
+    if start_cn.date() == end_cn.date():
+        return f"{start_cn:%Y年%m月%d日 %H:%M}–{end_cn:%H:%M}"
+    return f"{start_cn:%Y年%m月%d日 %H:%M}–{end_cn:%Y年%m月%d日 %H:%M}"
+
+
 class EmailConfig:
     """邮件配置类"""
     def __init__(self, db: Session):
@@ -217,6 +237,7 @@ class MailService:
         candidate_name: str,
         position_title: str,
         interview_time: datetime,
+        interview_end_time: datetime = None,
         interview_round: int = 1,
         interview_type: str = "现场面试",
         interview_location: str = None,
@@ -245,7 +266,7 @@ class MailService:
         Returns:
             bool: 发送是否成功
         """
-        time_str = format_interview_time(interview_time)
+        time_str = format_interview_time_range(interview_time, interview_end_time)
 
         context = {
             "candidate_name": candidate_name,
@@ -274,6 +295,7 @@ class MailService:
         candidate_name: str = None,
         position_title: str = None,
         interview_time: datetime = None,
+        interview_end_time: datetime = None,
         interview_round: int = 1,
         reminder_type: str = "1小时",
         interview_location: str = None,
@@ -300,7 +322,7 @@ class MailService:
         Returns:
             bool: 发送是否成功
         """
-        time_str = interview_time.strftime('%Y年%m月%d日 %H:%M') if interview_time else "待定"
+        time_str = format_interview_time_range(interview_time, interview_end_time)
 
         context = {
             "recipient_name": recipient_name,
@@ -488,6 +510,7 @@ class MailService:
                 candidate_name=resume.candidate_name or "候选人",
                 position_title=position.title,
                 interview_time=interview.interview_time,
+                interview_end_time=interview.interview_end_time,
                 interview_round=interview.round or 1,
                 interview_type=interview_type_text,
                 interview_location=interview_location,
@@ -516,7 +539,7 @@ class MailService:
         context = {
             "candidate_name": resume.candidate_name or "候选人",
             "position_title": position.title,
-            "interview_time": format_interview_time(interview.interview_time),
+            "interview_time": format_interview_time_range(interview.interview_time, interview.interview_end_time),
             "cancel_reason": interview.cancel_reason or "未填写",
             "round": interview.round or 1,
         }

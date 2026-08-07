@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import timedelta
 from uuid import uuid4
 
@@ -16,10 +17,14 @@ from app.services.interview_lifecycle_service import (
     append_recording_chunk,
     enforce_analysis_contract,
     force_end_interview,
+    persist_realtime_transcript,
     reserve_recording,
     submit_human_review,
     process_asr_job,
     utcnow,
+)
+from app.services.interview_lifecycle_monitor import (
+    release_expired_recording_reservations_for_tenant,
 )
 from app.services.resume_interview_status import mark_legacy_interview_completed
 
@@ -45,6 +50,41 @@ def test_recording_reservation_only_starts_interview_after_confirmation(
     assert started.lifecycle_state == "in_progress"
     assert started.started_at is not None
     assert started.resume.status.value == "interview_in_progress"
+
+
+def test_expired_recording_reservation_is_released(
+    db: Session,
+    test_interview,
+    test_interviewer,
+    monkeypatch,
+):
+    test_interview.lifecycle_state = "scheduled"
+    test_interview.recording_state = "reserved"
+    test_interview.recording_session_id = uuid4()
+    test_interview.recording_owner_id = test_interviewer.id
+    test_interview.recording_reservation_expires_at = utcnow() - timedelta(days=1)
+    test_interview.recording_heartbeat_at = utcnow() - timedelta(days=1)
+    db.commit()
+
+    @contextmanager
+    def test_tenant_session(_tenant_id):
+        yield db
+
+    monkeypatch.setattr(
+        "app.services.interview_lifecycle_monitor.tenant_session",
+        test_tenant_session,
+    )
+
+    released = release_expired_recording_reservations_for_tenant(test_interview.tenant_id)
+
+    db.refresh(test_interview)
+    assert released == 1
+    assert test_interview.lifecycle_state == "scheduled"
+    assert test_interview.recording_state == "idle"
+    assert test_interview.recording_session_id is None
+    assert test_interview.recording_owner_id is None
+    assert test_interview.recording_reservation_expires_at is None
+    assert test_interview.recording_heartbeat_at is None
 
 
 def test_recording_reservation_rejects_interview_before_scheduled_time(
@@ -160,6 +200,46 @@ def test_recording_chunks_cannot_exceed_total_recording_limit(
 
     assert error.value.status_code == 413
     assert cleaned == [staged.id]
+
+
+def test_realtime_transcript_segments_are_persisted_idempotently(
+    db: Session,
+    test_interview,
+    test_interviewer,
+):
+    session_id = uuid4()
+    test_interview.lifecycle_state = "in_progress"
+    test_interview.recording_state = "recording"
+    test_interview.recording_session_id = session_id
+    test_interview.recording_owner_id = test_interviewer.id
+    db.commit()
+
+    first = persist_realtime_transcript(
+        db,
+        test_interview.id,
+        session_id,
+        [{"id": "session-1:1", "text": "第一段", "speaker": "speaker_0"}],
+        test_interviewer,
+    )
+    repeated = persist_realtime_transcript(
+        db,
+        test_interview.id,
+        session_id,
+        [
+            {"id": "session-1:1", "text": "第一段", "speaker": "speaker_0"},
+            {"id": "session-1:2", "text": "第二段", "speaker": "speaker_1"},
+        ],
+        test_interviewer,
+    )
+
+    db.refresh(test_interview)
+    assert first == {"accepted": 1, "total": 1}
+    assert repeated == {"accepted": 1, "total": 2}
+    assert test_interview.transcripts["realtime_full_interview"] == "第一段\n第二段"
+    assert [
+        item["id"]
+        for item in test_interview.transcripts["realtime_full_interview_data"]["segments"]
+    ] == ["session-1:1", "session-1:2"]
 
 
 def test_admin_can_force_end_interview_without_recording_session(

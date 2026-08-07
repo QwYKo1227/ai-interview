@@ -149,6 +149,30 @@ class RecordingSessionRequest(BaseModel):
     session_id: UUID
 
 
+class RealtimeTranscriptSegment(BaseModel):
+    id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=4000)
+    speaker: Optional[Union[str, int]] = None
+    start: Optional[float] = Field(default=None, ge=0)
+    end: Optional[float] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def normalize_segment(self):
+        self.id = self.id.strip()
+        self.text = self.text.strip()
+        if not self.id or not self.text:
+            raise ValueError("Realtime transcript id and text cannot be blank")
+        if isinstance(self.speaker, str):
+            self.speaker = self.speaker.strip()[:100] or None
+        if self.start is not None and self.end is not None and self.end < self.start:
+            raise ValueError("Realtime transcript end cannot precede start")
+        return self
+
+
+class RealtimeTranscriptBatchRequest(RecordingSessionRequest):
+    segments: List[RealtimeTranscriptSegment] = Field(min_length=1, max_length=100)
+
+
 class EndInterviewRequest(RecordingSessionRequest):
     reason: Optional[str] = None
 

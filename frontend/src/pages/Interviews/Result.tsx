@@ -29,6 +29,7 @@ const decisionLabels: Record<string, string> = {
 };
 
 type TranscriptSegment = {
+  id?: string;
   start?: number;
   end?: number;
   text?: string;
@@ -50,6 +51,108 @@ const formatTranscriptTime = (seconds: unknown): string => {
   const minutes = Math.floor(roundedSeconds / 60);
   const remainder = roundedSeconds % 60;
   return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+};
+
+const joinTranscriptText = (left: string, right: string): string => {
+  if (!left) return right;
+  if (!right) return left;
+  const needsSpace = /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right);
+  return `${left}${needsSpace ? ' ' : ''}${right}`;
+};
+
+export const mergeAdjacentTranscriptSegments = (
+  segments: TranscriptSegment[],
+  maxGapSeconds = 1.5,
+): TranscriptSegment[] => {
+  const merged: TranscriptSegment[] = [];
+
+  segments.forEach((segment) => {
+    const text = transcriptText(segment);
+    if (!text) return;
+
+    const current = { ...segment, text };
+    const previous = merged[merged.length - 1];
+    const hasTimeline = typeof previous?.end === 'number' && typeof current.start === 'number';
+    const sameSpeaker = previous
+      && previous.speaker !== undefined
+      && previous.speaker !== null
+      && current.speaker !== undefined
+      && current.speaker !== null
+      && String(previous.speaker) === String(current.speaker);
+    const gap = hasTimeline ? current.start! - previous.end! : Number.POSITIVE_INFINITY;
+
+    if (previous && sameSpeaker && gap <= maxGapSeconds) {
+      previous.text = joinTranscriptText(previous.text || '', text);
+      if (typeof current.end === 'number') previous.end = current.end;
+      return;
+    }
+    merged.push(current);
+  });
+
+  return merged;
+};
+
+type TranscriptPaneProps = {
+  title: string;
+  subtitle: string;
+  badge: string;
+  accent: 'blue' | 'green';
+  segments: TranscriptSegment[];
+  text: string;
+  emptyText: string;
+  getSpeakerName: (speaker: string | number | undefined) => string;
+  maxHeight?: number;
+};
+
+const TranscriptPane: React.FC<TranscriptPaneProps> = ({
+  title,
+  subtitle,
+  badge,
+  accent,
+  segments,
+  text,
+  emptyText,
+  getSpeakerName,
+  maxHeight = 560,
+}) => {
+  const palette = accent === 'blue'
+    ? { border: '#BFDBFE', header: '#EFF6FF', tag: 'blue' }
+    : { border: '#BBF7D0', header: '#F0FDF4', tag: 'green' };
+
+  return (
+    <section style={{ minWidth: 0, border: `1px solid ${palette.border}`, borderRadius: 10, overflow: 'hidden', background: '#FFFFFF' }}>
+      <div style={{ padding: '12px 14px', background: palette.header, borderBottom: `1px solid ${palette.border}` }}>
+        <Space wrap size={8}>
+          <Text strong>{title}</Text>
+          <Tag color={palette.tag}>{badge}</Tag>
+        </Space>
+        <div><Text type="secondary" style={{ fontSize: 12 }}>{subtitle}</Text></div>
+      </div>
+      <div style={{ maxHeight, overflowY: 'auto', padding: segments.length > 0 ? '0 14px' : 14 }}>
+        {segments.length > 0 ? segments.map((segment, index) => {
+          const start = formatTranscriptTime(segment.start);
+          const end = formatTranscriptTime(segment.end);
+          const timeRange = start && end ? `${start}–${end}` : start;
+          const speaker = getSpeakerName(segment.speaker);
+          return (
+            <div key={segment.id || `${segment.start}-${index}`} style={{ padding: '12px 0', borderBottom: index === segments.length - 1 ? undefined : '1px solid #E2E8F0' }}>
+              {(timeRange || speaker) && (
+                <Space size={6} wrap style={{ marginBottom: 6 }}>
+                  {timeRange && <Text type="secondary" style={{ fontSize: 12 }}>{timeRange}</Text>}
+                  {speaker && <Tag style={{ marginInlineEnd: 0 }}>{speaker}</Tag>}
+                </Space>
+              )}
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.75, color: '#1E293B' }}>{transcriptText(segment)}</div>
+            </div>
+          );
+        }) : text ? (
+          <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.8, color: '#1E293B' }}>{text}</div>
+        ) : (
+          <Text type="secondary">{emptyText}</Text>
+        )}
+      </div>
+    </section>
+  );
 };
 
 const InterviewResultPage: React.FC = () => {
@@ -227,7 +330,9 @@ const InterviewResultPage: React.FC = () => {
   const openTranscriptCorrection = () => {
     const corrected = interview?.transcripts?.corrected_full_interview_data?.segments;
     const original = interview?.transcripts?.full_interview_data?.segments;
-    setCorrectedSegments((Array.isArray(corrected) ? corrected : original || []).map((segment: any) => ({ ...segment })));
+    setCorrectedSegments(mergeAdjacentTranscriptSegments(
+      (Array.isArray(corrected) ? corrected : original || []).map((segment: any) => ({ ...segment })),
+    ));
     setCorrectionOpen(true);
   };
 
@@ -422,14 +527,19 @@ const InterviewResultPage: React.FC = () => {
   const transcripts = interview.transcripts && typeof interview.transcripts === 'object'
     ? interview.transcripts as Record<string, unknown>
     : {};
-  const fullInterviewData = transcripts.full_interview_data;
-  const fullInterviewSegments = (
-    fullInterviewData
-    && typeof fullInterviewData === 'object'
-    && Array.isArray((fullInterviewData as { segments?: unknown }).segments)
-      ? (fullInterviewData as { segments: TranscriptSegment[] }).segments
+  const realtimeInterviewData = transcripts.realtime_full_interview_data;
+  const originalOfflineInterviewData = transcripts.full_interview_data;
+  const correctedOfflineInterviewData = transcripts.corrected_full_interview_data;
+  const displayedOfflineInterviewData = correctedOfflineInterviewData || originalOfflineInterviewData;
+  const segmentsFrom = (value: unknown): TranscriptSegment[] => (
+    value
+    && typeof value === 'object'
+    && Array.isArray((value as { segments?: unknown }).segments)
+      ? (value as { segments: TranscriptSegment[] }).segments
       : []
-  ).filter((segment) => transcriptText(segment));
+  );
+  const realtimeInterviewSegments = mergeAdjacentTranscriptSegments(segmentsFrom(realtimeInterviewData));
+  const offlineInterviewSegments = mergeAdjacentTranscriptSegments(segmentsFrom(displayedOfflineInterviewData));
   const speakerLabels = (
     transcripts.speaker_labels
     && typeof transcripts.speaker_labels === 'object'
@@ -438,29 +548,39 @@ const InterviewResultPage: React.FC = () => {
       : {}
   );
   const speakerIds = Array.from(new Set(
-    fullInterviewSegments
+    offlineInterviewSegments
       .map((segment) => segment.speaker)
       .filter((speaker): speaker is string | number => speaker !== undefined && speaker !== null)
       .map(String),
   ));
-  const speakerName = (speaker: string | number | undefined) => {
+  const defaultSpeakerName = (speaker: string | number | undefined) => {
     if (speaker === undefined || speaker === null) return '';
     const key = String(speaker);
-    if (speakerLabels[key]) return speakerLabels[key];
     const match = key.match(/(\d+)$/);
     return match ? `说话人 ${Number(match[1]) + 1}` : `说话人 ${key}`;
+  };
+  const speakerName = (speaker: string | number | undefined) => {
+    if (speaker === undefined || speaker === null) return '';
+    return speakerLabels[String(speaker)] || defaultSpeakerName(speaker);
   };
   const openSpeakerLabels = () => {
     setSpeakerLabelDraft(Object.fromEntries(speakerIds.map((speaker) => [speaker, speakerLabels[speaker] || ''])));
     setSpeakerLabelsOpen(true);
   };
-  const fullInterviewText = transcriptText(transcripts.full_interview)
-    || transcriptText(fullInterviewData);
+  const realtimeInterviewText = transcriptText(transcripts.realtime_full_interview)
+    || transcriptText(realtimeInterviewData);
+  const offlineInterviewText = transcriptText(displayedOfflineInterviewData)
+    || transcriptText(transcripts.full_interview);
+  const hasCorrectedOfflineTranscript = !!correctedOfflineInterviewData;
+  const hasRealtimeTranscript = realtimeInterviewSegments.length > 0 || !!realtimeInterviewText;
+  const hasOfflineTranscript = offlineInterviewSegments.length > 0 || !!offlineInterviewText;
   const questionTranscripts = Object.entries(transcripts)
     .filter(([key, value]) => (
       key !== 'full_interview'
       && key !== 'full_interview_data'
       && key !== 'corrected_full_interview_data'
+      && key !== 'realtime_full_interview'
+      && key !== 'realtime_full_interview_data'
       && key !== 'speaker_labels'
       && transcriptText(value)
     ))
@@ -472,8 +592,8 @@ const InterviewResultPage: React.FC = () => {
       }
       return left.localeCompare(right);
     });
-  const hasTranscripts = fullInterviewSegments.length > 0
-    || !!fullInterviewText
+  const hasTranscripts = hasRealtimeTranscript
+    || hasOfflineTranscript
     || questionTranscripts.length > 0;
 
   if (interview.lifecycle_state === 'ended') {
@@ -619,17 +739,41 @@ const InterviewResultPage: React.FC = () => {
         {hasTranscripts && (
           <Card
             title="面试过程记录"
-            extra={fullInterviewSegments.length > 0 ? (
+            extra={hasOfflineTranscript ? (
               <Space wrap>
                 {speakerIds.length > 0 && <Button onClick={openSpeakerLabels}>标注说话人</Button>}
-                {isHr && <Button onClick={openTranscriptCorrection}>校订转写并重新分析</Button>}
+                {isHr && offlineInterviewSegments.length > 0 && <Button onClick={openTranscriptCorrection}>校订转写并重新分析</Button>}
               </Space>
             ) : null}
           >
-            <List
-              dataSource={fullInterviewSegments.length ? fullInterviewSegments : [{ text: fullInterviewText }]}
-              renderItem={(segment: TranscriptSegment) => <List.Item><Space align="start"><Text type="secondary">{formatTranscriptTime(segment.start)}</Text>{speakerName(segment.speaker) && <Tag color="blue">{speakerName(segment.speaker)}</Tag>}<Text style={{ whiteSpace: 'pre-wrap' }}>{transcriptText(segment)}</Text></Space></List.Item>}
+            <Alert
+              type="info"
+              showIcon
+              message="实时稿与离线稿独立保留；校订只会生成新的离线校订版本，不会覆盖实时稿。"
+              style={{ marginBottom: 16 }}
             />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16, alignItems: 'start' }}>
+              <TranscriptPane
+                title="实时转写"
+                subtitle="面试过程中持续保存，用于还原现场记录"
+                badge="实时稿"
+                accent="blue"
+                segments={realtimeInterviewSegments}
+                text={realtimeInterviewText}
+                emptyText="本场面试没有保存实时转写"
+                getSpeakerName={defaultSpeakerName}
+              />
+              <TranscriptPane
+                title="离线转写"
+                subtitle="面试结束后由离线模型生成，用于校订与 AI 分析"
+                badge={hasCorrectedOfflineTranscript ? '已校订' : '离线稿'}
+                accent="green"
+                segments={offlineInterviewSegments}
+                text={offlineInterviewText}
+                emptyText="离线转写尚未生成"
+                getSpeakerName={speakerName}
+              />
+            </div>
           </Card>
         )}
 
@@ -706,20 +850,42 @@ const InterviewResultPage: React.FC = () => {
             options={reviewCandidates.filter((candidate) => !requiredIds.has(String(candidate.id))).map((candidate) => ({ value: String(candidate.id), label: candidate.full_name || candidate.email }))}
           />
         </Modal>
-        <Modal title="校订面试转写" width={760} open={correctionOpen} onOk={saveTranscriptCorrection} confirmLoading={savingCorrection} onCancel={() => setCorrectionOpen(false)} okText="保存并重新分析">
-          <Alert type="info" showIcon message="原始转写会永久保留；本次校订将创建新版本并重新生成 AI 分析。" style={{ marginBottom: 12 }} />
-          <div style={{ maxHeight: 520, overflowY: 'auto' }}>
-            {correctedSegments.map((segment, index) => (
-              <div key={`${segment.start}-${index}`} style={{ marginBottom: 12 }}>
-                <Text type="secondary">{formatTranscriptTime(segment.start)}–{formatTranscriptTime(segment.end)}</Text>
-                <TextArea
-                  rows={2}
-                  value={segment.text}
-                  onChange={(event) => setCorrectedSegments(correctedSegments.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))}
-                  style={{ marginTop: 4 }}
-                />
+        <Modal title="校订离线转写" width={1120} open={correctionOpen} onOk={saveTranscriptCorrection} confirmLoading={savingCorrection} onCancel={() => setCorrectionOpen(false)} okText="保存并重新分析">
+          <Alert type="info" showIcon message="左侧实时稿仅供对照；右侧修改会创建新的离线校订版本。实时稿和原始离线稿都会保留。" style={{ marginBottom: 12 }} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))', gap: 16, alignItems: 'start' }}>
+            <TranscriptPane
+              title="实时转写"
+              subtitle="只读对照，不参与本次修改"
+              badge="实时稿"
+              accent="blue"
+              segments={realtimeInterviewSegments}
+              text={realtimeInterviewText}
+              emptyText="本场面试没有保存实时转写"
+              getSpeakerName={defaultSpeakerName}
+              maxHeight={520}
+            />
+            <section style={{ minWidth: 0, border: '1px solid #BBF7D0', borderRadius: 10, overflow: 'hidden', background: '#FFFFFF' }}>
+              <div style={{ padding: '12px 14px', background: '#F0FDF4', borderBottom: '1px solid #BBF7D0' }}>
+                <Space wrap size={8}><Text strong>离线转写</Text><Tag color="green">可校订</Tag></Space>
+                <div><Text type="secondary" style={{ fontSize: 12 }}>按合并后的说话段落校订，保存后重新执行 AI 分析</Text></div>
               </div>
-            ))}
+              <div style={{ maxHeight: 520, overflowY: 'auto', padding: '0 14px' }}>
+                {correctedSegments.map((segment, index) => (
+                  <div key={`${segment.start}-${index}`} style={{ padding: '12px 0', borderBottom: index === correctedSegments.length - 1 ? undefined : '1px solid #E2E8F0' }}>
+                    <Space size={6} wrap>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{formatTranscriptTime(segment.start)}–{formatTranscriptTime(segment.end)}</Text>
+                      {speakerName(segment.speaker) && <Tag style={{ marginInlineEnd: 0 }}>{speakerName(segment.speaker)}</Tag>}
+                    </Space>
+                    <TextArea
+                      autoSize={{ minRows: 2, maxRows: 8 }}
+                      value={segment.text}
+                      onChange={(event) => setCorrectedSegments(correctedSegments.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))}
+                      style={{ marginTop: 6 }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
         </Modal>
         <Modal title="标注说话人" open={speakerLabelsOpen} onOk={saveSpeakerLabels} confirmLoading={savingSpeakerLabels} onCancel={() => setSpeakerLabelsOpen(false)} okText="保存标注">
@@ -838,38 +1004,33 @@ const InterviewResultPage: React.FC = () => {
       {hasTranscripts && (
         <>
           <Title level={4}>面试过程记录</Title>
-          {fullInterviewSegments.length > 0 ? (
-            <List
-              bordered
-              dataSource={fullInterviewSegments}
-              renderItem={(segment) => {
-                const start = formatTranscriptTime(segment.start);
-                const end = formatTranscriptTime(segment.end);
-                const timeRange = start && end ? `${start}–${end}` : start;
-                return (
-                  <List.Item>
-                    <div style={{ display: 'flex', gap: 12, width: '100%' }}>
-                      {timeRange && (
-                        <Text type="secondary" style={{ flexShrink: 0 }}>
-                          {timeRange}
-                        </Text>
-                      )}
-                      <Text style={{ whiteSpace: 'pre-wrap' }}>{transcriptText(segment)}</Text>
-                    </div>
-                  </List.Item>
-                );
-              }}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16, alignItems: 'start' }}>
+            <TranscriptPane
+              title="实时转写"
+              subtitle="面试过程中持续保存，用于还原现场记录"
+              badge="实时稿"
+              accent="blue"
+              segments={realtimeInterviewSegments}
+              text={realtimeInterviewText}
+              emptyText="本场面试没有保存实时转写"
+              getSpeakerName={defaultSpeakerName}
             />
-          ) : fullInterviewText ? (
-            <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.8, padding: 16, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8 }}>
-              {fullInterviewText}
-            </div>
-          ) : null}
+            <TranscriptPane
+              title="离线转写"
+              subtitle="面试结束后由离线模型生成，用于校订与 AI 分析"
+              badge={hasCorrectedOfflineTranscript ? '已校订' : '离线稿'}
+              accent="green"
+              segments={offlineInterviewSegments}
+              text={offlineInterviewText}
+              emptyText="离线转写尚未生成"
+              getSpeakerName={speakerName}
+            />
+          </div>
 
           {questionTranscripts.length > 0 && (
             <List
               bordered
-              style={{ marginTop: fullInterviewSegments.length > 0 || fullInterviewText ? 16 : 0 }}
+              style={{ marginTop: 16 }}
               dataSource={questionTranscripts}
               renderItem={([key, value]) => {
                 const questionIndex = Number(key);

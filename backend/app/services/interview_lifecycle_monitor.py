@@ -70,6 +70,28 @@ def recover_stale_recordings_for_tenant(tenant_id: UUID) -> list[UUID]:
     return analysis_ids
 
 
+def release_expired_recording_reservations_for_tenant(tenant_id: UUID) -> int:
+    """Release reservations that were never confirmed into a recording session."""
+    released = 0
+    now = utcnow()
+    with tenant_session(tenant_id) as db:
+        interviews = db.query(Interview).filter(
+            Interview.recording_state == "reserved",
+            Interview.recording_reservation_expires_at.isnot(None),
+            Interview.recording_reservation_expires_at <= now,
+        ).all()
+        for interview in interviews:
+            interview.recording_state = "idle"
+            interview.recording_session_id = None
+            interview.recording_owner_id = None
+            interview.recording_reservation_expires_at = None
+            interview.recording_heartbeat_at = None
+            released += 1
+        if released:
+            db.commit()
+    return released
+
+
 def purge_expired_recordings_for_tenant(tenant_id: UUID) -> int:
     purged = 0
     with tenant_session(tenant_id) as db:
@@ -128,6 +150,7 @@ def resume_asr_jobs_for_tenant(tenant_id: UUID) -> int:
 def run_lifecycle_maintenance_once() -> None:
     for tenant_id in _active_tenant_ids():
         try:
+            release_expired_recording_reservations_for_tenant(tenant_id)
             for interview_id in recover_stale_recordings_for_tenant(tenant_id):
                 process_asr_job(tenant_id, interview_id)
             resume_asr_jobs_for_tenant(tenant_id)

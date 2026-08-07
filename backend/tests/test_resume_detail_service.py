@@ -1,10 +1,50 @@
-from app.models.models import ResumeStatus
+from types import SimpleNamespace
+
+from app.models.models import ResumeStatus, ReviewRecommendation
 from app.schemas.resume import ResumeUpdate
 from app.services.resume_service import (
+    _send_hr_review_notification,
     extract_contact_details,
     override_rejection,
     update_resume,
 )
+
+
+def test_hr_is_notified_when_department_review_finishes(
+    db,
+    test_resume,
+    test_user,
+    monkeypatch,
+):
+    sent = []
+
+    class FakeMailService:
+        def __init__(self, _db):
+            self.config = SimpleNamespace(is_valid=lambda: True)
+
+        def _send_email(self, to_email, subject, html_content):
+            sent.append((to_email, subject, html_content))
+            return True
+
+    monkeypatch.setattr("app.services.mail_service.MailService", FakeMailService)
+    monkeypatch.setattr(
+        "app.services.system_config_service.get_system_config",
+        lambda _db: SimpleNamespace(frontend_url="https://hr.example.com"),
+    )
+
+    _send_hr_review_notification(
+        db,
+        test_resume,
+        [SimpleNamespace(
+            recommendation=ReviewRecommendation.RECOMMEND,
+            overall_score=8,
+        )],
+    )
+
+    assert len(sent) == 1
+    assert sent[0][0] == test_user.email
+    assert "部门评审完成" in sent[0][1]
+    assert f"https://hr.example.com/resumes/{test_resume.id}" in sent[0][2]
 
 
 def test_resume_update_accepts_numeric_parsed_experience():

@@ -56,6 +56,7 @@ RECORDING_RETENTION_DAYS = 30
 REMINDER_COOLDOWN_HOURS = 24
 MAX_RECORDING_SIZE = max(MAX_UPLOAD_SIZE, 2 * 1024 * 1024 * 1024)
 MAX_RECORDING_CHUNKS = 10_000
+MAX_REALTIME_TRANSCRIPT_SEGMENTS = 10_000
 ASR_MAX_ATTEMPTS = 3
 ASR_POLL_SECONDS = 15
 
@@ -180,6 +181,60 @@ def heartbeat_recording(db: Session, interview_id: UUID, session_id: UUID, user:
     interview.recording_heartbeat_at = utcnow()
     db.commit()
     return interview
+
+
+def persist_realtime_transcript(
+    db: Session,
+    interview_id: UUID,
+    session_id: UUID,
+    segments: list[dict],
+    user: User,
+) -> dict:
+    """Persist finalized realtime segments without replacing the offline transcript."""
+    interview = _locked_interview(db, interview_id)
+    _require_owner(interview, user, session_id)
+    if interview.recording_state not in {"recording", "ending"}:
+        raise HTTPException(status_code=409, detail="Recording is not accepting realtime transcripts")
+
+    transcripts = dict(interview.transcripts or {})
+    realtime_data = transcripts.get("realtime_full_interview_data")
+    existing = (
+        list(realtime_data.get("segments") or [])
+        if isinstance(realtime_data, dict)
+        else []
+    )
+    known_ids = {
+        str(item.get("id"))
+        for item in existing
+        if isinstance(item, dict) and item.get("id")
+    }
+    accepted = []
+    for segment in segments:
+        segment_id = str(segment["id"])
+        if segment_id in known_ids:
+            continue
+        accepted.append(segment)
+        known_ids.add(segment_id)
+
+    if len(existing) + len(accepted) > MAX_REALTIME_TRANSCRIPT_SEGMENTS:
+        raise HTTPException(status_code=413, detail="Realtime transcript has too many segments")
+
+    combined = existing + accepted
+    text = "\n".join(
+        str(item.get("text") or "").strip()
+        for item in combined
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    )
+    transcripts["realtime_full_interview"] = text
+    transcripts["realtime_full_interview_data"] = {
+        "text": text,
+        "segments": combined,
+        "source": "realtime",
+        "updated_at": utcnow().isoformat(),
+    }
+    interview.transcripts = transcripts
+    db.commit()
+    return {"accepted": len(accepted), "total": len(combined)}
 
 
 def append_recording_chunk(

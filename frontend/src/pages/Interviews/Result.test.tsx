@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import InterviewResultPage from './Result'
+import InterviewResultPage, { mergeAdjacentTranscriptSegments } from './Result'
 import request from '../../utils/request'
 
 vi.mock('../../utils/request', () => ({
@@ -71,6 +71,56 @@ describe('InterviewResultPage', () => {
     expect(screen.getByText('I designed a distributed task scheduler.')).toBeInTheDocument()
   })
 
+  it('shows persisted realtime segments while the offline transcript is unavailable', async () => {
+    vi.mocked(request.get).mockResolvedValue({
+      ...interviewPayload,
+      transcripts: {
+        realtime_full_interview: '实时保存的候选人回答',
+        realtime_full_interview_data: {
+          text: '实时保存的候选人回答',
+          source: 'realtime',
+          segments: [
+            {
+              id: 'stream-1:segment-1',
+              start: 1,
+              end: 3,
+              speaker: 'speaker_0',
+              text: '实时保存的候选人回答',
+            },
+          ],
+        },
+      },
+    })
+
+    renderResult()
+
+    expect(await screen.findByText('实时保存的候选人回答')).toBeInTheDocument()
+    expect(screen.getByText('实时转写')).toBeInTheDocument()
+    expect(screen.getByText('离线转写')).toBeInTheDocument()
+    expect(screen.getByText('离线转写尚未生成')).toBeInTheDocument()
+  })
+
+  it('keeps realtime and offline transcripts visible side by side', async () => {
+    vi.mocked(request.get).mockResolvedValue({
+      ...interviewPayload,
+      transcripts: {
+        realtime_full_interview_data: {
+          segments: [{ start: 0, end: 2, speaker: 'speaker_0', text: '实时稿内容' }],
+        },
+        full_interview_data: {
+          segments: [{ start: 0, end: 2, speaker: 'speaker_1', text: '离线稿内容' }],
+        },
+      },
+    })
+
+    renderResult()
+
+    expect(await screen.findByText('实时稿内容')).toBeInTheDocument()
+    expect(screen.getByText('离线稿内容')).toBeInTheDocument()
+    expect(screen.getByText('实时稿')).toBeInTheDocument()
+    expect(screen.getByText('离线稿')).toBeInTheDocument()
+  })
+
   it('shows process records and scores below resume review, with evaluation last', async () => {
     renderResult()
 
@@ -127,5 +177,27 @@ describe('InterviewResultPage', () => {
     expect(screen.getAllByText('面试官王老师')).toHaveLength(2)
     expect(screen.getByText('评价结论：通过')).toBeInTheDocument()
     expect(screen.getByText('评价说明：技术基础扎实，沟通清晰。')).toBeInTheDocument()
+  })
+})
+
+describe('mergeAdjacentTranscriptSegments', () => {
+  it('merges nearby adjacent segments from the same speaker', () => {
+    expect(mergeAdjacentTranscriptSegments([
+      { start: 0, end: 1, speaker: 'speaker_0', text: '我负责' },
+      { start: 1.4, end: 3, speaker: 'speaker_0', text: '后端开发。' },
+      { start: 3.1, end: 4, speaker: 'speaker_1', text: '请继续。' },
+    ])).toEqual([
+      { start: 0, end: 3, speaker: 'speaker_0', text: '我负责后端开发。' },
+      { start: 3.1, end: 4, speaker: 'speaker_1', text: '请继续。' },
+    ])
+  })
+
+  it('does not merge across a long pause or when the speaker is unknown', () => {
+    expect(mergeAdjacentTranscriptSegments([
+      { start: 0, end: 1, speaker: 'speaker_0', text: 'First' },
+      { start: 3, end: 4, speaker: 'speaker_0', text: 'Second' },
+      { start: 4, end: 5, text: 'Unknown one' },
+      { start: 5, end: 6, text: 'Unknown two' },
+    ])).toHaveLength(4)
   })
 })

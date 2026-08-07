@@ -62,6 +62,9 @@ const InterviewScore: React.FC = () => {
   const chunkIndexRef = useRef(0);
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const realtimeClientRef = useRef<RealtimeTranscriptionClient | null>(null);
+  const realtimePersistBufferRef = useRef<RealtimeSegment[]>([]);
+  const realtimePersistQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const realtimePersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [liveNotes, setLiveNotes] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
@@ -102,6 +105,8 @@ const InterviewScore: React.FC = () => {
   useEffect(() => () => {
     realtimeClientRef.current?.stop();
     realtimeClientRef.current = null;
+    if (realtimePersistTimerRef.current) clearTimeout(realtimePersistTimerRef.current);
+    realtimePersistTimerRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -387,6 +392,58 @@ const InterviewScore: React.FC = () => {
     throw lastError;
   };
 
+  const postRealtimeTranscriptBatch = async (sessionId: string, segments: RealtimeSegment[]) => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await request.post(`/interviews/${id}/recording/realtime-transcript`, {
+          session_id: sessionId,
+          segments,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  };
+
+  const flushRealtimeTranscript = (sessionId: string): Promise<void> => {
+    if (realtimePersistTimerRef.current) {
+      clearTimeout(realtimePersistTimerRef.current);
+      realtimePersistTimerRef.current = null;
+    }
+    const batch = realtimePersistBufferRef.current.splice(0);
+    if (!batch.length) return realtimePersistQueueRef.current;
+
+    const operation = realtimePersistQueueRef.current.then(() => (
+      postRealtimeTranscriptBatch(sessionId, batch)
+    ));
+    realtimePersistQueueRef.current = operation.catch(() => {
+      const bufferedIds = new Set(realtimePersistBufferRef.current.map((segment) => segment.id));
+      realtimePersistBufferRef.current.unshift(
+        ...batch.filter((segment) => !bufferedIds.has(segment.id)),
+      );
+    });
+    return operation;
+  };
+
+  const queueRealtimeTranscript = (sessionId: string, segment: RealtimeSegment) => {
+    if (realtimePersistBufferRef.current.some((item) => item.id === segment.id)) return;
+    realtimePersistBufferRef.current.push(segment);
+    if (realtimePersistBufferRef.current.length >= 10) {
+      void flushRealtimeTranscript(sessionId).catch(() => {});
+      return;
+    }
+    if (!realtimePersistTimerRef.current) {
+      realtimePersistTimerRef.current = setTimeout(() => {
+        realtimePersistTimerRef.current = null;
+        void flushRealtimeTranscript(sessionId).catch(() => {});
+      }, 2000);
+    }
+  };
+
   // 整场面试录音功能：录音分片在后台按顺序自动上传。
   const startFullRecording = async () => {
     if (!id) return;
@@ -401,6 +458,10 @@ const InterviewScore: React.FC = () => {
       const sessionId = String(reservation.session_id);
       chunkIndexRef.current = reservation.next_chunk_index || 0;
       uploadQueueRef.current = Promise.resolve();
+      realtimePersistBufferRef.current = [];
+      realtimePersistQueueRef.current = Promise.resolve();
+      if (realtimePersistTimerRef.current) clearTimeout(realtimePersistTimerRef.current);
+      realtimePersistTimerRef.current = null;
       recordingStreamRef.current = stream;
 
       recorder.ondataavailable = (e) => {
@@ -443,9 +504,12 @@ const InterviewScore: React.FC = () => {
       const realtimeClient = new RealtimeTranscriptionClient(id, sessionId, stream, {
         onStatus: setRealtimeStatus,
         onPartial: setRealtimePartial,
-        onSegment: (segment) => setRealtimeSegments((current) => (
-          current.some((item) => item.id === segment.id) ? current : [...current, segment]
-        )),
+        onSegment: (segment) => {
+          setRealtimeSegments((current) => (
+            current.some((item) => item.id === segment.id) ? current : [...current, segment]
+          ));
+          queueRealtimeTranscript(sessionId, segment);
+        },
       });
       realtimeClientRef.current = realtimeClient;
       void realtimeClient.start();
@@ -484,6 +548,12 @@ const InterviewScore: React.FC = () => {
       setFullRecordingTimer(null);
 
       await uploadQueueRef.current;
+      try {
+        await flushRealtimeTranscript(recordingSessionId);
+        await realtimePersistQueueRef.current;
+      } catch {
+        message.warning('实时字幕暂未全部保存，完整录音仍会正常转写');
+      }
       await request.post(`/interviews/${id}/end`, { session_id: recordingSessionId });
       await request.post(`/interviews/${id}/recording/seal`, { session_id: recordingSessionId });
       message.success('面试已结束，AI 正在分析录音');

@@ -26,6 +26,12 @@ const TARGET_RATE = 16_000;
 const PACKET_MILLISECONDS = 100;
 const MAX_BUFFERED_PACKETS = 10_000 / PACKET_MILLISECONDS;
 const MAX_SOCKET_BUFFER_BYTES = 512 * 1024;
+const STABLE_CONNECTION_MILLISECONDS = 30_000;
+const MAX_RECONNECT_DELAY_MILLISECONDS = 15_000;
+
+export const realtimeReconnectDelay = (attempt: number) => (
+  Math.min(1000 * (2 ** Math.max(attempt, 0)), MAX_RECONNECT_DELAY_MILLISECONDS)
+);
 
 const workletSource = `
 class InterviewCaptureProcessor extends AudioWorkletProcessor {
@@ -96,6 +102,7 @@ export class RealtimeTranscriptionClient {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private renewalTimer: ReturnType<typeof setTimeout> | null = null;
+  private stableConnectionTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingInput = new Float32Array(0);
   private readonly packets: ArrayBuffer[] = [];
 
@@ -217,8 +224,18 @@ export class RealtimeTranscriptionClient {
       };
       socket.onmessage = (event) => this.handleMessage(socket, event.data);
       socket.onerror = () => socket.close();
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (this.socket !== socket || this.stopped) return;
+        if (event.code !== 1000) {
+          console.warn('Realtime transcription socket closed', {
+            code: event.code,
+            reason: event.reason || 'no reason supplied',
+          });
+        }
+        if (this.stableConnectionTimer) {
+          clearTimeout(this.stableConnectionTimer);
+          this.stableConnectionTimer = null;
+        }
         this.socket = null;
         this.socketReady = false;
         this.scheduleReconnect();
@@ -234,10 +251,16 @@ export class RealtimeTranscriptionClient {
     try {
       const event = JSON.parse(raw) as Record<string, unknown>;
       if (event.type === 'session.ready') {
-        this.reconnectAttempt = 0;
         this.socketReady = true;
         this.callbacks.onStatus('connected');
         this.flushPackets();
+        if (this.stableConnectionTimer) clearTimeout(this.stableConnectionTimer);
+        this.stableConnectionTimer = setTimeout(() => {
+          if (this.socket === socket && this.socketReady && !this.stopped) {
+            this.reconnectAttempt = 0;
+          }
+          this.stableConnectionTimer = null;
+        }, STABLE_CONNECTION_MILLISECONDS);
       } else if (event.type === 'transcript.partial') {
         this.callbacks.onPartial(typeof event.text === 'string' ? event.text : '');
       } else if (event.type === 'segment.final') {
@@ -264,7 +287,7 @@ export class RealtimeTranscriptionClient {
   private scheduleReconnect() {
     if (this.stopped || this.reconnectTimer) return;
     this.callbacks.onStatus(this.reconnectAttempt ? 'reconnecting' : 'unavailable');
-    const delay = Math.min(1000 * (2 ** this.reconnectAttempt), 15_000);
+    const delay = realtimeReconnectDelay(this.reconnectAttempt);
     this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -289,6 +312,7 @@ export class RealtimeTranscriptionClient {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.renewalTimer) clearTimeout(this.renewalTimer);
+    if (this.stableConnectionTimer) clearTimeout(this.stableConnectionTimer);
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify({ type: 'session.stop' }));
     }

@@ -10,7 +10,8 @@ from app.services.interview_service import (
 from app.schemas.interview import (
     InterviewResponse, InterviewDetailResponse, InterviewCreate, InterviewUpdate,
     InterviewScore, InterviewPanelResponse, RecordingSessionResponse,
-    RecordingSessionRequest, EndInterviewRequest, ForceEndInterviewRequest, LiveNotesRequest,
+    RecordingSessionRequest, RealtimeTranscriptBatchRequest, EndInterviewRequest,
+    ForceEndInterviewRequest, LiveNotesRequest,
     NoteSupplementRequest, HumanReviewRequest, FinalDecisionRequest,
     FinalDecisionCorrectionRequest, CancelInterviewResponse,
     ReviewerReplacementRequest,
@@ -46,6 +47,7 @@ from app.services.interview_lifecycle_service import (
     confirm_recording,
     heartbeat_recording,
     panel_for_user,
+    persist_realtime_transcript,
     reserve_recording,
     replace_reviewer,
     save_live_notes,
@@ -293,6 +295,23 @@ def create_realtime_session_route(
         "expires_at": session["expires_at"],
         "ws_path": "/asr-stream",
     }
+
+
+@router.post("/{interview_id}/recording/realtime-transcript")
+def persist_realtime_transcript_route(
+    interview_id: UUID,
+    payload: RealtimeTranscriptBatchRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_assigned_interviewer(db, interview_id, current_user)
+    return persist_realtime_transcript(
+        db,
+        interview_id,
+        payload.session_id,
+        [segment.model_dump(exclude_none=True) for segment in payload.segments],
+        current_user,
+    )
 
 
 @router.post("/{interview_id}/recording/chunks/{chunk_index}")
@@ -1166,6 +1185,7 @@ def upload_full_interview_audio(
         formatted_transcript = format_transcript_for_display(transcript_data)
         interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
         interview.transcripts = {
+            **(interview.transcripts or {}),
             "full_interview": transcript_text,
             "full_interview_data": transcript_data,
         }
@@ -1356,6 +1376,7 @@ def submit_direct_evaluation_with_audio(
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
         interview.audio_records = {"full_interview": f"/api/files/{stored.id}"}
         interview.transcripts = {
+            **(interview.transcripts or {}),
             "full_interview": transcript,
             "full_interview_data": transcript_data,
         }

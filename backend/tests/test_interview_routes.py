@@ -209,6 +209,43 @@ class TestGetInterviewsRoute:
             "ws_path": "/asr-stream",
         }
 
+    def test_realtime_transcript_route_persists_finalized_segments(
+        self,
+        client: TestClient,
+        interviewer_auth_headers: dict,
+        test_interview: Interview,
+        test_interviewer: User,
+        db: Session,
+    ):
+        session_id = uuid4()
+        test_interview.lifecycle_state = "in_progress"
+        test_interview.recording_state = "recording"
+        test_interview.recording_session_id = session_id
+        test_interview.recording_owner_id = test_interviewer.id
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/recording/realtime-transcript",
+            headers=interviewer_auth_headers,
+            json={
+                "session_id": str(session_id),
+                "segments": [
+                    {
+                        "id": "stream-1:segment-1",
+                        "speaker": "speaker_0",
+                        "text": "候选人的实时回答",
+                        "start": 1.5,
+                        "end": 3.0,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"accepted": 1, "total": 1}
+        db.refresh(test_interview)
+        assert test_interview.transcripts["realtime_full_interview"] == "候选人的实时回答"
+
     def test_get_interviews_with_status_filter(self, client: TestClient, auth_headers: dict,
                                                 test_interview: Interview):
         """测试按状态过滤面试列表"""

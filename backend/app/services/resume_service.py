@@ -1,7 +1,8 @@
 from sqlalchemy.orm import Session, joinedload
 from app.models.models import (
     Resume, Position, Interview, InterviewPanel, DepartmentReview, User, Offer, CodingTest,
-    ResumeStatus, ScreeningResult, RejectReasonCategory, ReviewRecommendation, PositionStatus
+    ResumeStatus, ScreeningResult, RejectReasonCategory, ReviewRecommendation, PositionStatus,
+    UserRole,
 )
 from app.schemas.resume import (
     ResumeCreate, ResumeUpdate, ScreeningResult as ScreeningResultSchema,

@@ -46,7 +46,7 @@ def get_resume_file_for_review(
 ):
     review = _resolve_review(db, token, request, current_user)
     record = get_public_review_file(db, review)
-    return stored_file_response(record)
+    return stored_file_response(record, request)
 
 
 @router.get("/{token}")

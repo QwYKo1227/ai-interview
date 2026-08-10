@@ -202,6 +202,23 @@ class TaskQueue:
 
         return None
 
+    def get_resource_id(self, task_id: str, tenant_id: UUID) -> Optional[UUID]:
+        """Resolve a task's business resource without crossing tenant boundaries."""
+        key = (tenant_id, task_id)
+        with self.running_lock:
+            task = self.running_tasks.get(key)
+            if task is not None:
+                return task.resource_id
+        with self.completed_lock:
+            task = self.completed_tasks.get(key)
+            if task is not None:
+                return task.resource_id
+        with self.queue_lock:
+            for task in self.queue:
+                if task.id == task_id and task.tenant_id == tenant_id:
+                    return task.resource_id
+        return None
+
     def get_stats(self, tenant_id: UUID) -> Dict[str, Any]:
         with self.queue_lock:
             queue_size = sum(1 for task in self.queue if task.tenant_id == tenant_id)

@@ -26,15 +26,15 @@ DECISION_REASONS = {
 
 
 def can_decide_offer(offer: Offer, user: User) -> bool:
+    if user.role == UserRole.ADMIN:
+        return True
     manager_id = offer.position.hiring_manager_id if offer.position else None
-    if manager_id is not None:
-        return manager_id == user.id
-    return user.role == UserRole.ADMIN
+    return manager_id == user.id
 
 
 def _offer_access_query(db: Session, user: User):
     query = db.query(Offer)
-    if user.role == UserRole.INTERVIEWER:
+    if user.role != UserRole.ADMIN:
         query = query.join(Position, Offer.position_id == Position.id).filter(
             Position.hiring_manager_id == user.id
         )
@@ -129,7 +129,7 @@ def get_offers(
             (Position.hiring_manager_id == current_user.id, 0),
             else_=1,
         )
-        if current_user.role != UserRole.INTERVIEWER:
+        if current_user.role == UserRole.ADMIN:
             query = query.outerjoin(Position, Offer.position_id == Position.id)
         query = query.order_by(
             case((Offer.status == OfferStatus.SENT, 0), else_=1),
@@ -249,6 +249,13 @@ def get_offer(
     }
     result.update(_decision_fields(offer, current_user))
     return result
+
+
+def get_offer_record(
+    db: Session, offer_id: UUID, current_user: User
+) -> Optional[Offer]:
+    """Return an ORM offer only when the caller may manage its position."""
+    return _offer_access_query(db, current_user).filter(Offer.id == offer_id).first()
 
 def update_offer(db: Session, offer_id: UUID, offer_data: OfferUpdate) -> Optional[Offer]:
     offer = db.query(Offer).filter(Offer.id == offer_id).first()

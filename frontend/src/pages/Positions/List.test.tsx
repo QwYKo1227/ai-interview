@@ -10,6 +10,9 @@ vi.mock('../../utils/request', () => ({
 }))
 
 vi.mock('../../components/JDGeneratorModal', () => ({ default: () => null }))
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 'admin-1', role: 'admin' } }),
+}))
 
 const position = {
   id: 'position-1',

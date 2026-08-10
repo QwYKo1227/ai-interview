@@ -20,7 +20,9 @@ from app.services.resume_service import (
     confirm_rejection, override_rejection, get_duplicate_resumes,
     get_resume_with_reviews, transfer_resume_position
 )
-from app.models.models import ResumeStatus, RejectReasonCategory, User, UserRole, Resume
+from app.models.models import (
+    Position, ResumeStatus, RejectReasonCategory, User, UserRole, Resume,
+)
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List, Dict, Any, Optional
@@ -28,6 +30,12 @@ from uuid import UUID
 from app.services.public_token_service import resolve_public_tenant
 from app.core.rate_limit import enforce_rate_limit
 from app.core.proxy import resolve_request_host
+from app.services.recruitment_access import (
+    can_access_resume,
+    is_admin,
+    require_position_access,
+    require_resume_access,
+)
 import hashlib
 import re
 
@@ -49,7 +57,16 @@ def get_resumes_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_resumes(db, skip=skip, limit=limit, candidate_name=candidate_name, status=status, position_id=position_id, reviewer_id=reviewer_id)
+    return get_resumes(
+        db,
+        skip=skip,
+        limit=limit,
+        candidate_name=candidate_name,
+        status=status,
+        position_id=position_id,
+        reviewer_id=reviewer_id,
+        current_user=current_user,
+    )
 
 # ==================== 简历查重 ====================
 
@@ -62,6 +79,7 @@ def check_duplicate_route(
     """
     检查简历是否重复（基于邮箱/手机号）
     """
+    require_position_access(db, request.position_id, current_user)
     existing = check_duplicate_resume(db, request.email, request.contact, request.position_id)
 
     if existing:
@@ -156,6 +174,7 @@ def batch_upload_resumes_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_position_access(db, position_id, current_user)
     for f in files:
         validate_pdf_file(f)
     return batch_upload_resumes(db, files, position_id, background_tasks)
@@ -180,10 +199,11 @@ def get_duplicate_resumes_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_resume_access(db, resume_id, current_user)
     duplicates = get_duplicate_resumes(db, resume_id)
     if duplicates is None:
         raise HTTPException(status_code=404, detail="Resume not found")
-    return duplicates
+    return [item for item in duplicates if can_access_resume(db, item, current_user)]
 
 
 @router.get("/{resume_id}", response_model=ResumeResponse)
@@ -192,6 +212,7 @@ def get_resume_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
+    require_resume_access(db, resume_id, current_user)
     resume = get_resume_with_reviews(db, resume_id)
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -204,6 +225,7 @@ def update_resume_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_resume_access(db, resume_id, current_user, manage=True)
     db_resume = update_resume(db, resume_id, resume)
     if not db_resume:
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -215,6 +237,7 @@ def delete_resume_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_resume_access(db, resume_id, current_user, manage=True)
     db_resume = delete_resume(db, resume_id)
     if not db_resume:
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -227,6 +250,7 @@ def reparse_resume_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_resume_access(db, resume_id, current_user, manage=True)
     resume = reparse_resume(db, resume_id, background_tasks)
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -240,6 +264,7 @@ def get_department_reviews_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
+    require_resume_access(db, resume_id, current_user)
     """
     获取部门评审汇总报告
     """
@@ -253,6 +278,7 @@ def create_department_review_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_resume_access(db, resume_id, current_user, manage=True)
     """
     指派部门评审人
     """
@@ -301,6 +327,7 @@ def reassign_department_reviewer_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
+    require_resume_access(db, resume_id, current_user, manage=True)
     return reassign_department_reviewer(db, resume_id, review_id, reviewer_id)
 
 
@@ -314,6 +341,7 @@ def reissue_department_review_link_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
+    require_resume_access(db, resume_id, current_user, manage=True)
     return {
         "public_token": reissue_department_review_link(db, resume_id, review_id),
     }
@@ -332,6 +360,7 @@ def submit_hr_decision_route(
     HR提交最终决策
     """
     # decision_data.hr_id is retained for request compatibility but is not trusted.
+    require_resume_access(db, resume_id, current_user, manage=True)
     return submit_hr_decision(db, resume_id, current_user.id, decision_data)
 
 
@@ -346,6 +375,7 @@ def confirm_rejection_route(
     """
     确认淘汰低分简历
     """
+    require_resume_access(db, resume_id, current_user, manage=True)
     try:
         reason_category_enum = RejectReasonCategory(reason_category)
     except ValueError:
@@ -365,6 +395,7 @@ def override_rejection_route(
     """
     覆盖AI淘汰建议，恢复到评审流程
     """
+    require_resume_access(db, resume_id, current_user, manage=True)
     hr_id = current_user.id
     return override_rejection(db, resume_id, hr_id)
 
@@ -380,12 +411,18 @@ def transfer_resume_position_route(
     """
     将简历转岗到其他岗位，并重新解析
     """
-    return transfer_resume_position(db, resume_id, new_position_id, background_tasks)
+    return transfer_resume_position(
+        db,
+        resume_id,
+        new_position_id,
+        background_tasks,
+        current_user=current_user,
+    )
 
 
 @router.get("/queue/status")
 def get_queue_status(
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN]))
 ):
     from app.services.task_queue import get_task_queue
     queue = get_task_queue()
@@ -395,6 +432,7 @@ def get_queue_status(
 @router.get("/queue/task/{task_id}")
 def get_task_status(
     task_id: str,
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     from app.services.task_queue import get_task_queue
@@ -402,6 +440,10 @@ def get_task_status(
     status = queue.get_status(task_id, current_user.tenant_id)
     if not status:
         raise HTTPException(status_code=404, detail="Task not found")
+    resource_id = queue.get_resource_id(task_id, current_user.tenant_id)
+    if resource_id is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_resume_access(db, resource_id, current_user, manage=True)
     return status
 
 
@@ -414,12 +456,15 @@ def fix_stuck_resumes(
     from app.services.task_queue import get_task_queue
 
     queue = get_task_queue()
-    queue_stats = queue.get_stats(current_user.tenant_id)
+    queue_stats = queue.get_stats(current_user.tenant_id) if is_admin(current_user) else None
 
-    stuck_resumes = db.query(Resume).filter(
+    stuck_query = db.query(Resume).join(Position, Resume.position_id == Position.id).filter(
         Resume.parse_status == "processing",
         Resume.updated_at < datetime.utcnow() - timedelta(minutes=10)
-    ).all()
+    )
+    if not is_admin(current_user):
+        stuck_query = stuck_query.filter(Position.hiring_manager_id == current_user.id)
+    stuck_resumes = stuck_query.all()
 
     fixed_count = 0
     for resume in stuck_resumes:

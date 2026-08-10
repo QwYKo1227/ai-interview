@@ -4,10 +4,13 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { RobotOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
+import { useAuth } from '../../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 
 const PositionForm: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [form] = Form.useForm();
   const navigate = useNavigate();
   const { id } = useParams();
@@ -32,8 +35,12 @@ const PositionForm: React.FC = () => {
   };
 
   const fetchUsers = async () => {
+    if (!isAdmin) {
+      setUsers([]);
+      return;
+    }
     try {
-      const res = await request.get('/auth/users');
+      const res = await request.get('/positions/hiring-managers');
       setUsers(res);
     } catch (error) {
       console.error('Failed to fetch users');
@@ -164,6 +171,8 @@ const PositionForm: React.FC = () => {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <Form.Item
               name="hiring_manager_id"
+              hidden={!isAdmin}
+              rules={isAdmin ? [{ required: true, message: '请选择招聘负责人' }] : undefined}
               label="招聘负责人"
             >
               <Select size="large" allowClear placeholder="选择招聘负责人" showSearch optionFilterProp="children">

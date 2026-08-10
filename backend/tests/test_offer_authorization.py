@@ -57,34 +57,30 @@ def test_pending_confirmation_status_route_replaces_legacy_send_route(
     assert test_resume.status == ResumeStatus.OFFER_PENDING
 
 
-def test_interviewer_only_sees_offers_for_positions_they_manage(
+def test_interviewer_cannot_access_offer_management(
     client: TestClient, db, interviewer_auth_headers: dict, test_interviewer,
     test_position, test_resume, test_user
 ):
     offer = _sent_offer(db, test_position, test_resume, test_user)
 
     response = client.get("/api/offers", headers=interviewer_auth_headers)
-    assert response.status_code == status.HTTP_200_OK
-    assert response.json()["items"] == []
+    assert response.status_code == status.HTTP_403_FORBIDDEN
 
     test_position.hiring_manager_id = test_interviewer.id
     db.commit()
     response = client.get("/api/offers", headers=interviewer_auth_headers)
-    assert response.status_code == status.HTTP_200_OK
-    assert [item["id"] for item in response.json()["items"]] == [str(offer.id)]
-    assert response.json()["items"][0]["can_decide"] is True
+    assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
 def test_hiring_manager_can_decide_and_correct_with_an_audit_trail(
-    client: TestClient, db, interviewer_auth_headers: dict, test_interviewer,
+    client: TestClient, db, auth_headers: dict, test_interviewer,
     test_position, test_resume, test_user
 ):
-    test_position.hiring_manager_id = test_interviewer.id
     offer = _sent_offer(db, test_position, test_resume, test_user)
 
     accepted = client.post(
         f"/api/offers/{offer.id}/decision",
-        headers=interviewer_auth_headers,
+        headers=auth_headers,
         json={"decision": "accepted"},
     )
     assert accepted.status_code == status.HTTP_200_OK
@@ -95,14 +91,14 @@ def test_hiring_manager_can_decide_and_correct_with_an_audit_trail(
 
     missing_reason = client.post(
         f"/api/offers/{offer.id}/decision",
-        headers=interviewer_auth_headers,
+        headers=auth_headers,
         json={"decision": "rejected", "rejection_reason": "salary"},
     )
     assert missing_reason.status_code == status.HTTP_400_BAD_REQUEST
 
     corrected = client.post(
         f"/api/offers/{offer.id}/decision",
-        headers=interviewer_auth_headers,
+        headers=auth_headers,
         json={
             "decision": "rejected",
             "rejection_reason": "other",
@@ -122,10 +118,12 @@ def test_hiring_manager_can_decide_and_correct_with_an_audit_trail(
     ]
 
 
-def test_non_manager_hr_cannot_decide_but_admin_can_cover_unassigned_position(
+def test_non_owner_hr_cannot_decide_but_admin_can(
     client: TestClient, db, auth_headers: dict, admin_auth_headers: dict,
-    test_position, test_resume, test_user
+    test_position, test_resume, test_user, test_admin
 ):
+    test_position.hiring_manager_id = test_admin.id
+    db.commit()
     offer = _sent_offer(db, test_position, test_resume, test_user)
 
     denied = client.post(
@@ -133,7 +131,7 @@ def test_non_manager_hr_cannot_decide_but_admin_can_cover_unassigned_position(
         headers=auth_headers,
         json={"decision": "accepted"},
     )
-    assert denied.status_code == status.HTTP_403_FORBIDDEN
+    assert denied.status_code == status.HTTP_404_NOT_FOUND
 
     accepted = client.post(
         f"/api/offers/{offer.id}/decision",
@@ -143,11 +141,10 @@ def test_non_manager_hr_cannot_decide_but_admin_can_cover_unassigned_position(
     assert accepted.status_code == status.HTTP_200_OK
 
 
-def test_admin_cannot_override_an_assigned_manager_and_status_cannot_be_edited(
+def test_admin_can_override_an_assigned_manager_and_status_cannot_be_edited(
     client: TestClient, db, admin_auth_headers: dict, auth_headers: dict,
     test_interviewer, test_position, test_resume, test_user
 ):
-    test_position.hiring_manager_id = test_interviewer.id
     offer = _sent_offer(db, test_position, test_resume, test_user)
 
     denied = client.post(
@@ -155,7 +152,7 @@ def test_admin_cannot_override_an_assigned_manager_and_status_cannot_be_edited(
         headers=admin_auth_headers,
         json={"decision": "accepted"},
     )
-    assert denied.status_code == status.HTTP_403_FORBIDDEN
+    assert denied.status_code == status.HTTP_200_OK
 
     bypass = client.put(
         f"/api/offers/{offer.id}",
@@ -171,3 +168,26 @@ def test_offer_template_routes_forbid_interviewer(
     response = client.get("/api/offer-templates", headers=interviewer_auth_headers)
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_owner_can_delete_draft_offer(
+    client: TestClient, db, auth_headers: dict, test_position, test_resume, test_user
+):
+    offer = Offer(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        position_id=test_position.id,
+        candidate_name=test_resume.candidate_name,
+        candidate_email=test_resume.email,
+        position_title=test_position.title,
+        status=OfferStatus.DRAFT,
+        created_by=test_user.id,
+    )
+    db.add(offer)
+    db.commit()
+    offer_id = offer.id
+
+    response = client.delete(f"/api/offers/{offer_id}", headers=auth_headers)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert db.query(Offer).filter(Offer.id == offer_id).first() is None

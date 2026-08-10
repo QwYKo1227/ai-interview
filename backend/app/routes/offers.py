@@ -11,6 +11,7 @@ from app.schemas.offer import (
 from app.services import offer_service
 from app.core.security import check_roles
 from app.models.models import User, UserRole
+from app.services.recruitment_access import require_position_access, require_resume_access
 
 router = APIRouter(
     prefix="/offers",
@@ -18,9 +19,12 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
-def _require_offer(db: Session, offer_id: UUID) -> None:
-    if offer_service.get_offer(db, offer_id) is None:
-        raise HTTPException(status_code=404, detail="Offer不存在")
+def _require_scoped_offer(db: Session, offer_id: UUID, current_user: User):
+    offer = offer_service.get_offer_record(db, offer_id, current_user)
+    if offer is None:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    return offer
+
 
 @router.post("", response_model=OfferResponse)
 def create_offer(
@@ -28,6 +32,10 @@ def create_offer(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    resume = require_resume_access(db, offer_data.resume_id, current_user, manage=True)
+    require_position_access(db, offer_data.position_id, current_user)
+    if resume.position_id != offer_data.position_id:
+        raise HTTPException(status_code=400, detail="Offer 岗位必须与简历当前岗位一致")
     try:
         offer = offer_service.create_offer(db, offer_data, current_user.id)
         return offer_service.get_offer(db, offer.id, current_user)
@@ -42,7 +50,7 @@ def list_offers(
     position_id: Optional[UUID] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return offer_service.get_offers(
         db, page, page_size, status, position_id, search, current_user
@@ -51,7 +59,7 @@ def list_offers(
 @router.get("/stats", response_model=OfferStats)
 def get_offer_stats(
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return offer_service.get_offer_stats(db, current_user)
 
@@ -59,7 +67,7 @@ def get_offer_stats(
 @router.get("/my-pending-count")
 def get_my_pending_offer_count(
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return {"count": offer_service.get_my_pending_offer_count(db, current_user)}
 
@@ -67,7 +75,7 @@ def get_my_pending_offer_count(
 def get_offer(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     offer = offer_service.get_offer(db, offer_id, current_user)
     if not offer:
@@ -81,6 +89,7 @@ def update_offer(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    _require_scoped_offer(db, offer_id, current_user)
     try:
         offer = offer_service.update_offer(db, offer_id, offer_data)
         if not offer:
@@ -95,7 +104,7 @@ def mark_offer_pending_confirmation(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    _require_offer(db, offer_id)
+    _require_scoped_offer(db, offer_id, current_user)
     try:
         result = offer_service.mark_offer_pending_confirmation(db, offer_id)
         return result
@@ -107,8 +116,9 @@ def record_offer_decision(
     offer_id: UUID,
     request: OfferDecisionRequest,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    _require_scoped_offer(db, offer_id, current_user)
     try:
         offer = offer_service.record_offer_decision(
             db,
@@ -134,7 +144,7 @@ def record_offer_decision(
 def list_offer_decision_audits(
     offer_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]))
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     if offer_service.get_offer(db, offer_id, current_user) is None:
         raise HTTPException(status_code=404, detail="Offer不存在")
@@ -147,7 +157,7 @@ def withdraw_offer(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    _require_offer(db, offer_id)
+    _require_scoped_offer(db, offer_id, current_user)
     try:
         offer = offer_service.withdraw_offer(db, offer_id, reason)
         return {"success": True, "message": "Offer已撤回", "offer_id": str(offer.id)}
@@ -160,7 +170,7 @@ def reopen_offer(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    _require_offer(db, offer_id)
+    _require_scoped_offer(db, offer_id, current_user)
     try:
         offer = offer_service.reopen_offer(db, offer_id)
         return {"success": True, "message": "Offer已重新打开", "offer_id": str(offer.id)}
@@ -173,11 +183,9 @@ def delete_offer(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    from app.models.models import Offer, OfferStatus
-    offer = db.query(Offer).filter(Offer.id == offer_id).first()
-    if not offer:
-        raise HTTPException(status_code=404, detail="Offer不存在")
-    
+    offer = _require_scoped_offer(db, offer_id, current_user)
+    from app.models.models import OfferStatus
+
     if offer.status not in [OfferStatus.DRAFT, OfferStatus.WITHDRAWN]:
         raise HTTPException(status_code=400, detail="只能删除草稿或已撤回的Offer")
     

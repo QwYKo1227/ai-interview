@@ -1,5 +1,6 @@
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
+from typing import List
 from sqlalchemy.orm import Session, joinedload
 from app.models.models import Interview, Resume, Position, InterviewStatus, InterviewResult, QuestionBank, ResumeStatus, ScreeningResult, InterviewPanel, User, UserRole
 from app.schemas.interview import InterviewCreate, InterviewUpdate, InterviewScore, InterviewScheduleUpdate
@@ -654,12 +655,17 @@ def get_interviews(
     status: str = None,
     range_start: datetime | None = None,
     range_end: datetime | None = None,
+    current_user: User | None = None,
 ):
     query = db.query(Interview).options(
         joinedload(Interview.resume),
         joinedload(Interview.position),
         joinedload(Interview.panels),
     )
+    if current_user is not None and current_user.role == UserRole.HR:
+        query = query.join(Position, Interview.position_id == Position.id).filter(
+            Position.hiring_manager_id == current_user.id
+        )
     if status:
         query = query.filter(Interview.status == status)
     if range_start is None and range_end is None:
@@ -701,6 +707,43 @@ def get_interviews_for_interviewer(
             
     # Apply skip/limit
     return filtered[skip: skip + limit]
+
+
+def get_visible_interviewer_options(db: Session, current_user: User) -> List[User]:
+    """Return active interviewers that occur in the caller's visible interviews."""
+    query = db.query(Interview).options(joinedload(Interview.panels))
+    if current_user.role == UserRole.HR:
+        query = query.join(Position, Interview.position_id == Position.id).filter(
+            Position.hiring_manager_id == current_user.id
+        )
+
+    interviews = query.all()
+    if current_user.role == UserRole.INTERVIEWER:
+        current_id = str(current_user.id)
+        interviews = [
+            interview
+            for interview in interviews
+            if current_id
+            in {str(member_id) for member_id in _interview_member_ids(interview)}
+        ]
+
+    interviewer_ids = {
+        member_id
+        for interview in interviews
+        for member_id in _interview_member_ids(interview)
+    }
+    if not interviewer_ids:
+        return []
+    return (
+        db.query(User)
+        .filter(
+            User.id.in_(interviewer_ids),
+            User.is_active.is_(True),
+            User.role.in_([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]),
+        )
+        .order_by(User.full_name.asc(), User.email.asc())
+        .all()
+    )
 
 def get_interview(db: Session, interview_id: UUID):
     return db.query(Interview).options(

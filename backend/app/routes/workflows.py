@@ -10,6 +10,11 @@ from app.models.workflow_models import WorkflowStatus
 from app.models.models import User, UserRole
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
+from app.services.recruitment_access import require_position_access, require_resume_access
+from app.services.workflow_access import (
+    list_accessible_executions,
+    require_execution_access,
+)
 from typing import List, Optional
 from uuid import UUID
 
@@ -107,10 +112,16 @@ def execute_workflow(
     engine = WorkflowEngine(db)
     if not engine.get_workflow(workflow_id):
         raise HTTPException(status_code=404, detail="Workflow not found")
+    input_data = execution_data.input_data if execution_data else None
+    if input_data:
+        if input_data.get("resume_id"):
+            require_resume_access(db, UUID(str(input_data["resume_id"])), current_user, manage=True)
+        if input_data.get("position_id"):
+            require_position_access(db, UUID(str(input_data["position_id"])), current_user)
     try:
         execution = engine.execute_workflow(
             workflow_id=workflow_id,
-            input_data=execution_data.input_data if execution_data else None,
+            input_data=input_data,
             user_id=current_user.id
         )
         db.refresh(execution)
@@ -130,7 +141,13 @@ def list_executions(
     engine = WorkflowEngine(db)
     if not engine.get_workflow(workflow_id):
         raise HTTPException(status_code=404, detail="Workflow not found")
-    return engine.get_executions(workflow_id=workflow_id, skip=skip, limit=limit)
+    return list_accessible_executions(
+        db,
+        workflow_id=workflow_id,
+        current_user=current_user,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get("/executions/{execution_id}", response_model=WorkflowExecutionResponse)
@@ -141,9 +158,7 @@ def get_execution(
 ):
     engine = WorkflowEngine(db)
     execution = engine.get_execution(execution_id)
-    if not execution:
-        raise HTTPException(status_code=404, detail="Execution not found")
-    return execution
+    return require_execution_access(db, execution, current_user)
 
 
 @router.post("/init-builtin")

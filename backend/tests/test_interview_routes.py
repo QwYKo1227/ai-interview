@@ -20,6 +20,38 @@ from app.models.models import (
 from app.models.file_models import StoredFile
 
 
+def test_interviewer_filter_options_only_include_members_from_visible_interviews(
+    client: TestClient,
+    db: Session,
+    auth_headers: dict,
+    admin_auth_headers: dict,
+    interviewer_auth_headers: dict,
+    test_interview: Interview,
+    test_interview_panel: InterviewPanel,
+    test_interviewer: User,
+):
+    unassigned = User(
+        tenant_id=test_interview.tenant_id,
+        email=f"unassigned-filter-{uuid4()}@example.com",
+        hashed_password="not-used",
+        full_name="Unassigned interviewer",
+        role=UserRole.INTERVIEWER,
+        is_active=True,
+    )
+    db.add(unassigned)
+    db.commit()
+
+    for headers in (auth_headers, admin_auth_headers, interviewer_auth_headers):
+        response = client.get(
+            "/api/interviews/filter-options/interviewers",
+            headers=headers,
+        )
+        assert response.status_code == status.HTTP_200_OK
+        ids = {item["id"] for item in response.json()}
+        assert str(test_interviewer.id) in ids
+        assert str(unassigned.id) not in ids
+
+
 @pytest.mark.parametrize(
     ("method", "suffix", "payload"),
     [
@@ -65,7 +97,15 @@ def test_unassigned_interviewer_cannot_access_or_mutate_interview(
         json=payload,
     )
 
-    assert response.status_code == status.HTTP_403_FORBIDDEN
+    role_restricted = {
+        ("GET", "/email-preview"),
+        ("POST", "/aggregate"),
+        ("PUT", ""),
+        ("PUT", "/questions"),
+        ("POST", "/send-email"),
+    }
+    expected = status.HTTP_403_FORBIDDEN if (method, suffix) in role_restricted else status.HTTP_404_NOT_FOUND
+    assert response.status_code == expected
 
 
 def test_interviewer_cannot_preview_candidate_email_before_interview_creation(
@@ -660,6 +700,40 @@ class TestUpdateInterviewRoute:
         )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_hr_cannot_update_another_recruiters_interview_arrangement(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_user: User,
+        test_interview: Interview,
+        db: Session,
+    ):
+        other_hr = User(
+            tenant_id=test_user.tenant_id,
+            email=f"other-{uuid4()}@example.com",
+            hashed_password="not-used",
+            full_name="Other recruiter",
+            role=UserRole.HR,
+            is_active=True,
+        )
+        db.add(other_hr)
+        db.flush()
+        test_interview.position.hiring_manager_id = other_hr.id
+        db.commit()
+
+        response = client.put(
+            f"/api/interviews/{test_interview.id}/schedule",
+            json={
+                "panel_members": [str(test_user.id)],
+                "interview_time": "2024-12-20T14:00:00Z",
+                "interview_end_time": "2024-12-20T15:00:00Z",
+                "interview_type": "phone",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_started_interview_arrangement_cannot_be_updated(
         self,

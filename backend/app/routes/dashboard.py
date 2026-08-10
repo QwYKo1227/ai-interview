@@ -26,9 +26,9 @@ def read_dashboard_stats(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    stats = get_dashboard_stats(db)
-    activities = get_recent_activities(db)
-    trends = get_interview_trends(db)
+    stats = get_dashboard_stats(db, current_user)
+    activities = get_recent_activities(db, current_user)
+    trends = get_interview_trends(db, current_user)
 
     return {
         "stats": stats,
@@ -41,28 +41,28 @@ def read_overview(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_overview(db)
+    return get_overview(db, current_user)
 
 @router.get("/funnel", response_model=RecruitmentFunnel)
 def read_funnel(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_recruitment_funnel(db)
+    return get_recruitment_funnel(db, current_user)
 
 @router.get("/positions", response_model=PositionAnalyticsResponse)
 def read_position_analytics(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_position_analytics(db)
+    return get_position_analytics(db, current_user)
 
 @router.get("/interviewers", response_model=InterviewerAnalyticsResponse)
 def read_interviewer_analytics(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
-    return get_interviewer_analytics(db)
+    return get_interviewer_analytics(db, current_user)
 
 @router.get("/timeline", response_model=TimelineAnalyticsResponse)
 def read_timeline_analytics(
@@ -70,4 +70,4 @@ def read_timeline_analytics(
     current_user: User = Depends(get_current_user),
     days: int = Query(default=30, ge=7, le=365, description="Number of days to analyze")
 ):
-    return get_timeline_analytics(db, days)
+    return get_timeline_analytics(db, current_user, days)

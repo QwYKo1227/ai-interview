@@ -57,10 +57,10 @@ def create_position(
 
 
 class TestPositionHiringManagerFilter:
-    def test_omitting_manager_returns_positions_for_all_managers(
+    def test_omitting_manager_returns_only_current_recruiters_positions(
         self, client: TestClient, auth_headers: dict, db: Session, test_user: User
     ):
-        first = create_manager(db, "first@example.com", "First Manager", test_user.tenant_id)
+        first = test_user
         second = create_manager(db, "second@example.com", "Second Manager", test_user.tenant_id)
         create_position(db, "Backend Engineer", first)
         create_position(db, "Frontend Engineer", second)
@@ -68,15 +68,12 @@ class TestPositionHiringManagerFilter:
         response = client.get("/api/positions", headers=auth_headers)
 
         assert response.status_code == status.HTTP_200_OK
-        assert {item["title"] for item in response.json()} == {
-            "Backend Engineer",
-            "Frontend Engineer",
-        }
+        assert {item["title"] for item in response.json()} == {"Backend Engineer"}
 
     def test_manager_filter_combines_with_title_and_status(
         self, client: TestClient, auth_headers: dict, db: Session, test_user: User
     ):
-        target = create_manager(db, "target@example.com", "Target Manager", test_user.tenant_id)
+        target = test_user
         other = create_manager(db, "other@example.com", "Other Manager", test_user.tenant_id)
         create_position(db, "Senior Backend Engineer", target, PositionStatus.PUBLISHED)
         create_position(db, "Backend Intern", target, PositionStatus.OPEN)
@@ -100,7 +97,7 @@ class TestPositionHiringManagerFilter:
 
 
 class TestHiringManagerOptions:
-    def test_returns_distinct_managers_with_positions(
+    def test_hr_only_receives_self_as_manager_option(
         self, client: TestClient, auth_headers: dict, db: Session, test_user: User
     ):
         assigned = create_manager(db, "assigned@example.com", "Assigned Manager", test_user.tenant_id)
@@ -115,9 +112,9 @@ class TestHiringManagerOptions:
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == [
             {
-                "id": str(assigned.id),
-                "full_name": "Assigned Manager",
-                "email": "assigned@example.com",
+                "id": str(test_user.id),
+                "full_name": test_user.full_name,
+                "email": test_user.email,
             }
         ]
 
@@ -141,7 +138,7 @@ class TestPositionDepartmentAndUrgencyFilters:
     def test_combines_department_urgency_manager_status_and_title(
         self, client: TestClient, auth_headers: dict, db: Session, test_user: User
     ):
-        target = create_manager(db, "target-filter@example.com", "Target Filter", test_user.tenant_id)
+        target = test_user
         other = create_manager(db, "other-filter@example.com", "Other Filter", test_user.tenant_id)
         create_position(
             db,
@@ -199,7 +196,7 @@ class TestPositionDepartmentOptions:
     def test_returns_distinct_non_empty_sorted_departments(
         self, client: TestClient, auth_headers: dict, db: Session, test_user: User
     ):
-        manager = create_manager(db, "departments@example.com", "Department Owner", test_user.tenant_id)
+        manager = test_user
         create_position(db, "Platform", manager, department="Engineering")
         create_position(db, "Frontend", manager, department="Engineering")
         create_position(db, "Recruiter", manager, department="People")

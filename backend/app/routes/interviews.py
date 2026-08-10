@@ -68,6 +68,8 @@ from app.services.interview_schedule_notification import (
     issue_schedule_notification_token,
     validate_schedule_notification_token,
 )
+from app.schemas.user import UserResponse
+from app.services.recruitment_access import require_position_access, require_resume_access
 
 logger = logging.getLogger(__name__)
 
@@ -635,6 +637,10 @@ def create_interview_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    resume = require_resume_access(db, interview.resume_id, current_user, manage=True)
+    require_position_access(db, interview.position_id, current_user)
+    if resume.position_id != interview.position_id:
+        raise HTTPException(status_code=400, detail="面试岗位必须与简历当前岗位一致")
     return create_interview(db, interview, background_tasks)
 
 @router.get("", response_model=List[InterviewResponse])
@@ -675,7 +681,18 @@ def get_interviews_route(
         status=status,
         range_start=range_start,
         range_end=range_end,
+        current_user=current_user,
     )
+
+
+@router.get("/filter-options/interviewers", response_model=List[UserResponse])
+def get_visible_interviewer_options_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.interview_service import get_visible_interviewer_options
+
+    return get_visible_interviewer_options(db, current_user)
 
 @router.post("/email-preview")
 def preview_email_before_create(
@@ -688,8 +705,8 @@ def preview_email_before_create(
     from datetime import datetime
 
     # 获取简历和岗位信息
-    resume = db.query(Resume).filter(Resume.id == preview_data.resume_id).first()
-    position = db.query(Position).filter(Position.id == preview_data.position_id).first()
+    resume = require_resume_access(db, preview_data.resume_id, current_user, manage=True)
+    position = require_position_access(db, preview_data.position_id, current_user)
 
     if not resume or not position:
         raise HTTPException(status_code=404, detail="简历或岗位不存在")
@@ -847,9 +864,7 @@ def preview_schedule_update_email(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
-    interview = get_interview(db, interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = require_interview_access(db, interview_id, current_user)
     if interview.lifecycle_state != "scheduled" or interview.status != InterviewStatus.SCHEDULED:
         raise HTTPException(status_code=409, detail="只能修改尚未开始的面试安排")
 
@@ -950,6 +965,7 @@ def update_interview_schedule_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
+    require_interview_access(db, interview_id, current_user)
     updated = update_interview_schedule(db, interview_id, schedule)
     if not updated:
         raise HTTPException(status_code=404, detail="Interview not found")

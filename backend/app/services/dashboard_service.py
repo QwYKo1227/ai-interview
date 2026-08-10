@@ -7,13 +7,39 @@ from app.models.models import (
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import statistics
+from app.services.recruitment_access import is_admin
 
-def get_dashboard_stats(db: Session):
-    active_positions_count = db.query(Position).filter(
+
+def _position_query(db: Session, current_user: User | None, *entities):
+    query = db.query(*(entities or (Position,)))
+    if current_user is not None and not is_admin(current_user):
+        query = query.filter(Position.hiring_manager_id == current_user.id)
+    return query
+
+
+def _resume_query(db: Session, current_user: User | None, *entities):
+    query = db.query(*(entities or (Resume,)))
+    if current_user is not None and not is_admin(current_user):
+        query = query.join(Position, Resume.position_id == Position.id).filter(
+            Position.hiring_manager_id == current_user.id
+        )
+    return query
+
+
+def _interview_query(db: Session, current_user: User | None, *entities):
+    query = db.query(*(entities or (Interview,)))
+    if current_user is not None and not is_admin(current_user):
+        query = query.join(Position, Interview.position_id == Position.id).filter(
+            Position.hiring_manager_id == current_user.id
+        )
+    return query
+
+def get_dashboard_stats(db: Session, current_user: User | None = None):
+    active_positions_count = _position_query(db, current_user).filter(
         (Position.status == PositionStatus.OPEN) | (Position.status == PositionStatus.PUBLISHED)
     ).count()
     
-    pending_resumes_count = db.query(Resume).filter(
+    pending_resumes_count = _resume_query(db, current_user).filter(
         (Resume.status == ResumeStatus.PENDING_SCREENING) | 
         (Resume.status == ResumeStatus.PENDING_REVIEW) |
         (Resume.status == ResumeStatus.PENDING_DEPT_REVIEW) |
@@ -23,7 +49,7 @@ def get_dashboard_stats(db: Session):
     # 使用UTC时间进行比较
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
-    today_interviews_count = db.query(Interview).filter(
+    today_interviews_count = _interview_query(db, current_user).filter(
         Interview.interview_time >= today_start,
         Interview.interview_time < today_end,
         Interview.status != InterviewStatus.CANCELLED
@@ -32,9 +58,9 @@ def get_dashboard_stats(db: Session):
     total_questions_count = db.query(QuestionBank).count()
 
     last_week = datetime.now(timezone.utc) - timedelta(days=7)
-    last_week_positions = db.query(Position).filter(Position.created_at >= last_week).count()
-    last_week_resumes = db.query(Resume).filter(Resume.created_at >= last_week).count()
-    last_week_interviews = db.query(Interview).filter(Interview.created_at >= last_week).count()
+    last_week_positions = _position_query(db, current_user).filter(Position.created_at >= last_week).count()
+    last_week_resumes = _resume_query(db, current_user).filter(Resume.created_at >= last_week).count()
+    last_week_interviews = _interview_query(db, current_user).filter(Interview.created_at >= last_week).count()
     last_week_questions = db.query(QuestionBank).filter(QuestionBank.created_at >= last_week).count()
 
     trends = {
@@ -52,10 +78,10 @@ def get_dashboard_stats(db: Session):
         "trends": trends
     }
 
-def get_recent_activities(db: Session, limit: int = 10):
+def get_recent_activities(db: Session, current_user: User | None = None, limit: int = 10):
     activities = []
     
-    recent_interviews = db.query(Interview).order_by(desc(Interview.created_at)).limit(limit).all()
+    recent_interviews = _interview_query(db, current_user).order_by(desc(Interview.created_at)).limit(limit).all()
     for interview in recent_interviews:
         status_text = "待进行"
         color = "#F59E0B"
@@ -78,7 +104,7 @@ def get_recent_activities(db: Session, limit: int = 10):
             "type": "interview"
         })
         
-    recent_resumes = db.query(Resume).order_by(desc(Resume.created_at)).limit(limit).all()
+    recent_resumes = _resume_query(db, current_user).order_by(desc(Resume.created_at)).limit(limit).all()
     for resume in recent_resumes:
         status_text = "新简历"
         color = "#3B82F6"
@@ -110,11 +136,11 @@ def get_recent_activities(db: Session, limit: int = 10):
     activities.sort(key=lambda x: x['time'], reverse=True)
     return activities[:limit]
 
-def get_interview_trends(db: Session, days: int = 7):
+def get_interview_trends(db: Session, current_user: User | None = None, days: int = 7):
     end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=days)
     
-    interviews = db.query(Interview.created_at).filter(
+    interviews = _interview_query(db, current_user, Interview.created_at).filter(
         Interview.created_at >= start_date,
         Interview.created_at <= end_date
     ).all()
@@ -136,7 +162,7 @@ def get_interview_trends(db: Session, days: int = 7):
     
     return trends
 
-def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
+def get_recruitment_funnel(db: Session, current_user: User | None = None) -> Dict[str, Any]:
     stage_mapping = [
         ("resume_received", "简历投递", ResumeStatus),
         ("pending_screening", "待初筛", [ResumeStatus.PENDING_SCREENING]),
@@ -155,7 +181,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     ]
     
     stages = []
-    total_resumes = db.query(Resume).count()
+    total_resumes = _resume_query(db, current_user).count()
     
     if total_resumes == 0:
         return {
@@ -172,7 +198,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": 100.0
     })
     
-    pending_screening = db.query(Resume).filter(
+    pending_screening = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.PENDING_SCREENING, ResumeStatus.PENDING_REVIEW, 
                           ResumeStatus.PENDING_DEPT_REVIEW, ResumeStatus.PENDING_HR_DECISION,
                           ResumeStatus.AUTO_REJECTED_PENDING_REVIEW])
@@ -184,7 +210,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": round(pending_screening / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    screening_passed = db.query(Resume).filter(
+    screening_passed = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.PENDING_INTERVIEW, ResumeStatus.INTERVIEW_SCHEDULED,
                           ResumeStatus.INTERVIEW_IN_PROGRESS, ResumeStatus.PENDING_INTERVIEW_RESULT,
                           ResumeStatus.PENDING_NEXT_INTERVIEW, ResumeStatus.INTERVIEW_PASSED,
@@ -199,7 +225,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": round(screening_passed / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    interview_scheduled = db.query(Resume).filter(
+    interview_scheduled = _resume_query(db, current_user).filter(
         Resume.status.in_([
             ResumeStatus.INTERVIEW_SCHEDULED,
             ResumeStatus.INTERVIEW_IN_PROGRESS,
@@ -214,7 +240,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": round(interview_scheduled / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    interview_completed = db.query(Resume).filter(
+    interview_completed = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED,
                           ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
                           ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED])
@@ -226,7 +252,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": round(interview_completed / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    offer_sent = db.query(Resume).filter(
+    offer_sent = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
                           ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED])
     ).count()
@@ -237,7 +263,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": round(offer_sent / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    hired = db.query(Resume).filter(
+    hired = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
     ).count()
     stages.append({
@@ -255,8 +281,8 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "conversion_rate": conversion_rate
     }
 
-def get_position_analytics(db: Session) -> Dict[str, Any]:
-    positions = db.query(Position).all()
+def get_position_analytics(db: Session, current_user: User | None = None) -> Dict[str, Any]:
+    positions = _position_query(db, current_user).all()
     position_analytics = []
     
     total_all_resumes = 0
@@ -345,7 +371,7 @@ def get_position_analytics(db: Session) -> Dict[str, Any]:
         "summary": summary
     }
 
-def get_interviewer_analytics(db: Session) -> Dict[str, Any]:
+def get_interviewer_analytics(db: Session, current_user: User | None = None) -> Dict[str, Any]:
     interviewers = db.query(User).filter(User.role.in_([UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER])).all()
     interviewer_stats = []
     
@@ -353,8 +379,15 @@ def get_interviewer_analytics(db: Session) -> Dict[str, Any]:
     total_all_completed = 0
     
     for interviewer in interviewers:
-        as_main = db.query(Interview).filter(Interview.interviewer_id == interviewer.id).all()
-        as_panel = db.query(InterviewPanel).filter(InterviewPanel.interviewer_id == interviewer.id).all()
+        as_main = _interview_query(db, current_user).filter(Interview.interviewer_id == interviewer.id).all()
+        panel_query = db.query(InterviewPanel).join(
+            Interview, InterviewPanel.interview_id == Interview.id
+        )
+        if current_user is not None and not is_admin(current_user):
+            panel_query = panel_query.join(Position, Interview.position_id == Position.id).filter(
+                Position.hiring_manager_id == current_user.id
+            )
+        as_panel = panel_query.filter(InterviewPanel.interviewer_id == interviewer.id).all()
         
         interview_ids = set()
         for i in as_main:
@@ -370,7 +403,7 @@ def get_interviewer_analytics(db: Session) -> Dict[str, Any]:
         all_scores = []
         
         for interview_id in interview_ids:
-            interview = db.query(Interview).filter(Interview.id == interview_id).first()
+            interview = _interview_query(db, current_user).filter(Interview.id == interview_id).first()
             if interview:
                 if interview.status == InterviewStatus.COMPLETED:
                     completed += 1
@@ -419,7 +452,7 @@ def get_interviewer_analytics(db: Session) -> Dict[str, Any]:
         "summary": summary
     }
 
-def get_timeline_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
+def get_timeline_analytics(db: Session, current_user: User | None = None, days: int = 30) -> Dict[str, Any]:
     end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=days)
     
@@ -436,30 +469,30 @@ def get_timeline_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         date_str = current.strftime("%Y-%m-%d")
         next_day = current + timedelta(days=1)
         
-        resumes_count = db.query(Resume).filter(
+        resumes_count = _resume_query(db, current_user).filter(
             Resume.created_at >= current,
             Resume.created_at < next_day
         ).count()
         
-        interviews_scheduled = db.query(Interview).filter(
+        interviews_scheduled = _interview_query(db, current_user).filter(
             Interview.created_at >= current,
             Interview.created_at < next_day
         ).count()
         
-        interviews_completed = db.query(Interview).filter(
+        interviews_completed = _interview_query(db, current_user).filter(
             Interview.status == InterviewStatus.COMPLETED,
             Interview.created_at >= current,
             Interview.created_at < next_day
         ).count()
         
-        offers_sent = db.query(Resume).filter(
+        offers_sent = _resume_query(db, current_user).filter(
             Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
                               ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
             Resume.created_at >= current,
             Resume.created_at < next_day
         ).count()
         
-        hires = db.query(Resume).filter(
+        hires = _resume_query(db, current_user).filter(
             Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
             Resume.created_at >= current,
             Resume.created_at < next_day
@@ -498,33 +531,33 @@ def get_timeline_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         "summary": summary
     }
 
-def get_overview(db: Session) -> Dict[str, Any]:
-    total_positions = db.query(Position).count()
-    active_positions = db.query(Position).filter(
+def get_overview(db: Session, current_user: User | None = None) -> Dict[str, Any]:
+    total_positions = _position_query(db, current_user).count()
+    active_positions = _position_query(db, current_user).filter(
         Position.status.in_([PositionStatus.OPEN, PositionStatus.PUBLISHED])
     ).count()
     
-    total_resumes = db.query(Resume).count()
-    pending_resumes = db.query(Resume).filter(
+    total_resumes = _resume_query(db, current_user).count()
+    pending_resumes = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.PENDING_SCREENING, ResumeStatus.PENDING_REVIEW,
                           ResumeStatus.PENDING_DEPT_REVIEW, ResumeStatus.PENDING_HR_DECISION])
     ).count()
     
-    total_interviews = db.query(Interview).count()
-    completed_interviews = db.query(Interview).filter(
+    total_interviews = _interview_query(db, current_user).count()
+    completed_interviews = _interview_query(db, current_user).filter(
         Interview.status == InterviewStatus.COMPLETED
     ).count()
     
-    total_offers = db.query(Resume).filter(
+    total_offers = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
                           ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
     ).count()
     
-    accepted_offers = db.query(Resume).filter(
+    accepted_offers = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
     ).count()
     
-    hired_resumes = db.query(Resume).filter(
+    hired_resumes = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
     ).all()
     
@@ -536,10 +569,10 @@ def get_overview(db: Session) -> Dict[str, Any]:
             time_to_hire_list.append(days)
     avg_time_to_hire = round(statistics.mean(time_to_hire_list), 1) if time_to_hire_list else None
     
-    match_scores = db.query(Resume.match_score).filter(Resume.match_score.isnot(None)).all()
+    match_scores = _resume_query(db, current_user, Resume.match_score).filter(Resume.match_score.isnot(None)).all()
     avg_match_score = round(statistics.mean([s[0] for s in match_scores]), 1) if match_scores else None
     
-    passed_interviews = db.query(Interview).filter(
+    passed_interviews = _interview_query(db, current_user).filter(
         Interview.result == InterviewResult.PASSED
     ).count()
     interview_pass_rate = round(passed_interviews / completed_interviews * 100, 1) if completed_interviews > 0 else 0
@@ -561,8 +594,8 @@ def get_overview(db: Session) -> Dict[str, Any]:
         "offer_accept_rate": offer_accept_rate
     }
     
-    funnel = get_recruitment_funnel(db)
-    recent_activities = get_recent_activities(db, limit=5)
+    funnel = get_recruitment_funnel(db, current_user)
+    recent_activities = get_recent_activities(db, current_user, limit=5)
     
     return {
         "metrics": metrics,

@@ -24,6 +24,7 @@ from app.services.public_token_service import enforce_public_request_tenant, iss
 from app.utils.file_storage import UPLOAD_ROOT as DEFAULT_UPLOAD_ROOT, resolve_object_path, sanitize_content_type
 from app.core.proxy import resolve_request_host
 from app.services.interview_access import can_access_interview
+from app.services.recruitment_access import can_access_resume
 
 
 UPLOAD_ROOT = DEFAULT_UPLOAD_ROOT
@@ -136,8 +137,13 @@ def _can_access_file(
         return interview is not None and can_access_interview(db, interview, current_user)
     if not resource_exists:
         return False
-    if role in {UserRole.ADMIN.value, UserRole.HR.value}:
+    if role == UserRole.ADMIN.value:
         return True
+    if record.resource_type == "question_bank" and role == UserRole.HR.value:
+        return True
+    if record.resource_type == "resume" and role == UserRole.HR.value:
+        resume = db.query(Resume).filter(Resume.id == record.resource_id).first()
+        return can_access_resume(db, resume, current_user)
     if record.resource_type != "resume" or not allow_assigned_resume:
         return False
     active_department_review = (
@@ -146,7 +152,6 @@ def _can_access_file(
             DepartmentReview.tenant_id == current_user.tenant_id,
             DepartmentReview.resume_id == record.resource_id,
             DepartmentReview.reviewer_id == current_user.id,
-            DepartmentReview.is_completed.is_(False),
         )
         .first()
     )

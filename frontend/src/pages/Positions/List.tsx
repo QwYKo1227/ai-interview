@@ -13,6 +13,7 @@ import {
   reconcileHiringManagerSelection,
 } from './filters';
 import { createLatestRequestCoordinator } from '../../utils/latestRequest';
+import { useAuth } from '../../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 
@@ -74,6 +75,8 @@ const positionTypeConfig: Record<string, { color: string; text: string }> = {
 };
 
 const PositionsList: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [data, setData] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -110,15 +113,23 @@ const PositionsList: React.FC = () => {
   }, [positionRequestCoordinator]);
 
   const fetchUsers = useCallback(async () => {
+    if (!isAdmin) {
+      setUsers([]);
+      return;
+    }
     try {
-      const res = await request.get('/auth/users');
+      const res = await request.get('/positions/hiring-managers');
       setUsers(res);
     } catch {
       console.error('Failed to fetch users');
     }
-  }, []);
+  }, [isAdmin]);
 
   const fetchHiringManagers = useCallback(async () => {
+    if (!isAdmin) {
+      setHiringManagers([]);
+      return;
+    }
     await hiringManagerRequestCoordinator.run<HiringManagerOption[]>(
       () => request.get('/positions/hiring-managers'),
       {
@@ -135,7 +146,7 @@ const PositionsList: React.FC = () => {
         onError: () => message.error('获取招聘负责人列表失败'),
       },
     );
-  }, [hiringManagerRequestCoordinator]);
+  }, [hiringManagerRequestCoordinator, isAdmin]);
 
   const fetchDepartments = useCallback(async () => {
     await departmentRequestCoordinator.run<string[]>(
@@ -516,7 +527,7 @@ const PositionsList: React.FC = () => {
               }))}
             />
           </Form.Item>
-          <Form.Item label="招聘负责人">
+          {isAdmin && <Form.Item label="招聘负责人">
             <Select
               placeholder="请选择招聘负责人"
               style={{ width: 220 }}
@@ -535,7 +546,7 @@ const PositionsList: React.FC = () => {
                 hiringManagerId,
               }))}
             />
-          </Form.Item>
+          </Form.Item>}
           <Form.Item label="紧急度">
             <Select
               placeholder="请选择紧急度"
@@ -684,6 +695,8 @@ const PositionsList: React.FC = () => {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <Form.Item
               name="hiring_manager_id"
+              hidden={!isAdmin}
+              rules={isAdmin ? [{ required: true, message: '请选择招聘负责人' }] : undefined}
               label="招聘负责人"
             >
               <Select size="large" allowClear placeholder="选择招聘负责人" showSearch optionFilterProp="children">

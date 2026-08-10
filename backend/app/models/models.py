@@ -101,6 +101,7 @@ class Position(TenantScopedMixin, Base):
     position_type = Column(Enum(PositionType), default=PositionType.FULL_TIME)
     headcount = Column(Integer, default=1)
     hiring_manager_id = Column(UUID(as_uuid=True), nullable=True)
+    hiring_manager_history = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

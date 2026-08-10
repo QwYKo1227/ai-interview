@@ -99,6 +99,7 @@ const InterviewsList: React.FC = () => {
   const [interviewModalVisible, setInterviewModalVisible] = useState(false);
   const [existingInterviews, setExistingInterviews] = useState<any[]>([]);
   const [interviewers, setInterviewers] = useState([]);
+  const [filterInterviewers, setFilterInterviewers] = useState<any[]>([]);
   const [questionBanks, setQuestionBanks] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [interviewForm] = Form.useForm();
@@ -251,6 +252,15 @@ const InterviewsList: React.FC = () => {
     }
   }, []);
 
+  const fetchFilterInterviewers = useCallback(async () => {
+    try {
+      const res = await request.get('/interviews/filter-options/interviewers');
+      setFilterInterviewers(res || []);
+    } catch {
+      setFilterInterviewers([]);
+    }
+  }, []);
+
   const handleCalendarRangeChange = useCallback((start: Date, end: Date) => {
     setCalendarRange((current) => {
       if (current?.start.getTime() === start.getTime() && current?.end.getTime() === end.getTime()) return current;
@@ -260,14 +270,15 @@ const InterviewsList: React.FC = () => {
   }, [fetchCalendarInterviews]);
 
   const refreshInterviews = async () => {
-    const tasks: Promise<unknown>[] = [fetchInterviews()];
+    const tasks: Promise<unknown>[] = [fetchInterviews(), fetchFilterInterviewers()];
     if (calendarRange) tasks.push(fetchCalendarInterviews(calendarRange.start, calendarRange.end));
     await Promise.all(tasks);
   };
 
   useEffect(() => {
     fetchInterviews();
-  }, []);
+    void fetchFilterInterviewers();
+  }, [fetchFilterInterviewers]);
 
   useEffect(() => {
     request.get('/auth/interviewers')
@@ -313,10 +324,10 @@ const InterviewsList: React.FC = () => {
       .filter(([value]) => value)).values(),
   ), [filterOptionSource]);
 
-  const interviewerOptions = useMemo(() => (interviewers as any[]).map((interviewer) => ({
+  const interviewerOptions = useMemo(() => filterInterviewers.map((interviewer) => ({
     value: String(interviewer.id),
     label: interviewer.full_name || interviewer.email || String(interviewer.id),
-  })), [interviewers]);
+  })), [filterInterviewers]);
 
   const filteredData = useMemo(
     () => (data as any[]).filter((interview) => matchesInterviewFilters(interview, filters)),

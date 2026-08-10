@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
@@ -18,8 +18,8 @@ from app.services.position_service import (
 from app.services.ai_service import generate_jd_stream, chat_jd_stream
 from app.models.models import PositionUrgency, User, UserRole
 from app.core.security import check_roles
-from app.routes.auth import get_current_user
 from app.services.public_token_service import resolve_public_tenant
+from app.services.recruitment_access import is_admin, require_position_access
 from app.core.proxy import resolve_request_host
 from typing import List
 from uuid import UUID
@@ -35,6 +35,8 @@ def create_position_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    if not is_admin(current_user):
+        position = position.model_copy(update={"hiring_manager_id": current_user.id})
     return create_position(db, position)
 
 @router.get("", response_model=List[PositionWithStats])
@@ -47,7 +49,7 @@ def get_positions_route(
     department: str = None,
     urgency: PositionUrgency = None,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return get_positions_with_stats(
         db,
@@ -58,6 +60,7 @@ def get_positions_route(
         hiring_manager_id=hiring_manager_id,
         department=department,
         urgency=urgency,
+        current_user=current_user,
     )
 
 
@@ -66,15 +69,18 @@ def get_hiring_managers_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
-    return get_hiring_managers(db)
+    managers = get_hiring_managers(db)
+    if is_admin(current_user):
+        return managers
+    return [manager for manager in managers if manager.id == current_user.id]
 
 
 @router.get("/departments", response_model=List[str])
 def get_position_departments_route(
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
-    return get_position_departments(db)
+    return get_position_departments(db, current_user)
 
 @router.get("/public", response_model=List[PositionResponse])
 def get_public_positions_route(
@@ -143,11 +149,9 @@ def chat_jd_stream_route(
 def get_position_route(
     position_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    position = get_position(db, position_id)
-    if not position:
-        raise HTTPException(status_code=404, detail="Position not found")
+    position = require_position_access(db, position_id, current_user)
 
     stats = get_position_stats(db, position_id)
     linked_banks = get_linked_question_banks(db, position_id)
@@ -170,32 +174,36 @@ def get_position_route(
 def get_position_stats_route(
     position_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    position = get_position(db, position_id)
-    if not position:
-        raise HTTPException(status_code=404, detail="Position not found")
+    require_position_access(db, position_id, current_user)
     return get_position_stats(db, position_id)
 
 @router.get("/{position_id}/question-banks", response_model=List[QuestionBankBrief])
 def get_position_question_banks_route(
     position_id: UUID,
     db: Session = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    position = get_position(db, position_id)
-    if not position:
-        raise HTTPException(status_code=404, detail="Position not found")
+    require_position_access(db, position_id, current_user)
     return get_linked_question_banks(db, position_id)
 
 @router.put("/{position_id}", response_model=PositionResponse)
 def update_position_route(
     position_id: UUID,
     position: PositionUpdate,
+    owner_change_reason: str | None = Query(default=None, max_length=500),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    db_position = update_position(db, position_id, position)
+    require_position_access(db, position_id, current_user)
+    db_position = update_position(
+        db,
+        position_id,
+        position,
+        actor=current_user,
+        owner_change_reason=owner_change_reason,
+    )
     if not db_position:
         raise HTTPException(status_code=404, detail="Position not found")
     return db_position
@@ -206,6 +214,7 @@ def delete_position_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_position_access(db, position_id, current_user)
     db_position = delete_position(db, position_id)
     if not db_position:
         raise HTTPException(status_code=404, detail="Position not found")

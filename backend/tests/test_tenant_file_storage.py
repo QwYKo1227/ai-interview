@@ -49,7 +49,7 @@ def _app(db, tenant, root, *, current_user=None):
     app.dependency_overrides[get_tenant_db] = lambda: db
     app.dependency_overrides[get_unscoped_db] = lambda: db
     user = current_user or SimpleNamespace(
-        id=uuid4(), tenant_id=tenant.id, role=UserRole.HR
+        id=uuid4(), tenant_id=tenant.id, role=UserRole.ADMIN
     )
     app.dependency_overrides[get_current_user_dep] = lambda: user
     files.UPLOAD_ROOT = root
@@ -436,7 +436,8 @@ def test_assigned_department_reviewer_can_download_resume_file(
     assert response.status_code == 200
     assert response.content == b"department review resume"
     assert publish.status_code == 404
-    assert completed.status_code == 404
+    assert completed.status_code == 200
+    assert completed.content == b"department review resume"
     assert db.query(PublicAccessToken).count() == 0
 
 
@@ -586,7 +587,7 @@ def test_unassigned_interviewer_cannot_self_join_panel_by_question_audio_upload(
             intruder,
         )
 
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == 404
     assert scoped.query(InterviewPanel).filter(
         InterviewPanel.interview_id == test_interview.id,
         InterviewPanel.interviewer_id == intruder.id,
@@ -616,7 +617,7 @@ def test_unassigned_interviewer_cannot_upload_full_interview_audio(
             intruder,
         )
 
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == 404
     assert scoped.query(StoredFile).count() == 0
     scoped.close()
 
@@ -719,7 +720,7 @@ def test_unassigned_interviewer_cannot_score_then_reuse_created_panel_for_audio(
             scoped,
             intruder,
         )
-    assert audio_error.value.status_code == 403
+    assert audio_error.value.status_code == 404
 
     stored = save_upload_file(
         _upload("existing.webm", b"audio", "audio/webm"),

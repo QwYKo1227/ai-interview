@@ -2,7 +2,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.models import (
     Resume, Position, Interview, InterviewPanel, DepartmentReview, User, Offer, CodingTest,
     ResumeStatus, ScreeningResult, RejectReasonCategory, ReviewRecommendation, PositionStatus,
-    UserRole,
+    InterviewStatus,
+    UserRole, OfferStatus,
 )
 from app.schemas.resume import (
     ResumeCreate, ResumeUpdate, ScreeningResult as ScreeningResultSchema,
@@ -492,8 +493,31 @@ def _annotate_duplicate_resume_counts(
     return resumes
 
 
-def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: str = None, status: str = None, position_id: UUID = None, reviewer_id: UUID = None):
+def get_resumes(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    candidate_name: str = None,
+    status: str = None,
+    position_id: UUID = None,
+    reviewer_id: UUID = None,
+    current_user: User | None = None,
+):
     query = db.query(Resume).options(joinedload(Resume.position))
+
+    if current_user is not None and current_user.role != UserRole.ADMIN:
+        access_filters = [
+            Resume.department_reviews.any(
+                DepartmentReview.reviewer_id == current_user.id
+            )
+        ]
+        if current_user.role == UserRole.HR:
+            access_filters.append(
+                Resume.position.has(Position.hiring_manager_id == current_user.id)
+            )
+        query = query.filter(
+            or_(*access_filters)
+        )
 
     if candidate_name:
         query = query.filter(Resume.candidate_name.ilike(f"%{candidate_name}%"))
@@ -505,9 +529,14 @@ def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: st
         query = query.filter(Resume.position_id == position_id)
 
     if reviewer_id:
-        query = query.join(DepartmentReview, Resume.id == DepartmentReview.resume_id)
-        query = query.filter(DepartmentReview.reviewer_id == reviewer_id)
-        query = query.filter(DepartmentReview.is_completed == False)
+        query = query.filter(
+            Resume.department_reviews.any(
+                and_(
+                    DepartmentReview.reviewer_id == reviewer_id,
+                    DepartmentReview.is_completed.is_(False),
+                )
+            )
+        )
 
     query = query.order_by(Resume.created_at.desc())
 
@@ -969,9 +998,14 @@ def _send_hr_review_notification(db: Session, resume: Resume, reviews: List[Depa
         from app.services.mail_service import MailService
         from app.services.system_config_service import get_system_config
         
+        position = resume.position
+        if position is None or position.hiring_manager_id is None:
+            return
+
         hr_users = db.query(User).filter(
-            User.role == UserRole.HR,
-            User.is_active == True
+            User.id == position.hiring_manager_id,
+            User.role.in_([UserRole.ADMIN, UserRole.HR]),
+            User.is_active.is_(True),
         ).all()
         
         if not hr_users:
@@ -989,8 +1023,6 @@ def _send_hr_review_notification(db: Session, resume: Resume, reviews: List[Depa
         
         overall_scores = [r.overall_score for r in reviews if r.overall_score is not None]
         avg_score = sum(overall_scores) / len(overall_scores) if overall_scores else 0
-        
-        position = resume.position
         
         for hr in hr_users:
             if not hr.email:
@@ -1222,18 +1254,47 @@ def get_resume_with_reviews(db: Session, resume_id: UUID) -> Optional[Resume]:
     return resume
 
 
-def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID, background_tasks) -> Resume:
+def transfer_resume_position(
+    db: Session,
+    resume_id: UUID,
+    new_position_id: UUID,
+    background_tasks,
+    *,
+    current_user: User | None = None,
+) -> Resume:
     """
     将简历转岗到其他岗位，并重新解析
     """
-    resume = db.query(Resume).filter(Resume.id == resume_id).first()
+    if current_user is not None:
+        from app.services.recruitment_access import (
+            require_position_access,
+            require_resume_access,
+        )
+
+        resume = require_resume_access(db, resume_id, current_user, manage=True)
+    else:
+        resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="简历不存在")
 
     # 检查新岗位是否存在
-    new_position = db.query(Position).filter(Position.id == new_position_id).first()
+    if current_user is not None:
+        new_position = require_position_access(db, new_position_id, current_user)
+    else:
+        new_position = db.query(Position).filter(Position.id == new_position_id).first()
     if not new_position:
         raise HTTPException(status_code=404, detail="目标岗位不存在")
+
+    active_interview = db.query(Interview.id).filter(
+        Interview.resume_id == resume_id,
+        Interview.status.notin_([InterviewStatus.COMPLETED, InterviewStatus.CANCELLED]),
+    ).first()
+    active_offer = db.query(Offer.id).filter(
+        Offer.resume_id == resume_id,
+        Offer.status.in_([OfferStatus.DRAFT, OfferStatus.PENDING, OfferStatus.SENT]),
+    ).first()
+    if active_interview or active_offer:
+        raise HTTPException(status_code=409, detail="存在进行中的面试或 Offer，不能转岗")
 
     # 更新岗位
     old_position_id = resume.position_id

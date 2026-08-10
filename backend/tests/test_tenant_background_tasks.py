@@ -21,7 +21,7 @@ from app.services import (
 from app.services.task_queue import QueueTask, TaskQueue, TaskStatus
 from app.services.public_token_service import hash_token, issue_public_token
 from app.core.security import create_access_token, get_password_hash
-from app.models.models import User, UserRole
+from app.models.models import Position, Resume, User, UserRole
 
 
 BACKGROUND_FUNCTIONS = [
@@ -379,10 +379,25 @@ def test_task_status_http_endpoint_masks_another_tenants_known_task(
         db.add(user)
         users.append(user)
     db.commit()
+    position = Position(
+        tenant_id=tenant_a.id,
+        title="Owned position",
+        description="Description",
+        hiring_manager_id=users[0].id,
+    )
+    db.add(position)
+    db.flush()
+    resume = Resume(
+        tenant_id=tenant_a.id,
+        position_id=position.id,
+        candidate_name="Owned candidate",
+    )
+    db.add(resume)
+    db.commit()
     queue = get_task_queue()
     task = QueueTask(
         tenant_id=tenant_a.id,
-        resource_id=uuid4(),
+        resource_id=resume.id,
         id="known-task",
         task_type="resume_parse",
         payload={},

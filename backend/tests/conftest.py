@@ -233,7 +233,7 @@ def test_interviewer(db: Session, tenant_a: Tenant) -> User:
 
 
 @pytest.fixture
-def test_position(db: Session, tenant_a: Tenant) -> Position:
+def test_position(db: Session, tenant_a: Tenant, test_user: User) -> Position:
     """
     创建测试岗位
     """
@@ -249,7 +249,8 @@ def test_position(db: Session, tenant_a: Tenant) -> Position:
         status=PositionStatus.OPEN,
         urgency=PositionUrgency.HIGH,
         position_type=PositionType.FULL_TIME,
-        headcount=2
+        headcount=2,
+        hiring_manager_id=test_user.id,
     )
     db.add(position)
     db.commit()

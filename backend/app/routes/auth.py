@@ -16,6 +16,7 @@ from app.schemas.user import (
     UserResponse,
     UserUpdateMe,
 )
+from app.services.recruitment_access import has_nonclosed_owned_positions
 from app.core.security import verify_password, create_access_token, check_roles, get_password_hash
 from app.core.tenant_dependencies import get_current_user_dep, get_tenant_context, get_tenant_db
 from app.core.tenant_context import TenantContext
@@ -365,6 +366,10 @@ def update_user_role(
     if db_user.id == current_user.id:
         raise HTTPException(status_code=400, detail="不能修改自己的角色")
 
+    if new_role not in {UserRole.ADMIN, UserRole.HR}:
+        if has_nonclosed_owned_positions(db, db_user.id):
+            raise HTTPException(status_code=409, detail="请先转交该用户负责的未关闭岗位")
+
     db_user.role = new_role
     db.add(db_user)
     db.commit()
@@ -390,6 +395,10 @@ def toggle_user_status(
     # 防止禁用自己
     if db_user.id == current_user.id:
         raise HTTPException(status_code=400, detail="不能禁用自己的账户")
+
+    if db_user.is_active:
+        if has_nonclosed_owned_positions(db, db_user.id):
+            raise HTTPException(status_code=409, detail="请先转交该用户负责的未关闭岗位")
 
     db_user.is_active = not db_user.is_active
     db.add(db_user)

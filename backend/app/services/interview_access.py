@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.models import Interview, User, UserRole
+from app.services.recruitment_access import can_access_interview_as_owner
 
 
 def is_interviewer_assigned(
@@ -22,7 +23,7 @@ def is_interviewer_assigned(
 def can_access_interview(db: Session, interview: Interview, user: User) -> bool:
     role = getattr(user.role, "value", user.role)
     if role in {UserRole.ADMIN.value, UserRole.HR.value}:
-        return True
+        return can_access_interview_as_owner(interview, user)
     return is_interviewer_assigned(db, interview, user.id)
 
 
@@ -37,7 +38,7 @@ def require_interview_access(db: Session, interview_id, user: User) -> Interview
     if interview is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
     if not can_access_interview(db, interview, user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Interview access denied")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
     return interview
 
 

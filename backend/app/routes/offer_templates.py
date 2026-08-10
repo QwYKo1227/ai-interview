@@ -8,7 +8,8 @@ from app.schemas.offer_template import (
 )
 from app.services import offer_template_service
 from app.core.security import check_roles
-from app.models.models import User, UserRole
+from app.models.models import OfferTemplate, User, UserRole
+from app.services.recruitment_access import require_position_access
 
 router = APIRouter(
     prefix="/offer-templates",
@@ -22,6 +23,8 @@ def create_template(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    if template_data.position_id is not None:
+        require_position_access(db, template_data.position_id, current_user)
     template = offer_template_service.create_template(db, template_data, current_user.id)
     return offer_template_service.get_template(db, template.id)
 
@@ -32,7 +35,11 @@ def list_templates(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    items = offer_template_service.get_templates(db, position_id, include_inactive)
+    if position_id is not None:
+        require_position_access(db, position_id, current_user)
+    items = offer_template_service.get_templates(
+        db, position_id, include_inactive, current_user
+    )
     return {"items": items, "total": len(items)}
 
 @router.get("/default/{position_id}", response_model=OfferTemplateResponse)
@@ -41,6 +48,7 @@ def get_default_template(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    require_position_access(db, position_id, current_user)
     template = offer_template_service.get_default_template_for_position(db, position_id)
     if not template:
         raise HTTPException(status_code=404, detail="未找到默认模板")
@@ -52,6 +60,11 @@ def get_template(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    stored = db.query(OfferTemplate).filter(OfferTemplate.id == template_id).first()
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if stored.position_id is not None:
+        require_position_access(db, stored.position_id, current_user)
     template = offer_template_service.get_template(db, template_id)
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
@@ -64,6 +77,13 @@ def update_template(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    stored = db.query(OfferTemplate).filter(OfferTemplate.id == template_id).first()
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if stored.position_id is not None:
+        require_position_access(db, stored.position_id, current_user)
+    if template_data.position_id is not None:
+        require_position_access(db, template_data.position_id, current_user)
     template = offer_template_service.update_template(db, template_id, template_data)
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
@@ -75,6 +95,11 @@ def delete_template(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    stored = db.query(OfferTemplate).filter(OfferTemplate.id == template_id).first()
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if stored.position_id is not None:
+        require_position_access(db, stored.position_id, current_user)
     success = offer_template_service.delete_template(db, template_id)
     if not success:
         raise HTTPException(status_code=404, detail="模板不存在")

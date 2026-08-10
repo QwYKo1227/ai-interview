@@ -914,6 +914,7 @@ def test_position_create_and_update_reject_cross_tenant_hiring_manager(
     tenant_b_user: User,
 ):
     before = tenant_a_db.query(Position).count()
+    previous_owner_id = test_position.hiring_manager_id
     with pytest.raises(HTTPException) as create_exc:
         position_service.create_position(
             tenant_a_db,
@@ -931,11 +932,11 @@ def test_position_create_and_update_reject_cross_tenant_hiring_manager(
             PositionUpdate(hiring_manager_id=tenant_b_user.id),
         )
 
-    assert create_exc.value.status_code == 404
-    assert update_exc.value.status_code == 404
+    assert create_exc.value.status_code == 400
+    assert update_exc.value.status_code == 400
     assert tenant_a_db.query(Position).count() == before
     stored_position = tenant_a_db.query(Position).filter(Position.id == test_position.id).one()
-    assert stored_position.hiring_manager_id is None
+    assert stored_position.hiring_manager_id == previous_owner_id
 
 
 @pytest.mark.parametrize("foreign_reference", ["resume", "position"])

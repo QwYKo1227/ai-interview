@@ -10,10 +10,11 @@ from app.services.resume_service import (
 )
 
 
-def test_hr_is_notified_when_department_review_finishes(
+def test_recruitment_owner_is_notified_when_department_review_finishes(
     db,
     test_resume,
     test_user,
+    test_admin,
     monkeypatch,
 ):
     sent = []
@@ -31,6 +32,8 @@ def test_hr_is_notified_when_department_review_finishes(
         "app.services.system_config_service.get_system_config",
         lambda _db: SimpleNamespace(frontend_url="https://hr.example.com"),
     )
+    test_resume.position.hiring_manager_id = test_admin.id
+    db.commit()
 
     _send_hr_review_notification(
         db,
@@ -42,7 +45,7 @@ def test_hr_is_notified_when_department_review_finishes(
     )
 
     assert len(sent) == 1
-    assert sent[0][0] == test_user.email
+    assert sent[0][0] == test_admin.email
     assert "部门评审完成" in sent[0][1]
     assert f"https://hr.example.com/resumes/{test_resume.id}" in sent[0][2]
 

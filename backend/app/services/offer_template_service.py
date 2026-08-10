@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_, or_
-from app.models.models import OfferTemplate, Position
+from app.models.models import OfferTemplate, Position, User, UserRole
 from app.schemas.offer_template import OfferTemplateCreate, OfferTemplateUpdate
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -65,10 +65,18 @@ def create_template(db: Session, template_data: OfferTemplateCreate, user_id: UU
 def get_templates(
     db: Session,
     position_id: Optional[UUID] = None,
-    include_inactive: bool = False
+    include_inactive: bool = False,
+    current_user: Optional[User] = None,
 ) -> List[Dict[str, Any]]:
     _require_position(db, position_id)
     query = db.query(OfferTemplate)
+    if current_user is not None and current_user.role != UserRole.ADMIN:
+        query = query.outerjoin(Position, OfferTemplate.position_id == Position.id).filter(
+            or_(
+                OfferTemplate.position_id.is_(None),
+                Position.hiring_manager_id == current_user.id,
+            )
+        )
     
     if not include_inactive:
         query = query.filter(OfferTemplate.is_active == True)

@@ -18,6 +18,7 @@ from app.utils.file_storage import (
 )
 from app.models.file_models import StoredFile
 from app.services.ai_service import analyze_resume, generate_resume_markdown
+from app.services.document_parser import extract_document_text
 from app.services.task_queue import get_task_queue
 import docx
 import PyPDF2
@@ -117,7 +118,7 @@ def _process_resume_task(
             stored = db.query(StoredFile).filter(StoredFile.id == resume.file_id).first()
             if stored:
                 file_path = str(stored_file_path(stored))
-        content = read_file_content(file_path)
+        content = extract_document_text(file_path)
         if not content:
             resume.parse_status = "failed"
             resume.parse_error = "读取简历内容失败"
@@ -125,6 +126,7 @@ def _process_resume_task(
             return
 
         resume.raw_text = content
+        resume.resume_markdown = content
 
         position = db.query(Position).filter(Position.id == position_id).first()
         if not position:

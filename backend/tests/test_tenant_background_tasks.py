@@ -152,7 +152,11 @@ def test_resume_worker_cannot_read_another_tenants_resource(db, tenant_a, tenant
             self.session.close()
 
     monkeypatch.setattr(resume_service, "tenant_session", BoundSession)
-    monkeypatch.setattr(resume_service, "read_file_content", lambda _path: seen.append("read"))
+    monkeypatch.setattr(
+        resume_service,
+        "extract_document_text",
+        lambda _path: seen.append("read"),
+    )
 
     resume_service.process_resume_task(
         tenant_b.id,

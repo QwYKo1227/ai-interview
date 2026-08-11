@@ -131,7 +131,7 @@ def test_scheduling_fields_accept_values_required_by_type(interview_type):
     [
         ("2026-08-01T10:00:00+08:00", "晚于"),
         ("2026-08-02T10:00:00+08:00", "同一天"),
-        ("2026-08-01T10:45:00+08:00", "30 分钟"),
+        ("2026-08-01T10:10:00+08:00", "15 分钟"),
     ],
 )
 def test_interview_create_validates_beijing_time_range(end_time, message):
@@ -143,3 +143,16 @@ def test_interview_create_validates_beijing_time_range(end_time, message):
             "interview_end_time": end_time,
             "interview_type": "phone",
         })
+
+
+def test_interview_create_accepts_quarter_hour_times():
+    interview = InterviewCreate.model_validate({
+        "resume_id": uuid4(),
+        "position_id": uuid4(),
+        "interview_time": "2026-08-01T10:15:00+08:00",
+        "interview_end_time": "2026-08-01T10:45:00+08:00",
+        "interview_type": "phone",
+    })
+
+    assert interview.interview_time.minute == 15
+    assert interview.interview_end_time.minute == 45

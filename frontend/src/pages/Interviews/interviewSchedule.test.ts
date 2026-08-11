@@ -16,9 +16,14 @@ describe('interview schedule time range', () => {
       .toEqual({ text: '2026-08-01 10:00–11:00', estimated: true });
   });
 
-  it('rejects non-half-hour, reversed, and cross-day ranges', () => {
-    expect(validateInterviewTimeRange(dayjs('2026-08-01 10:00'), dayjs('2026-08-01 10:45')))
-      .toBe('请选择整点或半点时间');
+  it('accepts quarter-hour ranges', () => {
+    expect(validateInterviewTimeRange(dayjs('2026-08-01 10:15'), dayjs('2026-08-01 10:45')))
+      .toBeNull();
+  });
+
+  it('rejects non-quarter-hour, reversed, and cross-day ranges', () => {
+    expect(validateInterviewTimeRange(dayjs('2026-08-01 10:00'), dayjs('2026-08-01 10:10')))
+      .toBe('请选择 15 分钟刻度的时间');
     expect(validateInterviewTimeRange(dayjs('2026-08-01 10:00'), dayjs('2026-08-01 09:30')))
       .toBe('结束时间必须晚于开始时间');
     expect(validateInterviewTimeRange(dayjs('2026-08-01 23:30'), dayjs('2026-08-02 00:30')))

@@ -7,6 +7,7 @@ dayjs.extend(timezone);
 
 export const BEIJING_TIMEZONE = 'Asia/Shanghai';
 export const LEGACY_INTERVIEW_MINUTES = 60;
+export const INTERVIEW_MINUTE_STEP = 15;
 
 export const toBeijingTime = (value?: string | Date | Dayjs | null) => {
   if (!value) return null;
@@ -44,8 +45,8 @@ export const validateInterviewTimeRange = (start?: Dayjs | null, end?: Dayjs | n
   const endCn = end.tz(BEIJING_TIMEZONE, true);
   if (!endCn.isAfter(startCn)) return '结束时间必须晚于开始时间';
   if (startCn.format('YYYY-MM-DD') !== endCn.format('YYYY-MM-DD')) return '开始和结束时间必须在同一天';
-  if ([startCn, endCn].some((value) => value.minute() % 30 !== 0 || value.second() !== 0)) {
-    return '请选择整点或半点时间';
+  if ([startCn, endCn].some((value) => value.minute() % INTERVIEW_MINUTE_STEP !== 0 || value.second() !== 0)) {
+    return '请选择 15 分钟刻度的时间';
   }
   return null;
 };

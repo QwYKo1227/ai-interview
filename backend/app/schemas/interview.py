@@ -19,8 +19,8 @@ def validate_interview_time_range(start: datetime, end: datetime) -> None:
     if end_cn.date() != start_cn.date():
         raise ValueError("面试开始和结束时间必须在同一天")
     for value in (start_cn, end_cn):
-        if value.minute not in (0, 30) or value.second or value.microsecond:
-            raise ValueError("面试时间必须使用 30 分钟刻度")
+        if value.minute % 15 != 0 or value.second or value.microsecond:
+            raise ValueError("面试时间必须使用 15 分钟刻度")
 
 class InterviewBase(BaseModel):
     resume_id: UUID

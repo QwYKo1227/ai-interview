@@ -19,6 +19,7 @@ import request from '../utils/request';
 import {
   buildInterviewTimePayload,
   defaultInterviewEnd,
+  INTERVIEW_MINUTE_STEP,
   getScheduleErrorMessage,
   validateInterviewTimeRange,
 } from '../pages/Interviews/interviewSchedule';
@@ -303,7 +304,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
             <Col span={12}>
               <Form.Item name="interview_time" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
                 <DatePicker
-                  showTime={{ format: 'HH:mm', minuteStep: 30 }}
+                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }}
                   format="YYYY-MM-DD HH:mm"
                   style={{ width: '100%' }}
                   size="large"
@@ -331,7 +332,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
                   }),
                 ]}
               >
-                <DatePicker showTime={{ format: 'HH:mm', minuteStep: 30 }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} size="large" />
+                <DatePicker showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} size="large" />
               </Form.Item>
             </Col>
           </Row>

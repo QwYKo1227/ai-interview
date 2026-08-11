@@ -174,10 +174,6 @@
   box-shadow: none;
 }
 
-.interview-calendar__view--dayGridMonth .interview-calendar__event > div:first-child {
-  display: none;
-}
-
 .interview-calendar .interview-event--scheduled { --event-accent: #0f6cbd; --event-border: #b8d8f0; --event-bg: #eaf3fb; --event-text: #0b5a9a; }
 .interview-calendar .interview-event--in_progress { --event-accent: #d97706; --event-border: #f2cf9c; --event-bg: #fff4e5; --event-text: #9a4d00; }
 .interview-calendar .interview-event--ending,
@@ -210,6 +206,23 @@
   justify-content: center;
   gap: 1px;
   padding: 5px 6px;
+}
+
+.interview-calendar__view--timeGridWeek .interview-calendar__event--compact .interview-event-content {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 1px 4px;
+  line-height: 15px;
+}
+
+.interview-calendar__view--timeGridWeek .interview-calendar__event--compact .interview-event-content__time {
+  font-size: 10px;
+}
+
+.interview-calendar__view--timeGridWeek .interview-calendar__event--compact .interview-event-content__title {
+  flex: 1;
 }
 
 .interview-event-content__time {

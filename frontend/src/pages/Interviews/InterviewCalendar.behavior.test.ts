@@ -4,6 +4,7 @@ import {
   getCalendarEventClass,
   formatCalendarTitle,
   getOverflowDayRecords,
+  isCompactCalendarEvent,
   MONTH_DAY_MAX_EVENTS,
 } from './InterviewCalendar';
 
@@ -17,6 +18,21 @@ describe('interview calendar month presentation', () => {
     expect(getCalendarEventClass({ lifecycle_state: 'in_progress' })).toContain('interview-event--in_progress');
     expect(getCalendarEventClass({ lifecycle_state: 'ended' })).toContain('interview-event--pending_decision');
     expect(getCalendarEventClass({ lifecycle_state: 'cancelled' })).toContain('interview-event--cancelled');
+  });
+
+  it('uses a compact layout for 15, 30, and 45 minute interviews', () => {
+    for (const minutes of [15, 30, 45]) {
+      const record = {
+        interview_time: '2026-08-01T02:00:00.000Z',
+        interview_end_time: `2026-08-01T02:${String(minutes).padStart(2, '0')}:00.000Z`,
+      };
+      expect(isCompactCalendarEvent(record)).toBe(true);
+      expect(getCalendarEventClass(record)).toContain('interview-calendar__event--compact');
+    }
+    expect(isCompactCalendarEvent({
+      interview_time: '2026-08-01T02:00:00.000Z',
+      interview_end_time: '2026-08-01T03:00:00.000Z',
+    })).toBe(false);
   });
 
   it('deduplicates all interviews shown in the overflow dialog', () => {

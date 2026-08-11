@@ -43,8 +43,20 @@ const PROGRESS_META: Record<string, { label: string }> = {
 export const MONTH_DAY_MAX_EVENTS = true;
 
 export const getCalendarEventClass = (record: any) => (
-  `interview-calendar__event interview-event--${getInterviewProgress(record)}`
+  [
+    'interview-calendar__event',
+    `interview-event--${getInterviewProgress(record)}`,
+    isCompactCalendarEvent(record) ? 'interview-calendar__event--compact' : '',
+  ].filter(Boolean).join(' ')
 );
+
+export const isCompactCalendarEvent = (record: any) => {
+  const start = toBeijingTime(record?.interview_time);
+  const end = getInterviewEnd(record).value;
+  if (!start || !end) return false;
+  const durationMinutes = end.diff(start, 'minute');
+  return durationMinutes > 0 && durationMinutes <= 45;
+};
 
 type MoreLinkClickInfo = Parameters<MoreLinkHandler>[0];
 
@@ -205,7 +217,7 @@ const InterviewCalendar: React.FC<InterviewCalendarProps> = ({
         slotMinTime="00:00:00"
         slotMaxTime="24:00:00"
         scrollTime="08:30:00"
-        slotDuration="00:30:00"
+        slotDuration="00:15:00"
         eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
         height={calendarView === 'timeGridWeek' ? 720 : 900}
         datesSet={(info) => {

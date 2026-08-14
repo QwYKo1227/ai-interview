@@ -1,4 +1,4 @@
-{$APP_DOMAINS:interview.careray.com, interview.photonthix.com} {
+{$APP_DOMAINS:interview.careray.com} {
 	tls internal
 	header Permissions-Policy "microphone=(self)"
 

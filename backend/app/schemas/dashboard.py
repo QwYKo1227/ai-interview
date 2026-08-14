@@ -102,3 +102,25 @@ class OverviewResponse(BaseModel):
     metrics: OverviewMetrics
     funnel: RecruitmentFunnel
     recent_activities: List[Activity]
+
+
+class InterviewerDashboardMetrics(BaseModel):
+    pending_reviews: int
+    today_interviews: int
+    pending_feedback: int
+
+
+class UpcomingInterview(BaseModel):
+    id: str
+    candidate_name: Optional[str]
+    position_title: Optional[str]
+    interview_time: datetime
+    interview_end_time: Optional[datetime]
+    interview_type: Optional[str]
+    interview_location: Optional[str]
+    meeting_link: Optional[str]
+
+
+class InterviewerDashboardResponse(BaseModel):
+    metrics: InterviewerDashboardMetrics
+    upcoming_interviews: List[UpcomingInterview]

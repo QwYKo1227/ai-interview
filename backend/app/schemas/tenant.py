@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.password_policy import validate_password_policy
-from app.models.tenant_models import TenantDomain, TenantStatus
+from app.models.tenant_models import TenantStatus
 
 
 class TenantSummary(BaseModel):
@@ -30,41 +30,6 @@ class TenantResponse(TenantSummary):
     updated_at: datetime
 
 
-class TenantDomainCreate(BaseModel):
-    domain: str = Field(min_length=1, max_length=253)
-    is_primary: bool = False
-
-    model_config = ConfigDict(extra="forbid")
-
-    @field_validator("domain")
-    @classmethod
-    def normalize_domain(cls, value: str) -> str:
-        return TenantDomain(domain=value, tenant_id=UUID(int=0)).domain
-
-
-class TenantDomainUpdate(BaseModel):
-    domain: Optional[str] = Field(default=None, min_length=1, max_length=253)
-    is_primary: Optional[bool] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-    @field_validator("domain")
-    @classmethod
-    def normalize_domain(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return TenantDomain(domain=value, tenant_id=UUID(int=0)).domain
-
-
-class TenantDomainResponse(BaseModel):
-    id: UUID
-    domain: str
-    is_primary: bool
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class TenantAdminResponse(BaseModel):
     id: UUID
     email: EmailStr
@@ -75,7 +40,6 @@ class TenantAdminResponse(BaseModel):
 
 
 class TenantDetailResponse(TenantResponse):
-    domains: list[TenantDomainResponse]
     admins: list[TenantAdminResponse]
 
 
@@ -111,7 +75,6 @@ class TenantAdminPasswordResetRequest(BaseModel):
 class TenantOnboardingRequest(BaseModel):
     code: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
     name: str = Field(min_length=1, max_length=255)
-    primary_domain: str = Field(min_length=1, max_length=253)
     admin_email: EmailStr
     admin_password: str
 
@@ -126,17 +89,6 @@ class TenantOnboardingRequest(BaseModel):
     @classmethod
     def normalize_name(cls, value):
         return value.strip() if isinstance(value, str) else value
-
-    @field_validator("primary_domain", mode="before")
-    @classmethod
-    def normalize_domain(cls, value):
-        return value.strip().lower() if isinstance(value, str) else value
-
-    @field_validator("primary_domain")
-    @classmethod
-    def validate_domain(cls, value: str) -> str:
-        # Reuse the model's authoritative hostname normalization and validation.
-        return TenantDomain(domain=value, tenant_id=UUID(int=0)).domain
 
     @field_validator("admin_email", mode="after")
     @classmethod

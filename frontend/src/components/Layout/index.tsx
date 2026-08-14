@@ -31,7 +31,10 @@ const AppLayout: React.FC = () => {
   const [pendingOfferCount, setPendingOfferCount] = useState(0);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !['admin', 'hr'].includes(role)) {
+      setPendingOfferCount(0);
+      return;
+    }
     const loadPendingCount = () => {
       request.get('/offers/my-pending-count')
         .then((response) => setPendingOfferCount(response?.count || 0))
@@ -40,7 +43,7 @@ const AppLayout: React.FC = () => {
     loadPendingCount();
     window.addEventListener('offer-pending-updated', loadPendingCount);
     return () => window.removeEventListener('offer-pending-updated', loadPendingCount);
-  }, [user, location.pathname]);
+  }, [user, role, location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -69,11 +72,13 @@ const AppLayout: React.FC = () => {
       key: '/resumes',
       icon: <FileTextOutlined aria-hidden="true" />,
       label: '简历管理',
+      roles: ['admin', 'hr'],
     },
     {
       key: '/resumes/my-reviews',
       icon: <AuditOutlined aria-hidden="true" />,
       label: '我的评审',
+      roles: ['interviewer'],
     },
     {
       key: '/interviews',
@@ -90,6 +95,7 @@ const AppLayout: React.FC = () => {
       key: '/offers',
       icon: <FileAddOutlined aria-hidden="true" />,
       label: <Badge count={pendingOfferCount} size="small" offset={[10, 0]}>Offer管理</Badge>,
+      roles: ['admin', 'hr'],
     },
     {
       key: '/offers/templates',

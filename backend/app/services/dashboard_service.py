@@ -1,13 +1,123 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, and_, or_
 from app.models.models import (
-    Position, Resume, Interview, QuestionBank, User, InterviewPanel,
+    Position, Resume, Interview, QuestionBank, User, InterviewPanel, DepartmentReview,
     PositionStatus, ResumeStatus, InterviewStatus, InterviewResult, UserRole
 )
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import statistics
 from app.services.recruitment_access import is_admin
+
+
+CHINA_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _assigned_interview_query(db: Session, interviewer_id, *entities):
+    panel_assignment_exists = (
+        db.query(InterviewPanel.id)
+        .filter(
+            InterviewPanel.interview_id == Interview.id,
+            InterviewPanel.tenant_id == Interview.tenant_id,
+            InterviewPanel.interviewer_id == interviewer_id,
+        )
+        .exists()
+    )
+    return (
+        db.query(*(entities or (Interview,)))
+        .filter(
+            or_(
+                Interview.interviewer_id == interviewer_id,
+                panel_assignment_exists,
+            )
+        )
+    )
+
+
+def get_interviewer_dashboard(
+    db: Session,
+    current_user: User,
+    *,
+    now: datetime | None = None,
+) -> Dict[str, Any]:
+    """Return only actionable, assignment-scoped data for one interviewer."""
+
+    now_utc = now or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
+    today_cn = now_utc.astimezone(CHINA_TIMEZONE)
+    today_start = today_cn.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    today_end = today_start + timedelta(days=1)
+
+    pending_reviews = (
+        db.query(DepartmentReview)
+        .filter(
+            DepartmentReview.reviewer_id == current_user.id,
+            DepartmentReview.is_completed.is_(False),
+        )
+        .count()
+    )
+    today_interviews = (
+        _assigned_interview_query(db, current_user.id)
+        .filter(
+            Interview.interview_time >= today_start,
+            Interview.interview_time < today_end,
+            Interview.status != InterviewStatus.CANCELLED,
+        )
+        .count()
+    )
+    pending_feedback = (
+        db.query(InterviewPanel)
+        .join(
+            Interview,
+            and_(
+                Interview.id == InterviewPanel.interview_id,
+                Interview.tenant_id == InterviewPanel.tenant_id,
+            ),
+        )
+        .filter(
+            InterviewPanel.interviewer_id == current_user.id,
+            InterviewPanel.is_submitted.is_(False),
+            Interview.lifecycle_state.in_(["ending", "ended"]),
+            Interview.status != InterviewStatus.CANCELLED,
+        )
+        .count()
+    )
+    upcoming = (
+        _assigned_interview_query(db, current_user.id)
+        .options(joinedload(Interview.resume), joinedload(Interview.position))
+        .filter(
+            Interview.interview_time >= now_utc,
+            Interview.status != InterviewStatus.CANCELLED,
+            Interview.lifecycle_state == "scheduled",
+        )
+        .order_by(Interview.interview_time.asc())
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "metrics": {
+            "pending_reviews": pending_reviews,
+            "today_interviews": today_interviews,
+            "pending_feedback": pending_feedback,
+        },
+        "upcoming_interviews": [
+            {
+                "id": str(interview.id),
+                "candidate_name": interview.resume.candidate_name if interview.resume else None,
+                "position_title": interview.position.title if interview.position else None,
+                "interview_time": interview.interview_time,
+                "interview_end_time": interview.interview_end_time,
+                "interview_type": interview.interview_type,
+                "interview_location": interview.interview_location,
+                "meeting_link": interview.meeting_link,
+            }
+            for interview in upcoming
+        ],
+    }
 
 
 def _position_query(db: Session, current_user: User | None, *entities):

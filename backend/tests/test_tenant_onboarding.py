@@ -54,7 +54,6 @@ def make_onboarding_request(**overrides):
     values = {
         "code": "careray-cloud",
         "name": "CareRay Cloud",
-        "primary_domain": "interview.careray-cloud.example",
         "admin_email": "admin@careray-cloud.example",
         "admin_password": "StrongPassword123",
     }
@@ -69,12 +68,7 @@ def test_create_tenant_creates_defaults(db, platform_admin):
         actor_id=platform_admin.id,
     )
 
-    assert (
-        db.query(TenantDomain)
-        .filter_by(tenant_id=tenant.id, is_primary=True)
-        .count()
-        == 1
-    )
+    assert db.query(TenantDomain).filter_by(tenant_id=tenant.id).count() == 0
     assert db.query(SystemConfig).filter_by(tenant_id=tenant.id).count() == 1
     assert (
         db.query(User)
@@ -96,23 +90,22 @@ def test_duplicate_code_rolls_back_all_rows(db, platform_admin):
         create_tenant_with_admin(db, payload, actor_id=platform_admin.id)
 
     assert db.query(Tenant).filter_by(code="careray").count() == 1
-    assert db.query(TenantDomain).count() == 1
+    assert db.query(TenantDomain).count() == 0
     assert db.query(SystemConfig).count() == 1
     assert db.query(User).count() == 1
     assert db.query(PlatformAuditLog).count() == 1
 
 
-def test_onboarding_normalizes_code_domain_and_email(db, platform_admin):
+def test_onboarding_normalizes_code_and_email(db, platform_admin):
     payload = make_onboarding_request(
         code="  Photon-Thix  ",
-        primary_domain="  INTERVIEW.PHOTON-THIX.EXAMPLE  ",
         admin_email="  Admin@Photon-Thix.Example  ",
     )
 
     tenant = create_tenant_with_admin(db, payload, actor_id=platform_admin.id)
 
     assert tenant.code == "photon-thix"
-    assert db.query(TenantDomain).one().domain == "interview.photon-thix.example"
+    assert db.query(TenantDomain).filter_by(tenant_id=tenant.id).count() == 0
     assert db.query(User).one().email == "admin@photon-thix.example"
 
 
@@ -157,7 +150,7 @@ def test_onboarding_password_rejects_non_decimal_unicode_number():
         make_onboarding_request(admin_password="PasswordPass²")
 
 
-def test_duplicate_domain_returns_fixed_conflict_without_partial_rows(
+def test_existing_domain_does_not_block_domainless_onboarding(
     db, platform_admin
 ):
     existing = Tenant(code="existing", name="Existing")
@@ -172,18 +165,17 @@ def test_duplicate_domain_returns_fixed_conflict_without_partial_rows(
     )
     db.commit()
 
-    with pytest.raises(TenantConflictError) as exc_info:
-        create_tenant_with_admin(
-            db,
-            make_onboarding_request(code="new-code"),
-            actor_id=platform_admin.id,
-        )
+    created = create_tenant_with_admin(
+        db,
+        make_onboarding_request(code="new-code"),
+        actor_id=platform_admin.id,
+    )
 
-    assert str(exc_info.value) == TENANT_CONFLICT_MESSAGE
-    assert db.query(Tenant).count() == 1
-    assert db.query(SystemConfig).count() == 0
-    assert db.query(User).count() == 0
-    assert db.query(PlatformAuditLog).count() == 0
+    assert created.code == "new-code"
+    assert db.query(Tenant).count() == 2
+    assert db.query(TenantDomain).count() == 1
+    assert db.query(SystemConfig).filter_by(tenant_id=created.id).count() == 1
+    assert db.query(User).filter_by(tenant_id=created.id).count() == 1
 
 
 def test_invalid_or_inactive_actor_cannot_create_any_rows(db, platform_admin):
@@ -311,7 +303,6 @@ def test_same_session_can_sequentially_onboard_distinct_tenants_without_leaking_
         db,
         make_onboarding_request(
             code="first-tenant",
-            primary_domain="first.example",
             admin_email="admin@first.example",
         ),
         actor_id=platform_admin.id,
@@ -323,7 +314,6 @@ def test_same_session_can_sequentially_onboard_distinct_tenants_without_leaking_
         db,
         make_onboarding_request(
             code="second-tenant",
-            primary_domain="second.example",
             admin_email="admin@second.example",
         ),
         actor_id=platform_admin.id,
@@ -333,7 +323,7 @@ def test_same_session_can_sequentially_onboard_distinct_tenants_without_leaking_
         get_tenant_id(db)
     assert first.id != second.id
     assert db.query(Tenant).count() == 2
-    assert db.query(TenantDomain).count() == 2
+    assert db.query(TenantDomain).count() == 0
     assert db.query(SystemConfig).count() == 2
     assert db.query(User).count() == 2
     assert db.query(PlatformAuditLog).count() == 2
@@ -567,7 +557,8 @@ def test_duplicate_platform_onboarding_returns_safe_fixed_409(
     second = platform_client.post("/api/platform/tenants", headers=headers, json=payload)
 
     assert first.status_code == 201
-    assert first.json()["primary_domain"] == payload["primary_domain"]
+    assert first.json()["code"] == payload["code"]
+    assert first.json()["primary_domain"] is None
     assert second.status_code == 409
     assert second.json() == {"detail": TENANT_CONFLICT_MESSAGE}
     assert "admin_password" not in second.text
@@ -601,7 +592,6 @@ def test_platform_write_on_registered_company_host_uses_isolated_host_session(
 
     payload = make_onboarding_request(
         code="dedicated-host-created",
-        primary_domain="dedicated-host-created.example",
         admin_email="admin@dedicated-host-created.example",
     ).model_dump(mode="json")
     created = platform_client.post(
@@ -732,14 +722,7 @@ def test_platform_can_list_and_inspect_tenants_with_domains(
             "is_active": True,
         }
     ]
-    assert detail.json()["domains"] == [
-        {
-            "id": detail.json()["domains"][0]["id"],
-            "domain": "interview.careray-cloud.example",
-            "is_primary": True,
-            "created_at": detail.json()["domains"][0]["created_at"],
-        }
-    ]
+    assert "domains" not in detail.json()
 
 
 def test_platform_reset_tenant_admin_password_invalidates_old_credentials(
@@ -851,7 +834,6 @@ def test_platform_cannot_reset_non_admin_or_cross_tenant_account(
         json=make_onboarding_request(
             code="photonthix-cloud",
             name="Photonthix Cloud",
-            primary_domain="interview.photonthix-cloud.example",
             admin_email="admin@photonthix-cloud.example",
         ).model_dump(mode="json"),
     ).json()["id"]
@@ -915,7 +897,7 @@ def test_platform_password_reset_failure_releases_tenant_context(
         get_tenant_id(db)
 
 
-def test_platform_domain_maintenance_is_audited(
+def test_platform_domain_maintenance_is_not_exposed(
     platform_client, db, platform_admin
 ):
     headers = platform_login(platform_client, platform_admin)
@@ -931,34 +913,7 @@ def test_platform_domain_maintenance_is_audited(
         headers=headers,
         json={"domain": "jobs.careray-cloud.example", "is_primary": False},
     )
-    assert added.status_code == 201
-    domain_id = added.json()["id"]
-    promoted = platform_client.patch(
-        f"/api/platform/tenants/{tenant_id}/domains/{domain_id}",
-        headers=headers,
-        json={"domain": "CAREERS.CARERAY-CLOUD.EXAMPLE:443", "is_primary": True},
-    )
-    assert promoted.status_code == 200
-    assert promoted.json()["domain"] == "careers.careray-cloud.example"
-    assert promoted.json()["is_primary"] is True
-    demoted = platform_client.patch(
-        f"/api/platform/tenants/{tenant_id}/domains/{domain_id}",
-        headers=headers,
-        json={"is_primary": False},
-    )
-    assert demoted.status_code == 409
-    assert demoted.json() == {
-        "detail": "Primary domain must be replaced before removal"
-    }
-    domains = platform_client.get(
-        f"/api/platform/tenants/{tenant_id}", headers=headers
-    ).json()["domains"]
-    secondary_id = next(item["id"] for item in domains if not item["is_primary"])
-    deleted = platform_client.delete(
-        f"/api/platform/tenants/{tenant_id}/domains/{secondary_id}",
-        headers=headers,
-    )
-    assert deleted.status_code == 204
+    assert added.status_code == 404
 
     actions = [
         row.action
@@ -967,15 +922,10 @@ def test_platform_domain_maintenance_is_audited(
         .order_by(PlatformAuditLog.created_at)
         .all()
     ]
-    assert actions == [
-        "tenant.created",
-        "tenant.domain_added",
-        "tenant.domain_updated",
-        "tenant.domain_deleted",
-    ]
+    assert actions == ["tenant.created"]
 
 
-def test_platform_duplicate_domain_has_distinct_stable_conflict(
+def test_platform_domain_item_route_is_not_exposed(
     platform_client, platform_admin
 ):
     headers = platform_login(platform_client, platform_admin)
@@ -985,17 +935,10 @@ def test_platform_duplicate_domain_has_distinct_stable_conflict(
         json=make_onboarding_request().model_dump(mode="json"),
     ).json()
 
-    first = platform_client.post(
-        f"/api/platform/tenants/{created['id']}/domains",
+    response = platform_client.patch(
+        f"/api/platform/tenants/{created['id']}/domains/{uuid4()}",
         headers=headers,
-        json={"domain": "jobs.careray-cloud.example", "is_primary": False},
-    )
-    duplicate = platform_client.post(
-        f"/api/platform/tenants/{created['id']}/domains",
-        headers=headers,
-        json={"domain": "JOBS.CARERAY-CLOUD.EXAMPLE:443", "is_primary": False},
+        json={"domain": "jobs.careray-cloud.example"},
     )
 
-    assert first.status_code == 201
-    assert duplicate.status_code == 409
-    assert duplicate.json() == {"detail": "Domain already exists"}
+    assert response.status_code == 404

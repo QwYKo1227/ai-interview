@@ -125,7 +125,7 @@ services:
     image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     container_name: ai_interview_caddy
     environment:
-      APP_DOMAINS: "${APP_DOMAINS:-interview.careray.com, interview.photonthix.com}"
+      APP_DOMAINS: "${APP_DOMAINS:-interview.careray.com}"
       ASR_REALTIME_UPSTREAM: "${ASR_REALTIME_UPSTREAM:-10.10.60.20:10096}"
     ports:
       - "80:80"

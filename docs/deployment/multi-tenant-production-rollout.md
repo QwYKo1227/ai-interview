@@ -42,10 +42,10 @@ mkdir -p "$RELEASE_DIR"
 - `DATABASE_URL` 只能使用 `app_runtime`；`MIGRATION_DATABASE_URL` 只能使用 `app_migration`。
 - `SECRET_KEY` 已安全生成，且与旧环境的令牌处理策略一致。
 - `APP_ENV=production`。
-- `APP_DOMAINS=interview.careray.com, interview.photonthix.com`。逗号后的空格是 Caddyfile 多站点地址的必要分隔符；dotenv 只能由 Compose 的 `--env-file` 解析，不能由 shell 执行。
-- `UNIFIED_ENTRY_HOSTS` 只填写确实承担“选择公司”功能的统一登录域名；当前两个公司专属域名已由数据库映射时可留空，禁止使用通配符。
+- `APP_DOMAINS=interview.careray.com`，只对统一入口域名提供 HTTPS；dotenv 只能由 Compose 的 `--env-file` 解析，不能由 shell 执行。
+- `UNIFIED_ENTRY_HOSTS=interview.careray.com`，明确声明承担“选择公司”功能的统一登录域名，禁止使用通配符。
 - `TRUSTED_PROXY_CIDRS` 只包含生产 Caddy/Nginx 所在的受控容器网络 CIDR；不得填写 `0.0.0.0/0` 或 `::/0`。变更 Docker 网络后必须同步更新并重新验证客户端 IP。
-- `CORS_ORIGINS=https://interview.careray.com,https://interview.photonthix.com`。
+- `CORS_ORIGINS=https://interview.careray.com`。
 - LLM 和 SMTP 密钥通过受控密钥系统注入，未提交到仓库。
 - 后端镜像使用已验收且不可变的版本或摘要；记录摘要到发布工单。
 
@@ -452,9 +452,9 @@ if ! curl --fail --silent --show-error \
   -H "Authorization: Bearer $DRILL_PLATFORM_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg code "$DRILL_PHOTON_CODE" \
-    --arg domain "$DRILL_PHOTON_DOMAIN" --arg email "$DRILL_SHARED_EMAIL" \
+    --arg email "$DRILL_SHARED_EMAIL" \
     --arg password "$DRILL_PHOTON_PASSWORD" \
-    '{code:$code,name:"Photonthix Drill",primary_domain:$domain,admin_email:$email,admin_password:$password}')" \
+    '{code:$code,name:"Photonthix Drill",admin_email:$email,admin_password:$password}')" \
   "http://127.0.0.1:${DRILL_API_PORT}/api/platform/tenants" \
   | tee "$RELEASE_DIR/drill-photonthix-onboarding.json" >/dev/null; then
   echo '副本Photonthix入驻失败' >&2
@@ -902,24 +902,19 @@ curl --fail --silent --show-error \
   --resolve "interview.careray.com:443:$SERVER_IP" \
   -H "Authorization: Bearer $PLATFORM_TOKEN" \
   -H 'Content-Type: application/json' \
-  --data "$(jq -n --arg p "$PHOTONTHIX_ADMIN_PASSWORD" '{code:"photonthix",name:"Photonthix",primary_domain:"interview.photonthix.com",admin_email:"<photonthix-admin-email>",admin_password:$p}')" \
+  --data "$(jq -n --arg p "$PHOTONTHIX_ADMIN_PASSWORD" '{code:"photonthix",name:"Photonthix",admin_email:"<photonthix-admin-email>",admin_password:$p}')" \
   https://interview.careray.com/api/platform/tenants
 unset PHOTONTHIX_ADMIN_PASSWORD
 ```
 
 若 Photonthix 已存在，先通过平台查询接口核对状态，不要重复创建或直接改库。
 
-平台管理员可通过以下控制面接口核对租户与维护域名，所有域名新增、修改和删除都会写入 `platform_audit_logs`；主域名必须先切换到另一条记录才能删除：
+平台管理员可通过以下控制面接口核对租户。所有租户统一使用 `interview.careray.com`，控制面不再登记或维护公司域名：
 
 ```text
 GET    /api/platform/tenants
 GET    /api/platform/tenants/{tenant_id}
-POST   /api/platform/tenants/{tenant_id}/domains
-PATCH  /api/platform/tenants/{tenant_id}/domains/{domain_id}
-DELETE /api/platform/tenants/{tenant_id}/domains/{domain_id}
 ```
-
-域名修改后必须先核对平台详情和审计日志，再更新 DNS/Caddy；不要直接修改 `tenant_domains` 绕过审计。
 
 ## 6. 内部域名、HTTPS 与麦克风
 
@@ -927,12 +922,9 @@ DELETE /api/platform/tenants/{tenant_id}/domains/{domain_id}
 
 生产后端必须以 `uvicorn --no-access-log` 启动；Nginx 对 `/api/public/` 以及三类公开 SPA 入口禁用访问日志，并把这些 location 的上游错误日志丢弃，应用自身只记录不含参数的路由模板和脱敏后的结构化字段。发布前必须运行 `scripts/verify-nginx-token-logs.sh`，用真实 Nginx 请求覆盖 coding-test、offer、review 的 SPA/API 路径和上游失败，确认哨兵 token 不会出现在 Uvicorn、Nginx 或应用日志中，同时保留非公开请求的状态码、request ID、租户、任务和资源上下文。
 
-内部 DNS 必须把以下两个名称解析到同一台受控服务器：
+内部 DNS 必须把统一入口 `interview.careray.com` 解析到受控服务器。
 
-- `interview.careray.com`
-- `interview.photonthix.com`
-
-Caddy 配置使用内部 CA，站点块必须包含 `tls internal`，为两个域名自动提供 HTTPS。启动前先校验配置，再导出根证书：
+Caddy 配置使用内部 CA，站点块必须包含 `tls internal`，为统一入口域名提供 HTTPS。启动前先校验配置，再导出根证书：
 
 ```bash
 if ! docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml run --rm --no-deps caddy \
@@ -970,18 +962,15 @@ if ! sha256sum "$RELEASE_DIR/ai-interview-caddy-root.crt" \
 fi
 ```
 
-通过企业设备管理把该根证书安装到受控客户端的“受信任根证书颁发机构”，并核对指纹。不得通过聊天工具让用户忽略证书警告。验证两个域名、证书链和 Host 透传：
+通过企业设备管理把该根证书安装到受控客户端的“受信任根证书颁发机构”，并核对指纹。不得通过聊天工具让用户忽略证书警告。验证统一入口域名、证书链和 Host 透传：
 
 ```bash
 curl --fail --show-error --cacert "$RELEASE_DIR/ai-interview-caddy-root.crt" \
   --resolve "interview.careray.com:443:$SERVER_IP" \
   https://interview.careray.com/api/auth/tenants
-curl --fail --show-error --cacert "$RELEASE_DIR/ai-interview-caddy-root.crt" \
-  --resolve "interview.photonthix.com:443:$SERVER_IP" \
-  https://interview.photonthix.com/api/auth/tenants
 ```
 
-浏览器控制台必须显示 `window.isSecureContext === true`。检查响应包含限制到本站的 `Permissions-Policy: microphone=(self)`，在两域名分别授权麦克风，实际录制、上传并回放一段无敏感内容的音频。HTTP、证书告警或麦克风失败都属于发布阻断项。
+浏览器控制台必须显示 `window.isSecureContext === true`。检查响应包含限制到本站的 `Permissions-Policy: microphone=(self)`，在统一入口授权麦克风，实际录制、上传并回放一段无敏感内容的音频。HTTP、证书告警或麦克风失败都属于发布阻断项。
 
 ## 7. 业务与隔离验收
 
@@ -997,7 +986,7 @@ curl --fail --silent --show-error \
 curl --fail --silent --show-error \
   -H 'Content-Type: application/json' \
   --data '{"tenant_code":"photonthix","email":"<shared-test-email>","password":"<photonthix-test-password>"}' \
-  https://interview.photonthix.com/api/auth/login
+  https://interview.careray.com/api/auth/login
 ```
 
 分别建立职位、简历、面试、Offer、编程题、工作流和配置，确认列表、仪表盘与文件下载互不可见。对运行角色做数据库负向检查，在事务中设置一个租户后查询另一个租户，结果必须为零：

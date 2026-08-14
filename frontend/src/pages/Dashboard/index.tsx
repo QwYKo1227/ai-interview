@@ -14,6 +14,8 @@ import request from '../../utils/request';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/zh-cn';
+import { useAuth } from '../../contexts/AuthContext';
+import InterviewerDashboard from './InterviewerDashboard';
 
 dayjs.extend(relativeTime);
 dayjs.locale('zh-cn');
@@ -117,7 +119,7 @@ interface OverviewMetrics {
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
 
-const Dashboard: React.FC = () => {
+const RecruitmentDashboard: React.FC = () => {
   const [statsData, setStatsData] = useState<DashboardStats | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
@@ -582,6 +584,13 @@ const Dashboard: React.FC = () => {
       </Tabs>
     </div>
   );
+};
+
+const Dashboard: React.FC = () => {
+  const { user } = useAuth();
+  const role = (user as any)?.role?.value ?? user?.role;
+
+  return role === 'interviewer' ? <InterviewerDashboard /> : <RecruitmentDashboard />;
 };
 
 export default Dashboard;

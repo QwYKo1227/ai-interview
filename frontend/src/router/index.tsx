@@ -29,6 +29,7 @@ import PlatformLogin from '../pages/Platform/Login';
 import PlatformTenants from '../pages/Platform/Tenants';
 import PlatformProtectedRoute from '../components/Platform/PlatformProtectedRoute';
 import PlatformLayout from '../components/Platform/PlatformLayout';
+import RoleProtectedRoute from '../components/RoleProtectedRoute';
 import { useAuth } from '../contexts/AuthContext';
 import { Spin } from 'antd';
 
@@ -125,15 +126,27 @@ const router = createBrowserRouter([
       },
       {
         path: 'resumes',
-        element: <ResumesList />,
+        element: (
+          <RoleProtectedRoute roles={['admin', 'hr']} redirectTo="/resumes/my-reviews">
+            <ResumesList />
+          </RoleProtectedRoute>
+        ),
       },
       {
         path: 'resumes/upload',
-        element: <ResumeUpload />,
+        element: (
+          <RoleProtectedRoute roles={['admin', 'hr']} redirectTo="/resumes/my-reviews">
+            <ResumeUpload />
+          </RoleProtectedRoute>
+        ),
       },
       {
         path: 'resumes/my-reviews',
-        element: <MyReviews />,
+        element: (
+          <RoleProtectedRoute roles={['interviewer']} redirectTo="/resumes">
+            <MyReviews />
+          </RoleProtectedRoute>
+        ),
       },
       {
         path: 'resumes/:id',
@@ -157,11 +170,19 @@ const router = createBrowserRouter([
       },
       {
         path: 'offers',
-        element: <OffersList />,
+        element: (
+          <RoleProtectedRoute roles={['admin', 'hr']}>
+            <OffersList />
+          </RoleProtectedRoute>
+        ),
       },
       {
         path: 'offers/templates',
-        element: <OfferTemplates />,
+        element: (
+          <RoleProtectedRoute roles={['admin', 'hr']}>
+            <OfferTemplates />
+          </RoleProtectedRoute>
+        ),
       },
       {
         path: 'settings/users',

@@ -2130,7 +2130,6 @@ def test_platform_onboarding_sets_new_tenant_guc_before_business_inserts(
     payload = TenantOnboardingRequest(
         code=f"onboard-{suffix}",
         name="PostgreSQL Onboarding",
-        primary_domain=f"onboard-{suffix}.example.com",
         admin_email=f"admin-{suffix}@example.com",
         admin_password="TenantPassword123",
     )

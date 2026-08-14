@@ -185,18 +185,21 @@ def test_catalog_is_the_authoritative_19_table_31_relation_contract():
     )
 
 
-def test_production_caddy_defaults_to_both_internal_tenant_domains():
+def test_production_caddy_defaults_to_unified_entry_domain():
     root = Path(__file__).parents[2]
     caddyfile = (root / "Caddyfile").read_text(encoding="utf-8")
     compose = (root / "docker-compose.prod.yml").read_text(encoding="utf-8")
     env_example = (root / ".env.example").read_text(encoding="utf-8")
-    domains = "interview.careray.com, interview.photonthix.com"
+    domains = "interview.careray.com"
 
     assert f"APP_DOMAINS:{domains}" in caddyfile
     assert "tls internal" in caddyfile
     assert 'Permissions-Policy "microphone=(self)"' in caddyfile
     assert "APP_DOMAINS" in compose
     assert domains in compose
+    assert "interview.photonthix.com" not in caddyfile
+    assert "interview.photonthix.com" not in compose
+    assert "interview.photonthix.com" not in env_example
     assert "UNIFIED_ENTRY_HOSTS=interview.careray.com" in env_example
     assert (
         "UNIFIED_ENTRY_HOSTS: ${UNIFIED_ENTRY_HOSTS:?Set UNIFIED_ENTRY_HOSTS "
@@ -366,7 +369,7 @@ def test_compose_env_file_preserves_spaced_domains_without_executing_commands(
     )
     env_file = tmp_path / "production.env"
     env_file.write_text(
-        "APP_DOMAINS=interview.careray.com, interview.photonthix.com\n"
+        "APP_DOMAINS=one.example.invalid, two.example.invalid\n"
         f"MALICIOUS=$(touch {marker.as_posix()})\n",
         encoding="utf-8",
     )
@@ -397,7 +400,7 @@ def test_compose_env_file_preserves_spaced_domains_without_executing_commands(
     payload = json.loads(completed.stdout)
     environment = payload["services"]["probe"]["environment"]
     assert environment["APP_DOMAINS"] == (
-        "interview.careray.com, interview.photonthix.com"
+        "one.example.invalid, two.example.invalid"
     )
     assert "touch" in environment["MALICIOUS"]
     assert not marker.exists()

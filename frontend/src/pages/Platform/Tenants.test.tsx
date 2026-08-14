@@ -58,7 +58,6 @@ const tenants = [
     id: 'tenant-careray',
     code: 'careray',
     name: '凯锐招聘',
-    primary_domain: 'interview.careray.com',
     status: 'active',
     created_at: '2026-07-01T00:00:00Z',
     updated_at: '2026-07-01T00:00:00Z',
@@ -67,7 +66,6 @@ const tenants = [
     id: 'tenant-photonthix',
     code: 'photonthix',
     name: 'Photonthix',
-    primary_domain: 'interview.photonthix.com',
     status: 'inactive',
     created_at: '2026-07-02T00:00:00Z',
     updated_at: '2026-07-02T00:00:00Z',
@@ -94,8 +92,7 @@ describe('PlatformTenants', () => {
     expect(screen.getByText('Photonthix')).toBeInTheDocument();
     expect(screen.getByText('careray')).toBeInTheDocument();
     expect(screen.getByText('photonthix')).toBeInTheDocument();
-    expect(screen.getByText('interview.careray.com')).toBeInTheDocument();
-    expect(screen.getByText('interview.photonthix.com')).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: '主域名' })).not.toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: '创建时间' })).toBeInTheDocument();
     expect(screen.getByText('2026-07-01T00:00:00Z')).toBeInTheDocument();
     expect(screen.getByText('2026-07-02T00:00:00Z')).toBeInTheDocument();
@@ -122,7 +119,7 @@ describe('PlatformTenants', () => {
   it('opens the selected company detail drawer from the registry entry', async () => {
     mockGet
       .mockResolvedValueOnce(tenants)
-      .mockResolvedValueOnce({ ...tenants[0], domains: [{ id: 'domain-primary', domain: 'interview.careray.com', is_primary: true, created_at: '2026-07-01T00:00:00Z' }] });
+      .mockResolvedValueOnce({ ...tenants[0], admins: [] });
     const user = userEvent.setup();
 
     render(<PlatformTenants />);
@@ -204,7 +201,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'fresh' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: '新公司' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'fresh.example.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@fresh.example.com' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
@@ -234,7 +230,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'fresh' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: '新公司' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'fresh.example.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@fresh.example.com' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
@@ -306,7 +301,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'Photonthix' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: ' Interview.Photonthix.COM ' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: ' Admin@Photonthix.COM ' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: boundaryPassword } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
@@ -314,7 +308,6 @@ describe('PlatformTenants', () => {
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/platform/tenants', {
       code: 'photonthix',
       name: 'Photonthix',
-      primary_domain: 'interview.photonthix.com',
       admin_email: 'admin@photonthix.com',
       admin_password: boundaryPassword,
     }));
@@ -329,7 +322,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
@@ -341,7 +333,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     expect(screen.getByLabelText('公司代码')).toHaveValue('');
     expect(screen.getByLabelText('公司名称')).toHaveValue('');
-    expect(screen.getByLabelText('主域名')).toHaveValue('');
     expect(screen.getByLabelText('管理员邮箱')).toHaveValue('');
     expect(screen.getByLabelText('管理员初始密码')).toHaveValue('');
   });
@@ -359,7 +350,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: multibytePassword } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
@@ -378,7 +368,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: '测A1' } });
     await user.click(screen.getByRole('button', { name: '创建公司' }));
@@ -395,7 +384,6 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
 
     for (const password of ['Password123', 'abcdefghijkl', '123456789012', 'a'.repeat(73), `${'测'.repeat(24)}A1`]) {
@@ -419,12 +407,11 @@ describe('PlatformTenants', () => {
     await user.click(screen.getByRole('button', { name: '新建公司' }));
     fireEvent.change(screen.getByLabelText('公司代码'), { target: { value: 'photonthix' } });
     fireEvent.change(screen.getByLabelText('公司名称'), { target: { value: 'Photonthix' } });
-    fireEvent.change(screen.getByLabelText('主域名'), { target: { value: 'interview.photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'admin@photonthix.com' } });
     fireEvent.change(screen.getByLabelText('管理员初始密码'), { target: { value: 'Password1234' } });
 
     await user.click(screen.getByRole('button', { name: '创建公司' }));
-    expect(await screen.findByText('公司代码或域名已存在')).toBeInTheDocument();
+    expect(await screen.findByText('公司代码已存在')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '创建公司' }));
     expect(await screen.findByText('公司创建失败，请稍后重试')).toBeInTheDocument();

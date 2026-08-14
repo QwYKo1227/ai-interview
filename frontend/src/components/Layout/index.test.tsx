@@ -5,6 +5,7 @@ import appStyles from '../../index.css?inline'
 import AppLayout from './index'
 
 const screenState = vi.hoisted(() => ({ xxl: false }))
+const authState = vi.hoisted(() => ({ role: 'admin' }))
 
 vi.mock('antd', async () => {
   const actual = await vi.importActual<typeof import('antd')>('antd')
@@ -16,7 +17,7 @@ vi.mock('antd', async () => {
 
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: '1', email: 'admin@example.com', full_name: 'HR Admin', role: 'admin' },
+    user: { id: '1', email: 'admin@example.com', full_name: 'HR Admin', role: authState.role },
     companyName: '凯锐招聘',
     logout: vi.fn(),
   }),
@@ -27,6 +28,7 @@ describe('AppLayout responsiveness', () => {
 
   beforeEach(() => {
     screenState.xxl = false
+    authState.role = 'admin'
     stylesheet = document.createElement('style')
     stylesheet.textContent = appStyles
     document.head.append(stylesheet)
@@ -48,6 +50,29 @@ describe('AppLayout responsiveness', () => {
 
     expect(screen.getByText('凯锐招聘')).toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: '公司' })).not.toBeInTheDocument()
+  })
+
+  it('hides offer management from interviewers', () => {
+    authState.role = 'interviewer'
+    render(<MemoryRouter initialEntries={['/dashboard']}><AppLayout /></MemoryRouter>)
+
+    expect(screen.queryByRole('menuitem', { name: /Offer管理/ })).not.toBeInTheDocument()
+  })
+
+  it('shows interviewers only the review-specific resume entry', () => {
+    authState.role = 'interviewer'
+    render(<MemoryRouter initialEntries={['/resumes/my-reviews']}><AppLayout /></MemoryRouter>)
+
+    expect(screen.getByRole('menuitem', { name: '我的评审' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '简历管理' })).not.toBeInTheDocument()
+  })
+
+  it.each(['admin', 'hr'])('shows %s users only the resume management entry', (role) => {
+    authState.role = role
+    render(<MemoryRouter initialEntries={['/resumes']}><AppLayout /></MemoryRouter>)
+
+    expect(screen.getByRole('menuitem', { name: '简历管理' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '我的评审' })).not.toBeInTheDocument()
   })
 
   it('hides the complete title beside a direct menu icon in collapsed mode', () => {

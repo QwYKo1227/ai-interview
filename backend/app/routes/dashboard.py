@@ -5,21 +5,30 @@ from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.dashboard import (
     DashboardData, DashboardStats, Activity, TrendData,
     RecruitmentFunnel, PositionAnalyticsResponse, InterviewerAnalyticsResponse,
-    TimelineAnalyticsResponse, OverviewResponse
+    TimelineAnalyticsResponse, OverviewResponse, InterviewerDashboardResponse
 )
 from app.services.dashboard_service import (
     get_dashboard_stats, get_recent_activities, get_interview_trends,
     get_recruitment_funnel, get_position_analytics, get_interviewer_analytics,
-    get_timeline_analytics, get_overview
+    get_timeline_analytics, get_overview, get_interviewer_dashboard
 )
-from app.models.models import User
+from app.models.models import User, UserRole
 from app.routes.auth import get_current_user
+from app.core.security import check_roles
 
 router = APIRouter(
     prefix="/dashboard",
     tags=["dashboard"],
     responses={404: {"description": "Not found"}},
 )
+
+
+@router.get("/interviewer", response_model=InterviewerDashboardResponse)
+def read_interviewer_dashboard(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.INTERVIEWER])),
+):
+    return get_interviewer_dashboard(db, current_user)
 
 @router.get("/stats", response_model=DashboardData)
 def read_dashboard_stats(

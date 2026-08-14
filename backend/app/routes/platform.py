@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
@@ -12,22 +12,17 @@ from app.core.platform_security import (
 from app.core.security import verify_password
 from app.core.rate_limit import enforce_rate_limit
 from app.core.host_policy import resolve_request_origin
-from app.models.tenant_models import PlatformUser
-from app.models.tenant_models import Tenant, TenantDomain
+from app.models.tenant_models import PlatformUser, Tenant
 from app.schemas.tenant import (
     PlatformLoginRequest,
     TenantAdminPasswordResetRequest,
     TenantDetailResponse,
-    TenantDomainCreate,
-    TenantDomainResponse,
-    TenantDomainUpdate,
     TenantOnboardingRequest,
     TenantResponse,
     TenantStatusUpdate,
 )
 from app.schemas.user import Token
 from app.services.tenant_service import (
-    PRIMARY_DOMAIN_MESSAGE,
     TENANT_ACTOR_MESSAGE,
     TENANT_CONFLICT_MESSAGE,
     TENANT_NOT_FOUND_MESSAGE,
@@ -37,13 +32,10 @@ from app.services.tenant_service import (
     TenantConflictError,
     TenantNotFoundError,
     TenantOnboardingError,
-    add_tenant_domain,
     create_tenant_with_admin,
-    delete_tenant_domain,
     get_tenant_detail as get_tenant_detail_service,
     reset_tenant_admin_password,
     set_tenant_status,
-    update_tenant_domain,
 )
 from typing import List
 from uuid import UUID
@@ -135,27 +127,12 @@ def _parse_tenant_id(value: str) -> UUID:
         raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
 
 
-def _attach_primary_domain(db: Session, tenant: Tenant) -> Tenant:
-    tenant.primary_domain = (
-        db.query(TenantDomain.domain)
-        .filter(
-            TenantDomain.tenant_id == tenant.id,
-            TenantDomain.is_primary.is_(True),
-        )
-        .scalar()
-    )
-    return tenant
-
-
 @router.get("/tenants", response_model=List[TenantResponse])
 def list_tenants(
     _claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
     db: Session = Depends(get_unscoped_db),
 ):
-    return [
-        _attach_primary_domain(db, tenant)
-        for tenant in db.query(Tenant).order_by(Tenant.code).all()
-    ]
+    return db.query(Tenant).order_by(Tenant.code).all()
 
 
 @router.get("/tenants/{tenant_id}", response_model=TenantDetailResponse)
@@ -200,91 +177,6 @@ def patch_tenant_admin_password(
             status_code=404,
             detail="Tenant administrator not found",
         ) from None
-    except TenantActorError:
-        raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
-    except TenantOnboardingError:
-        raise HTTPException(status_code=500, detail=TENANT_ONBOARDING_MESSAGE) from None
-
-
-@router.post(
-    "/tenants/{tenant_id}/domains",
-    response_model=TenantDomainResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_tenant_domain(
-    tenant_id: str,
-    payload: TenantDomainCreate,
-    claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
-    db: Session = Depends(get_unscoped_db),
-):
-    try:
-        return add_tenant_domain(
-            db,
-            tenant_id=_parse_tenant_id(tenant_id),
-            payload=payload,
-            actor_id=claims.user_id,
-        )
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
-    except TenantConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from None
-    except TenantActorError:
-        raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
-    except TenantOnboardingError:
-        raise HTTPException(status_code=500, detail=TENANT_ONBOARDING_MESSAGE) from None
-
-
-@router.patch(
-    "/tenants/{tenant_id}/domains/{domain_id}",
-    response_model=TenantDomainResponse,
-)
-def patch_tenant_domain(
-    tenant_id: str,
-    domain_id: str,
-    payload: TenantDomainUpdate,
-    claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
-    db: Session = Depends(get_unscoped_db),
-):
-    try:
-        return update_tenant_domain(
-            db,
-            tenant_id=_parse_tenant_id(tenant_id),
-            domain_id=_parse_tenant_id(domain_id),
-            payload=payload,
-            actor_id=claims.user_id,
-        )
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
-    except TenantConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from None
-    except TenantActorError:
-        raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
-    except TenantOnboardingError:
-        raise HTTPException(status_code=500, detail=TENANT_ONBOARDING_MESSAGE) from None
-
-
-@router.delete(
-    "/tenants/{tenant_id}/domains/{domain_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-def remove_tenant_domain(
-    tenant_id: str,
-    domain_id: str,
-    claims: PlatformAccessTokenClaims = Depends(get_platform_access_token_claims),
-    db: Session = Depends(get_unscoped_db),
-):
-    try:
-        delete_tenant_domain(
-            db,
-            tenant_id=_parse_tenant_id(tenant_id),
-            domain_id=_parse_tenant_id(domain_id),
-            actor_id=claims.user_id,
-        )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail=TENANT_NOT_FOUND_MESSAGE) from None
-    except TenantConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from None
     except TenantActorError:
         raise HTTPException(status_code=403, detail=TENANT_ACTOR_MESSAGE) from None
     except TenantOnboardingError:

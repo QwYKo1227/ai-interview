@@ -27,12 +27,6 @@ const tenantColumns = (
     ),
   },
   {
-    dataIndex: 'primary_domain',
-    key: 'primary_domain',
-    title: '主域名',
-    render: (domain: string | null | undefined) => domain || '未设置',
-  },
-  {
     dataIndex: 'status',
     key: 'status',
     title: '状态',
@@ -154,7 +148,7 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
       await loadTenants();
     } catch (error) {
       const status = (error as { response?: { status?: number } }).response?.status;
-      setOnboardingError(status === 409 ? '公司代码或域名已存在' : '公司创建失败，请稍后重试');
+      setOnboardingError(status === 409 ? '公司代码已存在' : '公司创建失败，请稍后重试');
     } finally {
       setSubmitting(false);
     }
@@ -166,7 +160,7 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
         <div>
           <p className="platform-eyebrow">公司注册表</p>
           <h1 id="platform-tenants-title">公司管理</h1>
-          <p className="platform-tenants__description">查看平台内公司的注册状态和主域名。</p>
+          <p className="platform-tenants__description">查看平台内公司的注册状态和管理员账号。</p>
         </div>
         <Button className="platform-tenants__onboard" onClick={openOnboarding} type="primary">
           新建公司
@@ -232,14 +226,6 @@ const PlatformTenants = ({ onOpenTenant = () => undefined }: PlatformTenantsProp
           </Form.Item>
           <Form.Item label="公司名称" name="name" rules={[{ required: true, message: '请输入公司名称' }]}>
             <Input autoComplete="organization" placeholder="例如：Photonthix" />
-          </Form.Item>
-          <Form.Item
-            label="主域名"
-            name="primary_domain"
-            normalize={(value) => value.trim().toLowerCase()}
-            rules={[{ required: true, message: '请输入主域名' }]}
-          >
-            <Input autoComplete="url" placeholder="例如：interview.example.com" />
           </Form.Item>
           <Form.Item
             label="管理员邮箱"

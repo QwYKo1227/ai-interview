@@ -74,3 +74,8 @@ node_modules/
 # Internal deployment artifacts
 certs/
 .superpowers/
+backups/
+deployment-backups/
+releases/
+docker-compose.prod.yml.bak-*
+docker-compose.prod.yml.failed-migration-backup

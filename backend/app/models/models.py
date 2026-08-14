@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, Index, UniqueConstraint, func, text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, Index, UniqueConstraint, CheckConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
 from datetime import datetime
@@ -70,11 +70,13 @@ class PositionStatus(str, enum.Enum):
     CLOSED = "closed"
     PUBLISHED = "published"
 
-class PositionUrgency(str, enum.Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    URGENT = "urgent"
+class PositionCategory(str, enum.Enum):
+    UNCATEGORIZED = "uncategorized"
+    CAMPUS = "campus"
+    DOMESTIC_FUNCTIONAL = "domestic_functional"
+    DOMESTIC_RD = "domestic_rd"
+    OVERSEAS = "overseas"
+    EXECUTIVE_EXPERT = "executive_expert"
 
 class PositionType(str, enum.Enum):
     FULL_TIME = "full_time"
@@ -87,6 +89,7 @@ class Position(TenantScopedMixin, Base):
     __table_args__ = (
         _tenant_identity("positions"),
         _tenant_reference("positions", "hiring_manager_id", "users"),
+        CheckConstraint("priority BETWEEN 1 AND 5", name="ck_positions_priority_range"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -97,7 +100,13 @@ class Position(TenantScopedMixin, Base):
     location = Column(String)
     department = Column(String)
     status = Column(Enum(PositionStatus), default=PositionStatus.OPEN)
-    urgency = Column(Enum(PositionUrgency), default=PositionUrgency.MEDIUM)
+    priority = Column(Integer, nullable=False, default=3, server_default="3")
+    category = Column(
+        Enum(PositionCategory),
+        nullable=False,
+        default=PositionCategory.UNCATEGORIZED,
+        server_default=PositionCategory.UNCATEGORIZED.name,
+    )
     position_type = Column(Enum(PositionType), default=PositionType.FULL_TIME)
     headcount = Column(Integer, default=1)
     hiring_manager_id = Column(UUID(as_uuid=True), nullable=True)

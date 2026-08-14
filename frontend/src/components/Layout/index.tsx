@@ -185,7 +185,7 @@ const AppLayout: React.FC = () => {
           letterSpacing: '-0.025em',
           borderBottom: '1px solid #f0f0f0'
         }}>
-          <span style={{ color: '#3B82F6' }}>AI</span>{!isLaptop && ' Interview'}
+          <span style={{ color: '#3B82F6' }}>AI</span>{!isLaptop && 'Recruiting'}
         </div>
         <Menu
           theme="light"

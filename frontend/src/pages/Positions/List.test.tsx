@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PositionsList from './List'
@@ -23,7 +24,8 @@ const position = {
   location: 'Shanghai',
   department: 'Engineering',
   status: 'open',
-  urgency: 'medium',
+  priority: 3,
+  category: 'domestic_rd',
   position_type: 'full_time',
   headcount: 1,
   hiring_manager_id: 'manager-1',
@@ -35,6 +37,7 @@ const position = {
     pending_screening: 0,
     pending_interview: 0,
     interview_completed: 0,
+    interview_passed: 0,
     offer_pending: 0,
     offer_accepted: 0,
     rejected: 0,
@@ -81,5 +84,40 @@ describe('PositionsList responsive table', () => {
       padding: '0px',
       lineHeight: '0',
     })
+  })
+
+  it('shows every mutually exclusive recruitment progress bucket', async () => {
+    const user = userEvent.setup()
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [{
+      ...position,
+      stats: {
+        total_resumes: 19,
+        pending_screening: 6,
+        pending_interview: 4,
+        interview_completed: 1,
+        interview_passed: 1,
+        offer_pending: 1,
+        offer_accepted: 3,
+        rejected: 3,
+      },
+    }] : [])
+    const { container } = render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+    const badge = container.querySelector('.ant-badge-count')
+    expect(badge).not.toBeNull()
+    await user.hover(badge as HTMLElement)
+
+    for (const progressText of [
+      '待筛选: 6',
+      '待面试: 4',
+      '面试完成: 1',
+      '面试通过: 1',
+      'Offer待定: 1',
+      '已入职: 3',
+      '已淘汰: 3',
+    ]) {
+      expect(await screen.findByText(progressText)).toBeInTheDocument()
+    }
   })
 })

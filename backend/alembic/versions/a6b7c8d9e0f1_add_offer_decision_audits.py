@@ -66,6 +66,10 @@ def upgrade() -> None:
         )
         '''
     )
+    op.execute(
+        "GRANT SELECT, INSERT, UPDATE, DELETE "
+        "ON TABLE offer_decision_audits TO app_runtime"
+    )
 
 
 def downgrade() -> None:

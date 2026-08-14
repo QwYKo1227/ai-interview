@@ -111,6 +111,6 @@ describe('AppLayout responsiveness', () => {
     const { container } = render(<MemoryRouter initialEntries={['/positions']}><AppLayout /></MemoryRouter>)
     expect(container.querySelector('.app-sider')).not.toHaveClass('ant-layout-sider-collapsed')
     expect(container.querySelector('.app-main-layout')).toHaveStyle({ marginLeft: '240px' })
-    expect(container.querySelector('.app-brand')).toHaveTextContent(/^AI Interview$/)
+    expect(container.querySelector('.app-brand')).toHaveTextContent(/^AIRecruiting$/)
   })
 })

@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, and_, func, update
 import json
 import logging
+import re
 from app.core.observability import background_task_context
 
 from app.config.tenant_session import get_tenant_id, tenant_session
@@ -46,6 +47,47 @@ EXTRACTED_PROFILE_FIELDS = (
     "years_of_experience",
     "recent_company",
 )
+
+INVALID_EXTRACTED_IDENTITY_VALUES = {
+    "",
+    "-",
+    "n/a",
+    "none",
+    "null",
+    "unknown",
+    "未知",
+    "未填写",
+    "未提供",
+    "未识别",
+    "候选人",
+    "candidate",
+    "candidate name",
+    "姓名",
+}
+
+
+def _clean_extracted_identity(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if normalized.casefold() in INVALID_EXTRACTED_IDENTITY_VALUES:
+        return ""
+    return normalized
+
+
+def _extract_document_identity(content: str) -> tuple[str, str, str]:
+    name_match = re.search(
+        r"(?im)^姓名\s*[:：]\s*([^\n|｜]{2,80})\s*$", content
+    )
+    phone_match = re.search(
+        r"(?<!\d)(?:\+?86[\s-]?)?(1[3-9]\d(?:[\s-]?\d){8})(?!\d)",
+        content,
+    )
+    email_match = re.search(
+        r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", content, re.IGNORECASE
+    )
+    name = _clean_extracted_identity(name_match.group(1) if name_match else "")
+    contact = re.sub(r"\D", "", phone_match.group(1)) if phone_match else ""
+    email = email_match.group(0) if email_match else ""
+    return name, contact, email
 
 
 def extract_contact_details(parsed_data: Dict[str, Any]) -> tuple[str, str]:
@@ -207,9 +249,26 @@ def _process_resume_task(
 
         # 提取联系方式，兼容当前提示词的顶层字段和历史嵌套字段。
         contact, email = extract_contact_details(parsed_data)
+        contact = _clean_extracted_identity(contact)
+        email = _clean_extracted_identity(email)
 
         # 提取姓名
-        candidate_name = parsed_data.get("candidate_name", "")
+        candidate_name = _clean_extracted_identity(
+            parsed_data.get("candidate_name", "")
+        )
+        fallback_name, fallback_contact, fallback_email = _extract_document_identity(
+            content
+        )
+        candidate_name = fallback_name or candidate_name
+        contact = fallback_contact or contact
+        email = fallback_email or email
+
+        if candidate_name:
+            parsed_data["candidate_name"] = candidate_name
+        if contact:
+            parsed_data["contact"] = contact
+        if email:
+            parsed_data["email"] = email
 
         # 提取其他岗位匹配信息
         other_matches = parsed_data.get("other_position_matches", [])

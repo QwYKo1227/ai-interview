@@ -5,6 +5,7 @@ import { RobotOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
 import { useAuth } from '../../contexts/AuthContext';
+import { normalizePositionClassification, POSITION_CATEGORY_OPTIONS, PRIORITY_OPTIONS } from './options';
 
 const { Title, Text } = Typography;
 
@@ -71,10 +72,10 @@ const PositionForm: React.FC = () => {
     setLoading(true);
     try {
       if (id) {
-        await request.put(`/positions/${id}`, values);
+        await request.put(`/positions/${id}`, normalizePositionClassification(values));
         message.success('更新成功');
       } else {
-        await request.post('/positions', values);
+        await request.post('/positions', normalizePositionClassification(values));
         message.success('创建成功');
       }
       navigate('/positions');
@@ -99,7 +100,7 @@ const PositionForm: React.FC = () => {
           form={form}
           layout="vertical"
           onFinish={onFinish}
-          initialValues={{ status: 'open', urgency: 'medium', position_type: 'full_time', headcount: 1 }}
+          initialValues={{ status: 'open', priority: 3, category: 'uncategorized', position_type: 'full_time', headcount: 1 }}
           style={{ maxWidth: 800 }}
         >
           <Form.Item
@@ -156,17 +157,16 @@ const PositionForm: React.FC = () => {
             </Form.Item>
 
             <Form.Item
-              name="urgency"
-              label="紧急程度"
+              name="priority"
+              label="优先度"
             >
-              <Select size="large">
-                <Select.Option value="low">低</Select.Option>
-                <Select.Option value="medium">中</Select.Option>
-                <Select.Option value="high">高</Select.Option>
-                <Select.Option value="urgent">紧急</Select.Option>
-              </Select>
+              <Select size="large" allowClear options={PRIORITY_OPTIONS} placeholder="请选择优先度" />
             </Form.Item>
           </div>
+
+          <Form.Item name="category" label="岗位分类">
+            <Select size="large" allowClear options={POSITION_CATEGORY_OPTIONS} placeholder="请选择岗位分类" />
+          </Form.Item>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <Form.Item

@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.models.models import (
     Position,
-    PositionUrgency,
+    PositionCategory,
     Resume,
     ResumeStatus,
     QuestionBank,
@@ -18,6 +18,37 @@ from fastapi import HTTPException
 from datetime import datetime, timezone
 from app.services.recruitment_access import is_admin
 
+
+POSITION_PROGRESS_STATUS_GROUPS = {
+    "pending_screening": frozenset({
+        ResumeStatus.PENDING_SCREENING,
+        ResumeStatus.PENDING_REVIEW,
+        ResumeStatus.PENDING_DEPT_REVIEW,
+        ResumeStatus.PENDING_HR_DECISION,
+        ResumeStatus.AUTO_REJECTED_PENDING_REVIEW,
+        ResumeStatus.WAITLIST,
+    }),
+    "pending_interview": frozenset({
+        ResumeStatus.PENDING_INTERVIEW,
+        ResumeStatus.INTERVIEW_SCHEDULED,
+        ResumeStatus.INTERVIEW_IN_PROGRESS,
+        ResumeStatus.PENDING_NEXT_INTERVIEW,
+    }),
+    "interview_completed": frozenset({ResumeStatus.PENDING_INTERVIEW_RESULT}),
+    "interview_passed": frozenset({ResumeStatus.INTERVIEW_PASSED}),
+    "offer_pending": frozenset({ResumeStatus.OFFER_PENDING}),
+    "offer_accepted": frozenset({
+        ResumeStatus.OFFER_ACCEPTED,
+        ResumeStatus.ONBOARDING,
+        ResumeStatus.COMPLETED,
+    }),
+    "rejected": frozenset({
+        ResumeStatus.REJECTED,
+        ResumeStatus.INTERVIEW_FAILED,
+        ResumeStatus.OFFER_REJECTED,
+    }),
+}
+
 def get_positions(
     db: Session,
     skip: int = 0,
@@ -26,7 +57,8 @@ def get_positions(
     title: str = None,
     hiring_manager_id: Optional[UUID] = None,
     department: Optional[str] = None,
-    urgency: Optional[PositionUrgency] = None,
+    priority: Optional[int] = None,
+    category: Optional[PositionCategory] = None,
     current_user: Optional[User] = None,
 ):
     query = db.query(Position)
@@ -40,8 +72,10 @@ def get_positions(
         query = query.filter(Position.hiring_manager_id == hiring_manager_id)
     if department:
         query = query.filter(Position.department == department)
-    if urgency:
-        query = query.filter(Position.urgency == urgency)
+    if priority is not None:
+        query = query.filter(Position.priority == priority)
+    if category:
+        query = query.filter(Position.category == category)
     return query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
 
 
@@ -78,7 +112,8 @@ def get_positions_with_stats(
     title: str = None,
     hiring_manager_id: Optional[UUID] = None,
     department: Optional[str] = None,
-    urgency: Optional[PositionUrgency] = None,
+    priority: Optional[int] = None,
+    category: Optional[PositionCategory] = None,
     current_user: Optional[User] = None,
 ) -> List[PositionWithStats]:
     query = db.query(Position)
@@ -92,8 +127,10 @@ def get_positions_with_stats(
         query = query.filter(Position.hiring_manager_id == hiring_manager_id)
     if department:
         query = query.filter(Position.department == department)
-    if urgency:
-        query = query.filter(Position.urgency == urgency)
+    if priority is not None:
+        query = query.filter(Position.priority == priority)
+    if category:
+        query = query.filter(Position.category == category)
     
     positions = query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
     
@@ -120,40 +157,12 @@ def get_position(db: Session, position_id: UUID):
 
 def get_position_stats(db: Session, position_id: UUID) -> PositionStats:
     resumes = db.query(Resume).filter(Resume.position_id == position_id).all()
-    
-    stats = PositionStats(
-        total_resumes=len(resumes),
-        pending_screening=sum(1 for r in resumes if r.status in [
-            ResumeStatus.PENDING_SCREENING, 
-            ResumeStatus.PENDING_REVIEW
-        ]),
-        pending_interview=sum(1 for r in resumes if r.status in [
-            ResumeStatus.PENDING_INTERVIEW,
-            ResumeStatus.INTERVIEW_SCHEDULED,
-            ResumeStatus.INTERVIEW_IN_PROGRESS,
-            ResumeStatus.PENDING_INTERVIEW_RESULT,
-            ResumeStatus.PENDING_NEXT_INTERVIEW,
-        ]),
-        interview_completed=sum(1 for r in resumes if r.status in [
-            ResumeStatus.INTERVIEW_PASSED, 
-            ResumeStatus.INTERVIEW_FAILED,
-            ResumeStatus.OFFER_PENDING,
-            ResumeStatus.OFFER_ACCEPTED,
-            ResumeStatus.OFFER_REJECTED,
-            ResumeStatus.COMPLETED
-        ]),
-        offer_pending=sum(1 for r in resumes if r.status == ResumeStatus.OFFER_PENDING),
-        offer_accepted=sum(1 for r in resumes if r.status in [
-            ResumeStatus.OFFER_ACCEPTED,
-            ResumeStatus.COMPLETED
-        ]),
-        rejected=sum(1 for r in resumes if r.status in [
-            ResumeStatus.REJECTED,
-            ResumeStatus.INTERVIEW_FAILED,
-            ResumeStatus.OFFER_REJECTED
-        ])
-    )
-    return stats
+
+    bucket_counts = {
+        bucket: sum(resume.status in statuses for resume in resumes)
+        for bucket, statuses in POSITION_PROGRESS_STATUS_GROUPS.items()
+    }
+    return PositionStats(total_resumes=len(resumes), **bucket_counts)
 
 def get_linked_question_banks(db: Session, position_id: UUID) -> List[QuestionBankBrief]:
     banks = db.query(QuestionBank).filter(QuestionBank.position_id == position_id).all()

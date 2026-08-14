@@ -16,12 +16,13 @@ from app.services.position_service import (
     get_hiring_managers, get_position_departments
 )
 from app.services.ai_service import generate_jd_stream, chat_jd_stream
-from app.models.models import PositionUrgency, User, UserRole
+from app.models.models import PositionCategory, User, UserRole
+from app.schemas.position import LEGACY_URGENCY_TO_PRIORITY
 from app.core.security import check_roles
 from app.services.public_token_service import resolve_public_tenant
 from app.services.recruitment_access import is_admin, require_position_access
 from app.core.proxy import resolve_request_host
-from typing import List
+from typing import List, Literal
 from uuid import UUID
 
 router = APIRouter(
@@ -47,7 +48,9 @@ def get_positions_route(
     title: str = None,
     hiring_manager_id: UUID = None,
     department: str = None,
-    urgency: PositionUrgency = None,
+    priority: int | None = Query(default=None, ge=1, le=5),
+    category: PositionCategory = None,
+    urgency: Literal["low", "medium", "high", "urgent"] | None = None,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
@@ -59,7 +62,8 @@ def get_positions_route(
         title=title,
         hiring_manager_id=hiring_manager_id,
         department=department,
-        urgency=urgency,
+        priority=priority if priority is not None else LEGACY_URGENCY_TO_PRIORITY.get(urgency),
+        category=category,
         current_user=current_user,
     )
 

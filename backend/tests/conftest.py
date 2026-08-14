@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker, Session
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.models import (
-    Base, User, UserRole, Position, PositionStatus, PositionUrgency, PositionType,
+    Base, User, UserRole, Position, PositionStatus, PositionCategory, PositionType,
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
     InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission, Offer,
     OfferDecisionAudit
@@ -247,7 +247,8 @@ def test_position(db: Session, tenant_a: Tenant, test_user: User) -> Position:
         location="北京",
         department="技术部",
         status=PositionStatus.OPEN,
-        urgency=PositionUrgency.HIGH,
+        priority=4,
+        category=PositionCategory.DOMESTIC_RD,
         position_type=PositionType.FULL_TIME,
         headcount=2,
         hiring_manager_id=test_user.id,

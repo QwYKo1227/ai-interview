@@ -7,6 +7,7 @@ import {
   reconcileHiringManagerSelection,
 } from './filters';
 import { createLatestRequestCoordinator } from '../../utils/latestRequest';
+import { PRIORITY_OPTIONS } from './options';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -20,6 +21,16 @@ const deferred = <T>() => {
 };
 
 describe('buildPositionListParams', () => {
+  it('shows priority options as plain numbers', () => {
+    expect(PRIORITY_OPTIONS).toEqual([
+      { value: 1, label: '1' },
+      { value: 2, label: '2' },
+      { value: 3, label: '3' },
+      { value: 4, label: '4' },
+      { value: 5, label: '5' },
+    ]);
+  });
+
   it('omits hiring_manager_id when no manager is selected', () => {
     expect(buildPositionListParams({ title: '', status: undefined, hiringManagerId: undefined }))
       .toEqual({});
@@ -31,22 +42,25 @@ describe('buildPositionListParams', () => {
       department: 'Engineering',
       status: 'published',
       hiringManagerId: 'manager-id',
-      urgency: 'urgent',
+      priority: 5,
+      category: 'domestic_rd',
     })).toEqual({
       title: 'Backend',
       department: 'Engineering',
       status: 'published',
       hiring_manager_id: 'manager-id',
-      urgency: 'urgent',
+      priority: 5,
+      category: 'domestic_rd',
     });
   });
 
-  it('creates an empty five-field filter state for reset', () => {
+  it('creates an empty filter state for reset', () => {
     expect(createEmptyPositionListFilters()).toEqual({
       title: '',
       department: undefined,
       hiringManagerId: undefined,
-      urgency: undefined,
+      priority: undefined,
+      category: undefined,
       status: undefined,
     });
   });

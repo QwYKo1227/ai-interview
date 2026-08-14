@@ -2,7 +2,8 @@ export interface PositionListFilters {
   title: string;
   department?: string;
   hiringManagerId?: string;
-  urgency?: string;
+  priority?: number;
+  category?: string;
   status?: string;
 }
 
@@ -10,13 +11,15 @@ export const buildPositionListParams = ({
   title,
   department,
   hiringManagerId,
-  urgency,
+  priority,
+  category,
   status,
 }: PositionListFilters) => ({
   ...(title ? { title } : {}),
   ...(department ? { department } : {}),
   ...(hiringManagerId ? { hiring_manager_id: hiringManagerId } : {}),
-  ...(urgency ? { urgency } : {}),
+  ...(priority ? { priority } : {}),
+  ...(category ? { category } : {}),
   ...(status ? { status } : {}),
 });
 
@@ -24,7 +27,8 @@ export const createEmptyPositionListFilters = (): PositionListFilters => ({
   title: '',
   department: undefined,
   hiringManagerId: undefined,
-  urgency: undefined,
+  priority: undefined,
+  category: undefined,
   status: undefined,
 });
 

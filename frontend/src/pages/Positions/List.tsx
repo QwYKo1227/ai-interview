@@ -14,6 +14,12 @@ import {
 } from './filters';
 import { createLatestRequestCoordinator } from '../../utils/latestRequest';
 import { useAuth } from '../../contexts/AuthContext';
+import {
+  getCategoryLabel,
+  normalizePositionClassification,
+  POSITION_CATEGORY_OPTIONS,
+  PRIORITY_OPTIONS,
+} from './options';
 
 const { Title, Text } = Typography;
 
@@ -22,6 +28,7 @@ interface PositionStats {
   pending_screening: number;
   pending_interview: number;
   interview_completed: number;
+  interview_passed: number;
   offer_pending: number;
   offer_accepted: number;
   rejected: number;
@@ -43,7 +50,8 @@ interface Position {
   location: string | null;
   department: string | null;
   status: string;
-  urgency: string;
+  priority: number;
+  category: string;
   position_type: string;
   headcount: number;
   hiring_manager_id: string | null;
@@ -60,11 +68,12 @@ interface HiringManagerOption {
   email: string;
 }
 
-const urgencyConfig: Record<string, { color: string; text: string }> = {
-  low: { color: 'default', text: '低' },
-  medium: { color: 'warning', text: '中' },
-  high: { color: 'orange', text: '高' },
-  urgent: { color: 'red', text: '紧急' },
+const priorityColors: Record<number, string> = {
+  1: 'default',
+  2: 'blue',
+  3: 'gold',
+  4: 'orange',
+  5: 'red',
 };
 
 const positionTypeConfig: Record<string, { color: string; text: string }> = {
@@ -178,13 +187,14 @@ const PositionsList: React.FC = () => {
     filters.hiringManagerId,
     filters.status,
     filters.title,
-    filters.urgency,
+    filters.priority,
+    filters.category,
   ]);
 
   const handleAdd = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ status: 'open', urgency: 'medium', position_type: 'full_time', headcount: 1 });
+    form.setFieldsValue({ status: 'open', priority: 3, category: 'uncategorized', position_type: 'full_time', headcount: 1 });
     setIsModalVisible(true);
   };
 
@@ -336,7 +346,7 @@ const PositionsList: React.FC = () => {
 
   const handleOk = async () => {
     try {
-      const values = await form.validateFields();
+      const values = normalizePositionClassification(await form.validateFields());
       setSubmitting(true);
       if (editingId) {
         await request.put(`/positions/${editingId}`, values);
@@ -367,6 +377,7 @@ const PositionsList: React.FC = () => {
           <div>待筛选: {stats.pending_screening}</div>
           <div>待面试: {stats.pending_interview}</div>
           <div>面试完成: {stats.interview_completed}</div>
+          <div>面试通过: {stats.interview_passed}</div>
           <div>Offer待定: {stats.offer_pending}</div>
           <div>已入职: {stats.offer_accepted}</div>
           <div>已淘汰: {stats.rejected}</div>
@@ -396,6 +407,13 @@ const PositionsList: React.FC = () => {
     },
     { title: '部门', dataIndex: 'department', key: 'department', width: 120, render: (v: string) => v || '-' },
     {
+      title: '岗位分类',
+      dataIndex: 'category',
+      key: 'category',
+      width: 150,
+      render: (category: string) => getCategoryLabel(category),
+    },
+    {
       title: '招聘人数',
       dataIndex: 'headcount',
       key: 'headcount',
@@ -410,14 +428,15 @@ const PositionsList: React.FC = () => {
       render: (value: string | null) => value || '-',
     },
     { 
-      title: '紧急度', 
-      dataIndex: 'urgency', 
-      key: 'urgency',
+      title: '优先度',
+      dataIndex: 'priority',
+      key: 'priority',
       width: 100,
-      render: (urgency: string) => {
-        const config = urgencyConfig[urgency] || { color: 'default', text: urgency };
-        return <Tag color={config.color} style={{ border: 'none' }}>{config.text}</Tag>;
-      }
+      render: (priority: number) => (
+        <Tag color={priorityColors[priority] || 'default'} style={{ border: 'none' }}>
+          {priority}
+        </Tag>
+      ),
     },
     { 
       title: '状态', 
@@ -547,22 +566,31 @@ const PositionsList: React.FC = () => {
               }))}
             />
           </Form.Item>}
-          <Form.Item label="紧急度">
+          <Form.Item label="优先度">
             <Select
-              placeholder="请选择紧急度"
+              placeholder="请选择优先度"
               style={{ width: 140 }}
               allowClear
-              value={filters.urgency}
-              onChange={(urgency) => setFilters((current) => ({
+              options={PRIORITY_OPTIONS}
+              value={filters.priority}
+              onChange={(priority) => setFilters((current) => ({
                 ...current,
-                urgency,
+                priority,
               }))}
-            >
-              <Select.Option value="low">低</Select.Option>
-              <Select.Option value="medium">中</Select.Option>
-              <Select.Option value="high">高</Select.Option>
-              <Select.Option value="urgent">紧急</Select.Option>
-            </Select>
+            />
+          </Form.Item>
+          <Form.Item label="岗位分类">
+            <Select
+              placeholder="请选择岗位分类"
+              style={{ width: 180 }}
+              allowClear
+              options={POSITION_CATEGORY_OPTIONS}
+              value={filters.category}
+              onChange={(category) => setFilters((current) => ({
+                ...current,
+                category,
+              }))}
+            />
           </Form.Item>
           <Form.Item label="状态">
             <Select
@@ -680,17 +708,16 @@ const PositionsList: React.FC = () => {
             </Form.Item>
 
             <Form.Item
-              name="urgency"
-              label="紧急程度"
+              name="priority"
+              label="优先度"
             >
-              <Select size="large">
-                <Select.Option value="low">低</Select.Option>
-                <Select.Option value="medium">中</Select.Option>
-                <Select.Option value="high">高</Select.Option>
-                <Select.Option value="urgent">紧急</Select.Option>
-              </Select>
+              <Select size="large" allowClear options={PRIORITY_OPTIONS} placeholder="请选择优先度" />
             </Form.Item>
           </div>
+
+          <Form.Item name="category" label="岗位分类">
+            <Select size="large" allowClear options={POSITION_CATEGORY_OPTIONS} placeholder="请选择岗位分类" />
+          </Form.Item>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <Form.Item
@@ -779,8 +806,8 @@ const PositionsList: React.FC = () => {
                 <Tag color={viewingRecord.status === 'published' ? 'processing' : 'default'} style={{ border: 'none' }}>
                   {viewingRecord.status === 'published' ? '招聘中' : viewingRecord.status === 'open' ? '待发布' : '已关闭'}
                 </Tag>
-                <Tag color={urgencyConfig[viewingRecord.urgency]?.color || 'default'} style={{ border: 'none' }}>
-                  {urgencyConfig[viewingRecord.urgency]?.text || viewingRecord.urgency}
+                <Tag color={priorityColors[viewingRecord.priority] || 'default'} style={{ border: 'none' }}>
+                  优先度 {viewingRecord.priority}
                 </Tag>
                 <Tag color={positionTypeConfig[viewingRecord.position_type]?.color || 'default'} style={{ border: 'none' }}>
                   {positionTypeConfig[viewingRecord.position_type]?.text || viewingRecord.position_type}
@@ -797,6 +824,7 @@ const PositionsList: React.FC = () => {
               <Descriptions.Item label="薪资范围">{viewingRecord.salary_range || '-'}</Descriptions.Item>
               <Descriptions.Item label="招聘人数">{viewingRecord.headcount || 1} 人</Descriptions.Item>
               <Descriptions.Item label="招聘负责人">{viewingRecord.hiring_manager_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="岗位分类">{getCategoryLabel(viewingRecord.category)}</Descriptions.Item>
             </Descriptions>
 
             <Divider style={{ margin: '24px 0' }} />
@@ -817,8 +845,24 @@ const PositionsList: React.FC = () => {
                   <div style={{ fontSize: 24, fontWeight: 600, color: '#8B5CF6' }}>{viewingRecord.stats?.pending_interview || 0}</div>
                 </div>
                 <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
+                  <Text type="secondary">面试完成</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#0EA5E9' }}>{viewingRecord.stats?.interview_completed || 0}</div>
+                </div>
+                <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
+                  <Text type="secondary">面试通过</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#14B8A6' }}>{viewingRecord.stats?.interview_passed || 0}</div>
+                </div>
+                <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
+                  <Text type="secondary">Offer待定</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#6366F1' }}>{viewingRecord.stats?.offer_pending || 0}</div>
+                </div>
+                <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
                   <Text type="secondary">已入职</Text>
                   <div style={{ fontSize: 24, fontWeight: 600, color: '#10B981' }}>{viewingRecord.stats?.offer_accepted || 0}</div>
+                </div>
+                <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
+                  <Text type="secondary">已淘汰</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#EF4444' }}>{viewingRecord.stats?.rejected || 0}</div>
                 </div>
               </div>
             </div>

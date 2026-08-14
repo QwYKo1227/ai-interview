@@ -1,8 +1,33 @@
-from pydantic import BaseModel, ConfigDict
-from typing import Optional, List
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Any, Optional, List
 from uuid import UUID
 from datetime import datetime
-from app.models.models import PositionStatus, PositionUrgency, PositionType
+from app.models.models import PositionCategory, PositionStatus, PositionType
+
+
+LEGACY_URGENCY_TO_PRIORITY = {
+    "low": 1,
+    "medium": 3,
+    "high": 4,
+    "urgent": 5,
+}
+
+
+def _normalize_position_classification(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    if "priority" not in normalized and "urgency" in normalized:
+        urgency = normalized.pop("urgency")
+        urgency_value = getattr(urgency, "value", urgency)
+        normalized["priority"] = LEGACY_URGENCY_TO_PRIORITY.get(urgency_value, 3)
+    else:
+        normalized.pop("urgency", None)
+    if "priority" in normalized and normalized["priority"] is None:
+        normalized["priority"] = 3
+    if "category" in normalized and normalized["category"] is None:
+        normalized["category"] = PositionCategory.UNCATEGORIZED
+    return normalized
 
 class PositionBase(BaseModel):
     title: str
@@ -12,10 +37,16 @@ class PositionBase(BaseModel):
     location: Optional[str] = None
     department: Optional[str] = None
     status: PositionStatus = PositionStatus.OPEN
-    urgency: PositionUrgency = PositionUrgency.MEDIUM
+    priority: int = Field(default=3, ge=1, le=5)
+    category: PositionCategory = PositionCategory.UNCATEGORIZED
     position_type: PositionType = PositionType.FULL_TIME
     headcount: int = 1
     hiring_manager_id: Optional[UUID] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_urgency(cls, data: Any) -> Any:
+        return _normalize_position_classification(data)
 
 class PositionCreate(PositionBase):
     pass
@@ -28,10 +59,16 @@ class PositionUpdate(BaseModel):
     location: Optional[str] = None
     department: Optional[str] = None
     status: Optional[PositionStatus] = None
-    urgency: Optional[PositionUrgency] = None
+    priority: Optional[int] = Field(default=None, ge=1, le=5)
+    category: Optional[PositionCategory] = None
     position_type: Optional[PositionType] = None
     headcount: Optional[int] = None
     hiring_manager_id: Optional[UUID] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_urgency(cls, data: Any) -> Any:
+        return _normalize_position_classification(data)
 
 class PositionResponse(PositionBase):
     id: UUID
@@ -51,6 +88,7 @@ class PositionStats(BaseModel):
     pending_screening: int = 0
     pending_interview: int = 0
     interview_completed: int = 0
+    interview_passed: int = 0
     offer_pending: int = 0
     offer_accepted: int = 0
     rejected: int = 0

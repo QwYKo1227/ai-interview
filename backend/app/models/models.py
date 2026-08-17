@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, Float, Index, UniqueConstraint, CheckConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship, validates
@@ -69,6 +69,18 @@ class PositionStatus(str, enum.Enum):
     OPEN = "open"
     CLOSED = "closed"
     PUBLISHED = "published"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
+
+
+class PositionEventType(str, enum.Enum):
+    INITIAL_STATUS = "initial_status"
+    STATUS_BASELINE = "status_baseline"
+    STATUS_CHANGED = "status_changed"
+    INITIAL_OWNER = "initial_owner"
+    OWNER_CHANGED = "owner_changed"
+    SOFT_DELETED = "soft_deleted"
+    RESTORED = "restored"
 
 class PositionCategory(str, enum.Enum):
     UNCATEGORIZED = "uncategorized"
@@ -89,6 +101,13 @@ class Position(TenantScopedMixin, Base):
     __table_args__ = (
         _tenant_identity("positions"),
         _tenant_reference("positions", "hiring_manager_id", "users"),
+        _tenant_reference(
+            "positions",
+            "deleted_by",
+            "users",
+            ondelete="SET NULL",
+            postgresql_set_null_columns=("deleted_by",),
+        ),
         CheckConstraint("priority BETWEEN 1 AND 5", name="ck_positions_priority_range"),
     )
 
@@ -111,10 +130,43 @@ class Position(TenantScopedMixin, Base):
     headcount = Column(Integer, default=1)
     hiring_manager_id = Column(UUID(as_uuid=True), nullable=True)
     hiring_manager_history = Column(JSON, nullable=False, default=list)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_by = Column(UUID(as_uuid=True), nullable=True)
+    delete_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     hiring_manager = relationship("User", foreign_keys=[hiring_manager_id])
+    deleted_by_user = relationship("User", foreign_keys=[deleted_by])
+
+
+class PositionEvent(TenantScopedMixin, Base):
+    __tablename__ = "position_events"
+    __table_args__ = (
+        _tenant_identity("position_events"),
+        _tenant_reference("position_events", "position_id", "positions"),
+        _tenant_reference(
+            "position_events",
+            "actor_id",
+            "users",
+            ondelete="SET NULL",
+            postgresql_set_null_columns=("actor_id",),
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    position_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    event_type = Column(Enum(PositionEventType), nullable=False, index=True)
+    old_value = Column(String, nullable=True)
+    new_value = Column(String, nullable=True)
+    actor_id = Column(UUID(as_uuid=True), nullable=True)
+    actor_name = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    event_metadata = Column(JSON, nullable=False, default=dict)
+
+    position = relationship("Position", foreign_keys=[position_id])
+    actor = relationship("User", foreign_keys=[actor_id])
 
 class QuestionCategory(str, enum.Enum):
     TECHNICAL = "technical"

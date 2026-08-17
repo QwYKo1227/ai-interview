@@ -44,8 +44,9 @@ def has_nonclosed_owned_positions(db: Session, user_id) -> bool:
         db.query(Position.id)
         .filter(
             Position.hiring_manager_id == user_id,
+            Position.deleted_at.is_(None),
             or_(
-                Position.status != PositionStatus.CLOSED,
+                Position.status.notin_([PositionStatus.CLOSED, PositionStatus.CANCELLED]),
                 Position.status.is_(None),
             ),
         )
@@ -54,8 +55,16 @@ def has_nonclosed_owned_positions(db: Session, user_id) -> bool:
     )
 
 
-def require_position_access(db: Session, position_id, user: User) -> Position:
+def require_position_access(
+    db: Session,
+    position_id,
+    user: User,
+    *,
+    include_deleted: bool = False,
+) -> Position:
     query = db.query(Position).filter(Position.id == position_id)
+    if not include_deleted:
+        query = query.filter(Position.deleted_at.is_(None))
     if not is_admin(user):
         if not is_recruiter(user):
             raise HTTPException(

@@ -251,6 +251,16 @@ class ReviewerReplacementRequest(BaseModel):
     new_interviewer_id: UUID
 
 
+class InterviewReviewersUpdate(BaseModel):
+    interviewer_ids: List[UUID] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_interviewer_ids(self):
+        if len(set(self.interviewer_ids)) != len(self.interviewer_ids):
+            raise ValueError("面试官不能重复")
+        return self
+
+
 class CorrectedTranscriptSegment(BaseModel):
     start: float
     end: float

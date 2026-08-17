@@ -182,6 +182,7 @@ def _process_resume_task(
         # 获取其他相近岗位（状态为 OPEN 或 PUBLISHED，排除当前岗位）
         other_positions = db.query(Position).filter(
             Position.id != position_id,
+            Position.deleted_at.is_(None),
             Position.status.in_([PositionStatus.OPEN, PositionStatus.PUBLISHED])
         ).limit(5).all()
 
@@ -359,9 +360,13 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
     - 公开链接上传时，candidate_name/email/contact 由应聘者填写，解析时不会覆盖
     - 后台上传时，这些字段为空，解析时会从简历中提取
     """
-    position = db.query(Position).filter(Position.id == position_id).first()
+    position = db.query(Position).filter(
+        Position.id == position_id,
+        Position.deleted_at.is_(None),
+        Position.status.in_([PositionStatus.OPEN, PositionStatus.PUBLISHED]),
+    ).first()
     if not position:
-        raise HTTPException(status_code=404, detail="Position not found")
+        raise HTTPException(status_code=400, detail="当前岗位不接收新简历")
 
     tenant_id = get_tenant_id(db)
     try:
@@ -428,6 +433,7 @@ def upload_public_resume(
 ):
     position = db.query(Position).filter(
         Position.id == position_id,
+        Position.deleted_at.is_(None),
         Position.status == PositionStatus.PUBLISHED,
     ).first()
     if position is None:

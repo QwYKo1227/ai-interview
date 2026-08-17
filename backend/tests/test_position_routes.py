@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import status
 from fastapi.testclient import TestClient
@@ -9,12 +9,15 @@ from app.core.security import get_password_hash
 from app.models.models import (
     Position,
     PositionCategory,
+    PositionEvent,
+    PositionEventType,
     PositionStatus,
     Resume,
     ResumeStatus,
     User,
     UserRole,
 )
+from app.services.position_service import get_position_events
 
 
 def create_manager(
@@ -270,6 +273,181 @@ class TestPositionPriorityAndCategoryFilters:
         assert response.json()[0]["category"] == "domestic_rd"
         assert "urgency" not in response.json()[0]
 
+
+class TestPositionLifecycleAudit:
+    def test_creation_records_initial_status_and_owner_events(
+        self, client: TestClient, auth_headers: dict, db: Session
+    ):
+        created = client.post(
+            "/api/positions",
+            headers=auth_headers,
+            json={"title": "Audit Position", "description": "Audit"},
+        )
+
+        assert created.status_code == status.HTTP_200_OK
+        events = db.query(PositionEvent).filter(
+            PositionEvent.position_id == UUID(created.json()["id"])
+        ).all()
+        assert {event.event_type for event in events} == {
+            PositionEventType.INITIAL_STATUS,
+            PositionEventType.INITIAL_OWNER,
+        }
+
+    def test_events_resolve_legacy_initial_owner_id_to_name(
+        self, db: Session, test_user: User
+    ):
+        position = create_position(db, "Legacy Owner Baseline", test_user)
+        db.add(PositionEvent(
+            tenant_id=position.tenant_id,
+            position_id=position.id,
+            event_type=PositionEventType.INITIAL_OWNER,
+            new_value=str(test_user.id),
+            reason="历史负责人基线",
+            event_metadata={"backfilled": True},
+        ))
+        db.commit()
+
+        initial_owner = get_position_events(db, position.id)[0]
+
+        assert initial_owner.event_metadata["new_owner_name"] == (
+            test_user.full_name or test_user.email
+        )
+
+    def test_pause_requires_reason_and_records_server_timestamp(
+        self, client: TestClient, auth_headers: dict, db: Session, test_user: User
+    ):
+        position = create_position(
+            db, "Published", test_user, PositionStatus.PUBLISHED
+        )
+
+        rejected = client.put(
+            f"/api/positions/{position.id}",
+            headers=auth_headers,
+            json={"status": "paused"},
+        )
+        assert rejected.status_code == status.HTTP_400_BAD_REQUEST
+
+        changed = client.put(
+            f"/api/positions/{position.id}",
+            headers=auth_headers,
+            json={"status": "paused", "status_change_reason": "等待预算确认"},
+        )
+        assert changed.status_code == status.HTTP_200_OK
+        assert changed.json()["status"] == "paused"
+        event = db.query(PositionEvent).filter(
+            PositionEvent.position_id == position.id,
+            PositionEvent.event_type == PositionEventType.STATUS_CHANGED,
+        ).one()
+        assert (event.old_value, event.new_value) == ("published", "paused")
+        assert event.reason == "等待预算确认"
+        assert event.occurred_at is not None
+
+    def test_batch_status_is_atomic_when_any_transition_is_invalid(
+        self, client: TestClient, auth_headers: dict, db: Session, test_user: User
+    ):
+        published = create_position(
+            db, "Published Batch", test_user, PositionStatus.PUBLISHED
+        )
+        draft = create_position(db, "Draft Batch", test_user, PositionStatus.OPEN)
+
+        response = client.post(
+            "/api/positions/batch-status",
+            headers=auth_headers,
+            json={
+                "position_ids": [str(published.id), str(draft.id)],
+                "status": "paused",
+                "reason": "统一暂停",
+            },
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        db.expire_all()
+        assert db.get(Position, published.id).status == PositionStatus.PUBLISHED
+        assert db.get(Position, draft.id).status == PositionStatus.OPEN
+
+    def test_admin_owner_and_status_change_create_two_events_at_same_time(
+        self,
+        client: TestClient,
+        admin_auth_headers: dict,
+        db: Session,
+        test_user: User,
+    ):
+        new_owner = create_manager(
+            db, "new-owner@example.com", "New Owner", test_user.tenant_id
+        )
+        position = create_position(
+            db, "Combined Change", test_user, PositionStatus.PUBLISHED
+        )
+
+        response = client.put(
+            f"/api/positions/{position.id}",
+            headers=admin_auth_headers,
+            json={
+                "status": "paused",
+                "status_change_reason": "项目调整",
+                "hiring_manager_id": str(new_owner.id),
+                "owner_change_reason": "招聘分工调整",
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        events = db.query(PositionEvent).filter(
+            PositionEvent.position_id == position.id,
+            PositionEvent.event_type.in_([
+                PositionEventType.STATUS_CHANGED,
+                PositionEventType.OWNER_CHANGED,
+            ]),
+        ).all()
+        assert len(events) == 2
+        assert events[0].occurred_at == events[1].occurred_at
+        assert {event.reason for event in events} == {"项目调整", "招聘分工调整"}
+
+    def test_admin_soft_delete_and_restore_are_audited(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        admin_auth_headers: dict,
+        db: Session,
+        test_user: User,
+    ):
+        position = create_position(db, "Deletable", test_user)
+
+        deleted = client.delete(
+            f"/api/positions/{position.id}",
+            headers=admin_auth_headers,
+            params={"reason": "重复岗位"},
+        )
+        assert deleted.status_code == status.HTTP_200_OK
+        assert client.get(
+            f"/api/positions/{position.id}", headers=auth_headers
+        ).status_code == status.HTTP_404_NOT_FOUND
+        admin_list = client.get(
+            "/api/positions",
+            headers=admin_auth_headers,
+            params={"deleted_only": True},
+        ).json()
+        assert [item["id"] for item in admin_list] == [str(position.id)]
+        assert admin_list[0]["deleted_at"]
+
+        restored = client.post(
+            f"/api/positions/{position.id}/restore",
+            headers=admin_auth_headers,
+            json={"reason": "确认继续招聘"},
+        )
+        assert restored.status_code == status.HTTP_200_OK
+        assert restored.json()["status"] == "open"
+        assert client.get(
+            "/api/positions", headers=auth_headers
+        ).status_code == status.HTTP_200_OK
+        events = db.query(PositionEvent).filter(
+            PositionEvent.position_id == position.id
+        ).all()
+        assert {event.event_type for event in events} >= {
+            PositionEventType.SOFT_DELETED,
+            PositionEventType.RESTORED,
+        }
+
+class TestPositionPriorityAndCategoryFilterCompatibility:
     def test_legacy_urgency_query_maps_to_priority(
         self, client: TestClient, auth_headers: dict, db: Session, test_user: User
     ):

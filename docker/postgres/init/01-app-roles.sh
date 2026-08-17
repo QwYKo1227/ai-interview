@@ -96,13 +96,23 @@ SELECT format(
 FROM pg_tables
 WHERE schemaname = 'public'
   AND tablename = ANY (ARRAY[
-    'users', 'positions', 'question_banks', 'resumes', 'department_reviews',
+    'users', 'positions', 'position_events', 'question_banks', 'resumes', 'department_reviews',
     'interviews', 'interview_panels', 'offers', 'offer_templates',
+    'offer_decision_audits',
     'coding_tests', 'coding_submissions', 'system_configs', 'workflows',
     'workflow_nodes', 'workflow_edges', 'workflow_executions',
     'workflow_node_executions', 'stored_files', 'tenants', 'tenant_domains',
     'platform_users', 'platform_audit_logs', 'public_access_tokens'
   ])
+\gexec
+SELECT format(
+  'REVOKE UPDATE, DELETE ON TABLE %I.%I FROM app_runtime',
+  schemaname,
+  tablename
+)
+FROM pg_tables
+WHERE schemaname = 'public'
+  AND tablename = ANY (ARRAY['position_events', 'offer_decision_audits'])
 \gexec
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM app_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migration IN SCHEMA public

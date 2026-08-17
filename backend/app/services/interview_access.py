@@ -22,8 +22,14 @@ def is_interviewer_assigned(
 
 def can_access_interview(db: Session, interview: Interview, user: User) -> bool:
     role = getattr(user.role, "value", user.role)
-    if role in {UserRole.ADMIN.value, UserRole.HR.value}:
-        return can_access_interview_as_owner(interview, user)
+    if role == UserRole.ADMIN.value:
+        return True
+    if role == UserRole.HR.value:
+        return can_access_interview_as_owner(interview, user) or is_interviewer_assigned(
+            db,
+            interview,
+            user.id,
+        )
     return is_interviewer_assigned(db, interview, user.id)
 
 

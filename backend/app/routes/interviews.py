@@ -15,7 +15,7 @@ from app.schemas.interview import (
     ForceEndInterviewRequest, LiveNotesRequest,
     NoteSupplementRequest, HumanReviewRequest, FinalDecisionRequest,
     FinalDecisionCorrectionRequest, CancelInterviewResponse,
-    ReviewerReplacementRequest, validate_interview_time_range,
+    ReviewerReplacementRequest, InterviewReviewersUpdate, validate_interview_time_range,
     CorrectedTranscriptRequest, SpeakerLabelsRequest, InterviewScheduleUpdate,
     InterviewScheduleNotificationRequest,
 )
@@ -52,6 +52,7 @@ from app.services.interview_lifecycle_service import (
     persist_realtime_transcript,
     reserve_recording,
     replace_reviewer,
+    update_reviewers,
     save_live_notes,
     seal_recording,
     submit_human_review,
@@ -563,6 +564,22 @@ def replace_reviewer_route(
         current_user,
         payload.old_interviewer_id,
         payload.new_interviewer_id,
+    )
+
+
+@router.put("/{interview_id}/reviewers", response_model=InterviewResponse)
+def update_reviewers_route(
+    interview_id: UUID,
+    payload: InterviewReviewersUpdate,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    return update_reviewers(
+        db,
+        interview,
+        current_user,
+        list(payload.interviewer_ids),
     )
 
 

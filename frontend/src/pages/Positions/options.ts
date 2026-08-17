@@ -21,3 +21,50 @@ export const normalizePositionClassification = <T extends Record<string, unknown
   priority: values.priority ?? 3,
   category: values.category ?? 'uncategorized',
 });
+
+export type PositionStatus = 'open' | 'published' | 'paused' | 'closed' | 'cancelled';
+
+export const POSITION_STATUS_OPTIONS: Array<{ value: PositionStatus; label: string; color: string }> = [
+  { value: 'open', label: '待发布', color: 'warning' },
+  { value: 'published', label: '招聘中', color: 'processing' },
+  { value: 'paused', label: '暂停', color: 'orange' },
+  { value: 'closed', label: '已关闭', color: 'success' },
+  { value: 'cancelled', label: '已取消', color: 'error' },
+];
+
+const STATUS_TRANSITIONS: Record<PositionStatus, PositionStatus[]> = {
+  open: ['published', 'cancelled'],
+  published: ['paused', 'closed', 'cancelled'],
+  paused: ['published', 'closed', 'cancelled'],
+  closed: [],
+  cancelled: [],
+};
+
+export const getStatusOption = (status: string) => {
+  const normalizedStatus = status.toLowerCase();
+  return POSITION_STATUS_OPTIONS.find(({ value }) => value === normalizedStatus)
+    ?? { value: status, label: status, color: 'default' };
+};
+
+export const getAllowedStatusOptions = (
+  currentStatus: PositionStatus | undefined,
+  isAdmin: boolean,
+) => {
+  if (!currentStatus) return POSITION_STATUS_OPTIONS.filter(({ value }) => ['open', 'published'].includes(value));
+  const targets = new Set<PositionStatus>([currentStatus, ...STATUS_TRANSITIONS[currentStatus]]);
+  if (isAdmin && ['closed', 'cancelled'].includes(currentStatus)) {
+    targets.add('open');
+    targets.add('published');
+  }
+  return POSITION_STATUS_OPTIONS.filter(({ value }) => targets.has(value));
+};
+
+export const statusChangeRequiresReason = (
+  currentStatus: PositionStatus | undefined,
+  targetStatus: PositionStatus | undefined,
+) => Boolean(
+  currentStatus
+  && targetStatus
+  && currentStatus !== targetStatus
+  && (['paused', 'cancelled'].includes(targetStatus) || ['closed', 'cancelled'].includes(currentStatus)),
+);

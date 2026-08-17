@@ -374,7 +374,11 @@ def test_dashboard_counts_only_current_tenant(
     auth_headers: dict[str, str],
     test_position: Position,
     tenant_b_position: Position,
+    db: Session,
 ):
+    test_position.status = PositionStatus.PUBLISHED
+    tenant_b_position.status = PositionStatus.PUBLISHED
+    db.commit()
     response = dashboard_client.get("/api/dashboard/stats", headers=auth_headers)
 
     assert response.status_code == 200

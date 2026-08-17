@@ -9,6 +9,7 @@ snapshot so the two cannot drift silently.
 TENANT_TABLES = (
     "users",
     "positions",
+    "position_events",
     "question_banks",
     "resumes",
     "department_reviews",
@@ -39,6 +40,9 @@ GLOBAL_TABLES = (
 # child table, local id column, parent table
 COMPOSITE_TENANT_REFERENCES = (
     ("positions", "hiring_manager_id", "users"),
+    ("positions", "deleted_by", "users"),
+    ("position_events", "position_id", "positions"),
+    ("position_events", "actor_id", "users"),
     ("question_banks", "source_file_id", "stored_files"),
     ("question_banks", "position_id", "positions"),
     ("resumes", "position_id", "positions"),

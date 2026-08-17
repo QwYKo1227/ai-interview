@@ -19,6 +19,7 @@ from app.models.tenant_catalog import GLOBAL_TABLES, TENANT_TABLES
 SCHEMA = "ai-interview.database-permissions"
 VERSION = 1
 APPLICATION_TABLES = tuple(TENANT_TABLES) + tuple(GLOBAL_TABLES)
+APPEND_ONLY_TABLES = {"position_events", "offer_decision_audits"}
 EXPECTED_PUBLIC_TABLES = set(APPLICATION_TABLES) | {"alembic_version"}
 
 
@@ -204,12 +205,18 @@ def verify_database_permissions(connection) -> dict:
             )
         ).mappings()
     }
-    runtime_dml_tables = {
+    runtime_select_insert_tables = {
         table for table, privileges in runtime_table_privileges.items()
-        if all(privileges[:4])
+        if all(privileges[:2])
     }
-    if runtime_dml_tables != set(APPLICATION_TABLES):
-        violations.append("runtime_dml_table_catalog_invalid")
+    runtime_update_delete_tables = {
+        table for table, privileges in runtime_table_privileges.items()
+        if all(privileges[2:4])
+    }
+    if runtime_select_insert_tables != set(APPLICATION_TABLES):
+        violations.append("runtime_select_insert_table_catalog_invalid")
+    if runtime_update_delete_tables != set(APPLICATION_TABLES) - APPEND_ONLY_TABLES:
+        violations.append("runtime_update_delete_table_catalog_invalid")
     if any(any(privileges[4:]) for privileges in runtime_table_privileges.values()):
         violations.append("runtime_elevated_table_privilege")
     if any(runtime_table_privileges.get("alembic_version", (False,) * 7)):
@@ -233,7 +240,7 @@ def verify_database_permissions(connection) -> dict:
     return _result(
         violations,
         application_tables_expected=len(APPLICATION_TABLES),
-        application_tables_with_runtime_dml=len(runtime_dml_tables),
+        application_tables_with_runtime_dml=len(runtime_select_insert_tables),
         application_role_memberships=int(application_role_memberships),
         session_identity_valid=True,
         public_tables=len(public_tables),

@@ -942,3 +942,48 @@ def replace_reviewer(
     db.commit()
     db.refresh(interview)
     return interview
+
+
+def update_reviewers(
+    db: Session,
+    interview: Interview,
+    user: User,
+    interviewer_ids: list[UUID],
+) -> Interview:
+    """Update the required human reviewers without changing the historic schedule."""
+    if _role_value(user) not in {UserRole.ADMIN.value, UserRole.HR.value}:
+        raise HTTPException(status_code=403, detail="HR or admin role required")
+    if interview.lifecycle_state != "ended" or interview.final_decision_at is not None:
+        raise HTTPException(status_code=409, detail="面试官只能在面试结束后、最终结果确认前调整")
+
+    assignable_roles = [UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER]
+    users = db.query(User).filter(
+        User.id.in_(interviewer_ids),
+        User.is_active == True,
+        User.role.in_(assignable_roles),
+    ).all()
+    users_by_id = {candidate.id: candidate for candidate in users}
+    if any(interviewer_id not in users_by_id for interviewer_id in interviewer_ids):
+        raise HTTPException(status_code=422, detail="面试官不存在、已停用或不可分配")
+
+    existing_ids = {
+        panel.interviewer_id
+        for panel in db.query(InterviewPanel).filter(
+            InterviewPanel.interview_id == interview.id,
+        ).all()
+    }
+    for interviewer_id in set(interviewer_ids) - existing_ids:
+        db.add(InterviewPanel(
+            tenant_id=interview.tenant_id,
+            interview_id=interview.id,
+            interviewer_id=interviewer_id,
+            is_submitted=False,
+        ))
+
+    # Removed reviewers are no longer required or authorized, while their frozen
+    # notes/reviews remain as historical evidence instead of being destroyed.
+    interview.panel_members = [str(interviewer_id) for interviewer_id in interviewer_ids]
+    interview.interviewer = "面试小组"
+    db.commit()
+    db.refresh(interview)
+    return interview

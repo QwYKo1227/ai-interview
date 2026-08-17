@@ -52,6 +52,38 @@ def test_interviewer_filter_options_only_include_members_from_visible_interviews
         assert str(unassigned.id) not in ids
 
 
+def test_assigned_hr_can_see_access_and_score_interview_owned_by_another_recruiter(
+    client: TestClient,
+    db: Session,
+    auth_headers: dict,
+    test_user: User,
+    test_admin: User,
+    test_position,
+    test_interview: Interview,
+):
+    """An HR panel member keeps interviewer access outside their recruitment ownership."""
+
+    test_position.hiring_manager_id = test_admin.id
+    test_interview.panel_members = [str(test_user.id)]
+    db.commit()
+
+    list_response = client.get("/api/interviews", headers=auth_headers)
+    detail_response = client.get(
+        f"/api/interviews/{test_interview.id}",
+        headers=auth_headers,
+    )
+    score_response = client.post(
+        f"/api/interviews/{test_interview.id}/panel-score",
+        json={"scores": {"0": 8}, "comments": {"0": "符合要求"}},
+        headers=auth_headers,
+    )
+
+    assert list_response.status_code == status.HTTP_200_OK
+    assert str(test_interview.id) in {item["id"] for item in list_response.json()}
+    assert detail_response.status_code == status.HTTP_200_OK
+    assert score_response.status_code == status.HTTP_200_OK
+
+
 @pytest.mark.parametrize(
     ("method", "suffix", "payload"),
     [
@@ -750,6 +782,54 @@ class TestUpdateInterviewRoute:
                 "interview_end_time": "2024-12-20T15:00:00Z",
                 "interview_type": "phone",
             },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+    def test_hr_can_add_and_remove_reviewers_after_interview_ends(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_user: User,
+        test_interviewer: User,
+        test_interview: Interview,
+        test_interview_panel: InterviewPanel,
+        db: Session,
+    ):
+        test_interview.lifecycle_state = "ended"
+        test_interview.status = InterviewStatus.COMPLETED
+        test_interview_panel.human_comments = "已提交的历史评价"
+        db.commit()
+
+        response = client.put(
+            f"/api/interviews/{test_interview.id}/reviewers",
+            json={"interviewer_ids": [str(test_user.id)]},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["panel_members"] == [str(test_user.id)]
+        assert db.query(InterviewPanel).filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == test_user.id,
+        ).first() is not None
+        historical_panel = db.query(InterviewPanel).filter(
+            InterviewPanel.interview_id == test_interview.id,
+            InterviewPanel.interviewer_id == test_interviewer.id,
+        ).one()
+        assert historical_panel.human_comments == "已提交的历史评价"
+
+    def test_reviewers_cannot_be_updated_before_interview_ends(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interviewer: User,
+        test_interview: Interview,
+    ):
+        response = client.put(
+            f"/api/interviews/{test_interview.id}/reviewers",
+            json={"interviewer_ids": [str(test_interviewer.id)]},
             headers=auth_headers,
         )
 

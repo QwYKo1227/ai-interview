@@ -5,7 +5,14 @@ import { RobotOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
 import { useAuth } from '../../contexts/AuthContext';
-import { normalizePositionClassification, POSITION_CATEGORY_OPTIONS, PRIORITY_OPTIONS } from './options';
+import {
+  getAllowedStatusOptions,
+  normalizePositionClassification,
+  POSITION_CATEGORY_OPTIONS,
+  PRIORITY_OPTIONS,
+  statusChangeRequiresReason,
+  type PositionStatus,
+} from './options';
 
 const { Title, Text } = Typography;
 
@@ -18,6 +25,9 @@ const PositionForm: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
   const [jdModalVisible, setJdModalVisible] = useState(false);
+  const [originalPosition, setOriginalPosition] = useState<{ status: PositionStatus; hiring_manager_id: string | null } | null>(null);
+  const selectedStatus = Form.useWatch('status', form) as PositionStatus | undefined;
+  const selectedOwnerId = Form.useWatch('hiring_manager_id', form) as string | undefined;
 
   useEffect(() => {
     if (id) {
@@ -29,6 +39,7 @@ const PositionForm: React.FC = () => {
   const fetchPosition = async (positionId: string) => {
     try {
       const res = await request.get(`/positions/${positionId}`);
+      setOriginalPosition(res);
       form.setFieldsValue(res);
     } catch (error) {
       message.error('获取岗位详情失败');
@@ -213,12 +224,24 @@ const PositionForm: React.FC = () => {
             name="status"
             label="状态"
           >
-            <Select size="large">
-              <Select.Option value="open">待发布</Select.Option>
-              <Select.Option value="published">招聘中</Select.Option>
-              <Select.Option value="closed">已关闭</Select.Option>
-            </Select>
+            <Select size="large" options={getAllowedStatusOptions(originalPosition?.status, isAdmin)} />
           </Form.Item>
+
+          {originalPosition && selectedStatus !== originalPosition.status && <Form.Item
+            name="status_change_reason"
+            label="状态变更原因"
+            rules={[{ required: statusChangeRequiresReason(originalPosition.status, selectedStatus), message: '请填写状态变更原因' }]}
+          >
+            <Input.TextArea rows={3} maxLength={1000} placeholder="请说明本次状态变更原因" />
+          </Form.Item>}
+
+          {originalPosition && isAdmin && selectedOwnerId !== originalPosition.hiring_manager_id && <Form.Item
+            name="owner_change_reason"
+            label="招聘负责人变更原因"
+            rules={[{ required: true, message: '请填写招聘负责人变更原因' }]}
+          >
+            <Input.TextArea rows={3} maxLength={1000} placeholder="请说明本次负责人变更原因" />
+          </Form.Item>}
 
           <Form.Item style={{ marginTop: 32 }}>
             <Button type="primary" htmlType="submit" loading={loading} size="large">

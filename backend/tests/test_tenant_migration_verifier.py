@@ -150,11 +150,11 @@ def _seed_two_tenants(connection):
     return tenant_a, tenant_b
 
 
-def test_catalog_is_the_authoritative_19_table_31_relation_contract():
-    assert len(TENANT_TABLES) == 19
-    assert len(COMPOSITE_TENANT_REFERENCES) == 31
-    assert len(set(TENANT_TABLES)) == 19
-    assert len(set(COMPOSITE_TENANT_REFERENCES)) == 31
+def test_catalog_is_the_authoritative_20_table_34_relation_contract():
+    assert len(TENANT_TABLES) == 20
+    assert len(COMPOSITE_TENANT_REFERENCES) == 34
+    assert len(set(TENANT_TABLES)) == 20
+    assert len(set(COMPOSITE_TENANT_REFERENCES)) == 34
 
     mapped_tables = {
         mapper.local_table.name
@@ -173,7 +173,8 @@ def test_catalog_is_the_authoritative_19_table_31_relation_contract():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert tuple(module.TENANT_TABLES) == tuple(
-        table for table in TENANT_TABLES if table != "offer_decision_audits"
+        table for table in TENANT_TABLES
+        if table not in {"offer_decision_audits", "position_events"}
     )
     assert tuple(
         (child, column, parent)
@@ -181,7 +182,8 @@ def test_catalog_is_the_authoritative_19_table_31_relation_contract():
         in module.COMPOSITE_FOREIGN_KEYS
     ) == tuple(
         relation for relation in COMPOSITE_TENANT_REFERENCES
-        if relation[0] != "offer_decision_audits"
+        if relation[0] not in {"offer_decision_audits", "position_events"}
+        and relation != ("positions", "deleted_by", "users")
     )
 
 
@@ -274,6 +276,17 @@ def test_clone_runbook_finalizes_and_gates_permissions_before_backend_smoke():
 
     assert head < finalize < permission_gate < backend_smoke
     assert runbook.count("python scripts/verify_database_permissions.py") >= 2
+
+
+def test_role_initializer_grants_append_only_audit_tables():
+    root = Path(__file__).parents[2]
+    initializer = (
+        root / "docker" / "postgres" / "init" / "01-app-roles.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "'position_events'" in initializer
+    assert "'offer_decision_audits'" in initializer
+    assert "REVOKE UPDATE, DELETE ON TABLE %I.%I FROM app_runtime" in initializer
 
 
 def test_runbook_branches_safely_for_zero_and_positive_legacy_candidates():

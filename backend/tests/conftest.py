@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker, Session
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.models import (
-    Base, User, UserRole, Position, PositionStatus, PositionCategory, PositionType,
+    Base, User, UserRole, Position, PositionEvent, PositionStatus, PositionCategory, PositionType,
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
     InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission, Offer,
     OfferDecisionAudit
@@ -74,6 +74,7 @@ def db() -> Generator[Session, None, None]:
         StoredFile.__table__,
         User.__table__,
         Position.__table__,
+        PositionEvent.__table__,
         Resume.__table__,
         Interview.__table__,
         InterviewPanel.__table__,

@@ -1718,7 +1718,12 @@ def test_runtime_role_has_only_runtime_privileges_and_cannot_bypass_rls(
     assert privileges == (True, False, False, True, False, True, False)
     assert set(table_privileges) == APPLICATION_TABLES | {"alembic_version"}
     assert all(
-        table_privileges[table] == (True, False) for table in APPLICATION_TABLES
+        table_privileges[table] == (True, False)
+        for table in APPLICATION_TABLES - {"position_events", "offer_decision_audits"}
+    )
+    assert all(
+        table_privileges[table] == (False, False)
+        for table in {"position_events", "offer_decision_audits"}
     )
     assert table_privileges["alembic_version"] == (False, False)
     assert all(

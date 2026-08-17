@@ -121,7 +121,7 @@ def get_interviewer_dashboard(
 
 
 def _position_query(db: Session, current_user: User | None, *entities):
-    query = db.query(*(entities or (Position,)))
+    query = db.query(*(entities or (Position,))).filter(Position.deleted_at.is_(None))
     if current_user is not None and not is_admin(current_user):
         query = query.filter(Position.hiring_manager_id == current_user.id)
     return query
@@ -146,7 +146,7 @@ def _interview_query(db: Session, current_user: User | None, *entities):
 
 def get_dashboard_stats(db: Session, current_user: User | None = None):
     active_positions_count = _position_query(db, current_user).filter(
-        (Position.status == PositionStatus.OPEN) | (Position.status == PositionStatus.PUBLISHED)
+        Position.status == PositionStatus.PUBLISHED
     ).count()
     
     pending_resumes_count = _resume_query(db, current_user).filter(
@@ -470,7 +470,7 @@ def get_position_analytics(db: Session, current_user: User | None = None) -> Dic
     
     summary = {
         "total_positions": len(positions),
-        "active_positions": sum(1 for p in positions if p.status in [PositionStatus.OPEN, PositionStatus.PUBLISHED]),
+        "active_positions": sum(1 for p in positions if p.status == PositionStatus.PUBLISHED),
         "total_resumes": total_all_resumes,
         "total_hired": total_all_hired,
         "overall_conversion_rate": round(total_all_hired / total_all_resumes * 100, 1) if total_all_resumes > 0 else 0
@@ -644,7 +644,7 @@ def get_timeline_analytics(db: Session, current_user: User | None = None, days: 
 def get_overview(db: Session, current_user: User | None = None) -> Dict[str, Any]:
     total_positions = _position_query(db, current_user).count()
     active_positions = _position_query(db, current_user).filter(
-        Position.status.in_([PositionStatus.OPEN, PositionStatus.PUBLISHED])
+        Position.status == PositionStatus.PUBLISHED
     ).count()
     
     total_resumes = _resume_query(db, current_user).count()

@@ -201,6 +201,9 @@ const InterviewResultPage: React.FC = () => {
   const [savingReview, setSavingReview] = useState(false);
   const [notes, setNotes] = useState<any[]>([]);
   const [reviewCandidates, setReviewCandidates] = useState<any[]>([]);
+  const [reviewersOpen, setReviewersOpen] = useState(false);
+  const [reviewerDraft, setReviewerDraft] = useState<string[]>([]);
+  const [savingReviewers, setSavingReviewers] = useState(false);
   const [replacementTarget, setReplacementTarget] = useState<string>('');
   const [replacementUser, setReplacementUser] = useState<string>('');
   const [correctionOpen, setCorrectionOpen] = useState(false);
@@ -411,6 +414,29 @@ const InterviewResultPage: React.FC = () => {
       await fetchInterview(id!, true);
     } catch (error: any) {
       message.error(error?.response?.data?.detail || '更换评审人失败');
+    }
+  };
+
+  const openReviewers = () => {
+    setReviewerDraft((interview?.panel_members || []).map(String));
+    setReviewersOpen(true);
+  };
+
+  const saveReviewers = async () => {
+    if (reviewerDraft.length === 0) {
+      message.error('请至少保留一位面试官');
+      return;
+    }
+    setSavingReviewers(true);
+    try {
+      await request.put(`/interviews/${id}/reviewers`, { interviewer_ids: reviewerDraft });
+      message.success('面试官已更新');
+      setReviewersOpen(false);
+      await fetchInterview(id!, true);
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '更新面试官失败');
+    } finally {
+      setSavingReviewers(false);
     }
   };
 
@@ -807,7 +833,15 @@ const InterviewResultPage: React.FC = () => {
           </Card>
         )}
 
-        <Card title="面试官评价状态" extra={isHr && !allReviewed ? <Button onClick={sendReviewReminders}>邮件提醒未评价面试官</Button> : null}>
+        <Card
+          title="面试官评价状态"
+          extra={isHr ? (
+            <Space>
+              {!interview.final_decision_at && <Button onClick={openReviewers}>管理面试官</Button>}
+              {!allReviewed && <Button onClick={sendReviewReminders}>邮件提醒未评价面试官</Button>}
+            </Space>
+          ) : null}
+        >
           <List
             dataSource={requiredPanels}
             renderItem={(panel: any) => {
@@ -832,6 +866,30 @@ const InterviewResultPage: React.FC = () => {
             }}
           />
         </Card>
+
+        <Modal
+          title="管理面试官"
+          open={reviewersOpen}
+          onOk={saveReviewers}
+          onCancel={() => setReviewersOpen(false)}
+          confirmLoading={savingReviewers}
+          okText="保存"
+          cancelText="取消"
+        >
+          <Text type="secondary">可在最终面试结果确认前添加或删除面试官，历史评价和现场笔记会保留。</Text>
+          <Select
+            mode="multiple"
+            value={reviewerDraft}
+            onChange={setReviewerDraft}
+            placeholder="请选择面试官"
+            optionFilterProp="label"
+            style={{ width: '100%', marginTop: 16 }}
+            options={reviewCandidates.map((candidate: any) => ({
+              value: String(candidate.id),
+              label: candidate.full_name || candidate.email,
+            }))}
+          />
+        </Modal>
 
         {notes.length > 0 && (
           <Card title="面试现场笔记（已冻结）">

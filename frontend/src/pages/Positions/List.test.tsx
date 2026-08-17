@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -55,6 +55,8 @@ describe('PositionsList responsive table', () => {
 
   afterEach(() => {
     getComputedStyleSpy.mockRestore()
+    cleanup()
+    vi.clearAllMocks()
   })
 
   it('contains horizontal overflow and fixes the action column to the right', async () => {
@@ -119,5 +121,39 @@ describe('PositionsList responsive table', () => {
     ]) {
       expect(await screen.findByText(progressText)).toBeInTheDocument()
     }
+  })
+
+  it('opens a dedicated recycle bin instead of showing a deleted toggle', async () => {
+    const user = userEvent.setup()
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [] : [])
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    expect(screen.queryByText('显示已删除')).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: /岗位回收站/ }))
+
+    expect(await screen.findByRole('heading', { name: '岗位回收站' })).toBeInTheDocument()
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', {
+      params: { deleted_only: true },
+    }))
+  })
+
+  it('shows deleted as the sole status in the recycle bin', async () => {
+    const user = userEvent.setup()
+    const deletedPosition = {
+      ...position,
+      status: 'closed',
+      deleted_at: '2026-08-17T03:00:00.000Z',
+    }
+    vi.mocked(request.get).mockImplementation(async (url: string, config?: { params?: { deleted_only?: boolean } }) => (
+      url === '/positions' && config?.params?.deleted_only ? [deletedPosition] : []
+    ))
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: /岗位回收站/ }))
+    const row = (await screen.findByText(deletedPosition.title)).closest('tr')
+
+    expect(row).not.toBeNull()
+    expect(within(row as HTMLElement).getByText('已删除')).toBeInTheDocument()
+    expect(within(row as HTMLElement).queryByText('已关闭')).not.toBeInTheDocument()
   })
 })

@@ -11,7 +11,7 @@ from app.config.tenant_session import tenant_session
 from app.models.file_models import StoredFile
 from app.utils.file_storage import stored_file_path
 from app.utils.file_storage import UPLOAD_ROOT, stage_file_deletions, tenant_resource_files, unlink_file_locations
-from app.services.interview_access import can_score_interview, is_interviewer_assigned
+from app.services.interview_access import can_access_interview, can_score_interview, is_interviewer_assigned
 from app.services.interview_timing import require_interview_start_time
 from app.services.resume_interview_status import (
     apply_final_decision,
@@ -662,12 +662,19 @@ def get_interviews(
         joinedload(Interview.position),
         joinedload(Interview.panels),
     )
-    if current_user is not None and current_user.role == UserRole.HR:
-        query = query.join(Position, Interview.position_id == Position.id).filter(
-            Position.hiring_manager_id == current_user.id
-        )
     if status:
         query = query.filter(Interview.status == status)
+    if current_user is not None and current_user.role == UserRole.HR:
+        if range_end:
+            query = query.filter(Interview.interview_time < _normalize_dt_utc(range_end))
+        interviews = query.order_by(Interview.interview_time.asc()).all()
+        visible = [
+            item
+            for item in interviews
+            if can_access_interview(db, item, current_user)
+            and _matches_date_range(item, range_start, range_end)
+        ]
+        return visible[skip: skip + limit]
     if range_start is None and range_end is None:
         return query.order_by(Interview.interview_time.asc()).offset(skip).limit(limit).all()
     if range_end:
@@ -712,19 +719,12 @@ def get_interviews_for_interviewer(
 def get_visible_interviewer_options(db: Session, current_user: User) -> List[User]:
     """Return active interviewers that occur in the caller's visible interviews."""
     query = db.query(Interview).options(joinedload(Interview.panels))
-    if current_user.role == UserRole.HR:
-        query = query.join(Position, Interview.position_id == Position.id).filter(
-            Position.hiring_manager_id == current_user.id
-        )
-
     interviews = query.all()
-    if current_user.role == UserRole.INTERVIEWER:
-        current_id = str(current_user.id)
+    if current_user.role in {UserRole.HR, UserRole.INTERVIEWER}:
         interviews = [
             interview
             for interview in interviews
-            if current_id
-            in {str(member_id) for member_id in _interview_member_ids(interview)}
+            if can_access_interview(db, interview, current_user)
         ]
 
     interviewer_ids = {

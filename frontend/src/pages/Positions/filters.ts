@@ -5,6 +5,7 @@ export interface PositionListFilters {
   priority?: number;
   category?: string;
   status?: string;
+  deletedOnly?: boolean;
 }
 
 export const buildPositionListParams = ({
@@ -14,6 +15,7 @@ export const buildPositionListParams = ({
   priority,
   category,
   status,
+  deletedOnly,
 }: PositionListFilters) => ({
   ...(title ? { title } : {}),
   ...(department ? { department } : {}),
@@ -21,6 +23,7 @@ export const buildPositionListParams = ({
   ...(priority ? { priority } : {}),
   ...(category ? { category } : {}),
   ...(status ? { status } : {}),
+  ...(deletedOnly ? { deleted_only: true } : {}),
 });
 
 export const createEmptyPositionListFilters = (): PositionListFilters => ({
@@ -30,6 +33,7 @@ export const createEmptyPositionListFilters = (): PositionListFilters => ({
   priority: undefined,
   category: undefined,
   status: undefined,
+  deletedOnly: false,
 });
 
 export const buildCurrentPositionListParams = (

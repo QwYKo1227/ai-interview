@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Optional, List
 from uuid import UUID
 from datetime import datetime
-from app.models.models import PositionCategory, PositionStatus, PositionType
+from app.models.models import PositionCategory, PositionEventType, PositionStatus, PositionType
 
 
 LEGACY_URGENCY_TO_PRIORITY = {
@@ -64,6 +64,8 @@ class PositionUpdate(BaseModel):
     position_type: Optional[PositionType] = None
     headcount: Optional[int] = None
     hiring_manager_id: Optional[UUID] = None
+    status_change_reason: Optional[str] = Field(default=None, max_length=1000)
+    owner_change_reason: Optional[str] = Field(default=None, max_length=1000)
 
     @model_validator(mode="before")
     @classmethod
@@ -72,6 +74,9 @@ class PositionUpdate(BaseModel):
 
 class PositionResponse(PositionBase):
     id: UUID
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[UUID] = None
+    delete_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -96,11 +101,40 @@ class PositionStats(BaseModel):
 class PositionWithStats(PositionResponse):
     stats: PositionStats = PositionStats()
     hiring_manager_name: Optional[str] = None
+    deleted_by_name: Optional[str] = None
+
+
+class PositionEventResponse(BaseModel):
+    id: UUID
+    event_type: PositionEventType
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    actor_id: Optional[UUID] = None
+    actor_name: Optional[str] = None
+    reason: Optional[str] = None
+    occurred_at: datetime
+    event_metadata: dict = Field(default_factory=dict)
+    model_config = ConfigDict(from_attributes=True)
 
 class PositionDetailResponse(PositionResponse):
     stats: PositionStats = PositionStats()
     hiring_manager_name: Optional[str] = None
     linked_question_banks: List['QuestionBankBrief'] = []
+    events: List[PositionEventResponse] = Field(default_factory=list)
+
+
+class PositionBatchStatusRequest(BaseModel):
+    position_ids: List[UUID] = Field(min_length=1, max_length=100)
+    status: PositionStatus
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+class PositionBatchStatusResponse(BaseModel):
+    updated_count: int
+
+
+class PositionRestoreRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
 
 class QuestionBankBrief(BaseModel):
     id: UUID

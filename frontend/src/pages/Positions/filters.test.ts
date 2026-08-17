@@ -54,6 +54,12 @@ describe('buildPositionListParams', () => {
     });
   });
 
+  it('requests only deleted positions in recycle-bin mode', () => {
+    expect(buildPositionListParams({ title: '', deletedOnly: true })).toEqual({
+      deleted_only: true,
+    });
+  });
+
   it('creates an empty filter state for reset', () => {
     expect(createEmptyPositionListFilters()).toEqual({
       title: '',
@@ -62,6 +68,7 @@ describe('buildPositionListParams', () => {
       priority: undefined,
       category: undefined,
       status: undefined,
+      deletedOnly: false,
     });
   });
 });

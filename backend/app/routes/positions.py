@@ -7,11 +7,13 @@ from app.schemas.position import (
     PositionCreate, PositionUpdate, PositionResponse,
     PositionWithStats, PositionStats, JDGenerateRequest,
     JDGenerateResponse, PositionDetailResponse, QuestionBankBrief,
-    JDChatRequest, HiringManagerOption
+    JDChatRequest, HiringManagerOption, PositionBatchStatusRequest,
+    PositionBatchStatusResponse, PositionRestoreRequest,
 )
 from app.services.position_service import (
     create_position, get_positions, get_positions_with_stats,
-    get_position, update_position, delete_position,
+    get_position, update_position, soft_delete_position, restore_position,
+    batch_update_position_status, get_position_events,
     get_position_stats, get_linked_question_banks, generate_position_jd,
     get_hiring_managers, get_position_departments
 )
@@ -38,7 +40,7 @@ def create_position_route(
 ):
     if not is_admin(current_user):
         position = position.model_copy(update={"hiring_manager_id": current_user.id})
-    return create_position(db, position)
+    return create_position(db, position, actor=current_user)
 
 @router.get("", response_model=List[PositionWithStats])
 def get_positions_route(
@@ -51,9 +53,13 @@ def get_positions_route(
     priority: int | None = Query(default=None, ge=1, le=5),
     category: PositionCategory = None,
     urgency: Literal["low", "medium", "high", "urgent"] | None = None,
+    include_deleted: bool = False,
+    deleted_only: bool = False,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
+    if (include_deleted or deleted_only) and not is_admin(current_user):
+        raise HTTPException(status_code=403, detail="只有管理员可查看已删除岗位")
     return get_positions_with_stats(
         db,
         skip=skip,
@@ -65,6 +71,8 @@ def get_positions_route(
         priority=priority if priority is not None else LEGACY_URGENCY_TO_PRIORITY.get(urgency),
         category=category,
         current_user=current_user,
+        include_deleted=include_deleted or deleted_only,
+        deleted_only=deleted_only,
     )
 
 
@@ -149,13 +157,34 @@ def chat_jd_stream_route(
         media_type="text/event-stream"
     )
 
+
+@router.post("/batch-status", response_model=PositionBatchStatusResponse)
+def batch_update_position_status_route(
+    request: PositionBatchStatusRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    count = batch_update_position_status(
+        db,
+        request.position_ids,
+        request.status,
+        reason=request.reason,
+        actor=current_user,
+    )
+    return PositionBatchStatusResponse(updated_count=count)
+
 @router.get("/{position_id}", response_model=PositionDetailResponse)
 def get_position_route(
     position_id: UUID,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    position = require_position_access(db, position_id, current_user)
+    position = require_position_access(
+        db,
+        position_id,
+        current_user,
+        include_deleted=is_admin(current_user),
+    )
 
     stats = get_position_stats(db, position_id)
     linked_banks = get_linked_question_banks(db, position_id)
@@ -171,7 +200,8 @@ def get_position_route(
         **{c.name: getattr(position, c.name) for c in position.__table__.columns},
         stats=stats.model_dump(),
         hiring_manager_name=hiring_manager_name,
-        linked_question_banks=[b.model_dump() for b in linked_banks]
+        linked_question_banks=[b.model_dump() for b in linked_banks],
+        events=get_position_events(db, position_id),
     )
 
 @router.get("/{position_id}/stats", response_model=PositionStats)
@@ -215,11 +245,27 @@ def update_position_route(
 @router.delete("/{position_id}", response_model=PositionResponse)
 def delete_position_route(
     position_id: UUID,
+    reason: str | None = Query(default=None, max_length=1000),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     require_position_access(db, position_id, current_user)
-    db_position = delete_position(db, position_id)
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail="只有管理员可以删除岗位")
+    db_position = soft_delete_position(db, position_id, actor=current_user, reason=reason or "")
+    if not db_position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    return db_position
+
+
+@router.post("/{position_id}/restore", response_model=PositionResponse)
+def restore_position_route(
+    position_id: UUID,
+    request: PositionRestoreRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN])),
+):
+    db_position = restore_position(db, position_id, actor=current_user, reason=request.reason)
     if not db_position:
         raise HTTPException(status_code=404, detail="Position not found")
     return db_position

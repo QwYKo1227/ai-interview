@@ -30,6 +30,7 @@ import PlatformTenants from '../pages/Platform/Tenants';
 import PlatformProtectedRoute from '../components/Platform/PlatformProtectedRoute';
 import PlatformLayout from '../components/Platform/PlatformLayout';
 import RoleProtectedRoute from '../components/RoleProtectedRoute';
+import RecruitmentPerformance from '../pages/RecruitmentPerformance';
 import { useAuth } from '../contexts/AuthContext';
 import { Spin } from 'antd';
 
@@ -103,6 +104,14 @@ const router = createBrowserRouter([
       {
         path: 'dashboard',
         element: <Dashboard />,
+      },
+      {
+        path: 'recruitment-performance',
+        element: (
+          <RoleProtectedRoute roles={['admin', 'hr']}>
+            <RecruitmentPerformance />
+          </RoleProtectedRoute>
+        ),
       },
       {
         path: 'positions',

@@ -684,14 +684,17 @@ const PositionsList: React.FC = () => {
         </div>
       </Card>
 
-      {!isRecycleBin && selectedRowKeys.length > 0 && <div className="positions-batch-bar">
-        <Text strong>已选 {selectedRowKeys.length} 个岗位</Text>
-        <Space wrap>
-          <Button onClick={() => handleBatchStatus('published')} type="primary" ghost>批量发布</Button>
+      {!isRecycleBin && selectedRowKeys.length > 0 && <div className="positions-batch-bar" role="region" aria-label="批量操作">
+        <div className="positions-batch-summary" aria-live="polite">
+          <span className="positions-batch-count">{selectedRowKeys.length}</span>
+          <Text strong>个岗位已选</Text>
+        </div>
+        <Space className="positions-batch-actions" wrap size={10}>
+          <Button onClick={() => handleBatchStatus('published')} type="primary">批量发布</Button>
           <Button onClick={() => handleBatchStatus('paused')}>批量暂停</Button>
           <Button onClick={() => handleBatchStatus('closed')}>批量关闭</Button>
           <Button danger onClick={() => handleBatchStatus('cancelled')}>批量取消</Button>
-          <Button type="text" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          <Button className="positions-batch-clear" type="text" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
         </Space>
       </div>}
       
@@ -704,6 +707,7 @@ const PositionsList: React.FC = () => {
         rowKey="id" 
         pagination={{ pageSize: 10, showSizeChanger: true }}
         rowSelection={isRecycleBin ? undefined : {
+          columnWidth: 64,
           selectedRowKeys,
           onChange: setSelectedRowKeys,
           getCheckboxProps: (record) => ({ disabled: Boolean(record.deleted_at) }),

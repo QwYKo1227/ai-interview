@@ -276,10 +276,57 @@ code {
   justify-content: space-between;
   gap: 16px;
   margin: -4px 0 16px;
-  padding: 10px 14px 10px 18px;
+  min-height: 58px;
+  padding: 8px 12px 8px 18px;
   border: 1px solid #bfdbfe;
   border-radius: 12px;
-  background: #eff6ff;
+  background: linear-gradient(90deg, #eff6ff 0%, #f8fbff 44%, #ffffff 100%);
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.06);
+}
+
+.positions-batch-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  color: #1e3a8a;
+}
+
+.positions-batch-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #2563eb;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.positions-batch-actions {
+  justify-content: flex-end;
+}
+
+.positions-batch-actions .ant-btn {
+  height: 38px;
+  border-radius: 8px;
+}
+
+.positions-batch-actions .ant-btn-primary {
+  color: #ffffff !important;
+}
+
+.positions-batch-clear {
+  color: #475569;
+}
+
+.positions-batch-clear:hover {
+  color: #2563eb !important;
+  background: #eff6ff !important;
 }
 
 .positions-table {
@@ -287,9 +334,24 @@ code {
   max-width: 100%;
 }
 
+.positions-table .ant-table-selection-column {
+  min-width: 64px;
+  padding-inline: 20px !important;
+}
+
 .positions-table .ant-table-cell-fix-right,
 .positions-table .ant-table-cell-fix-end {
   background: var(--surface-color);
+}
+
+.positions-table .ant-table-tbody > tr.ant-table-row-selected > td,
+.positions-table .ant-table-tbody > tr.ant-table-row-selected:hover > td {
+  background: #f3f7fd !important;
+}
+
+.positions-table .ant-table-tbody > tr.ant-table-row-selected > td.ant-table-cell-fix-right,
+.positions-table .ant-table-tbody > tr.ant-table-row-selected > td.ant-table-cell-fix-end {
+  background: #f3f7fd !important;
 }
 
 .app-user-name {
@@ -349,6 +411,11 @@ code {
   .positions-batch-bar {
     align-items: flex-start;
     flex-direction: column;
+    padding: 14px;
+  }
+
+  .positions-batch-actions {
+    justify-content: flex-start;
   }
 
   .public-review-page {

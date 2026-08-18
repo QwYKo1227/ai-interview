@@ -72,6 +72,18 @@ def test_interviewer_cannot_access_offer_management(
     assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
+def test_offer_management_timestamps_are_explicit_utc(
+    client: TestClient, db, auth_headers: dict, test_position, test_resume, test_user
+):
+    _sent_offer(db, test_position, test_resume, test_user)
+
+    response = client.get("/api/offers", headers=auth_headers)
+
+    assert response.status_code == status.HTTP_200_OK
+    offer = response.json()["items"][0]
+    assert offer["created_at"].endswith(("Z", "+00:00"))
+    assert offer["sent_at"].endswith(("Z", "+00:00"))
+
 def test_hiring_manager_can_decide_and_correct_with_an_audit_trail(
     client: TestClient, db, auth_headers: dict, test_interviewer,
     test_position, test_resume, test_user

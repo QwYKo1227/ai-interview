@@ -25,6 +25,7 @@ from typing import List, Optional
 from app.services.ai_service import generate_jd
 from fastapi import HTTPException
 from datetime import datetime, timezone
+from app.services.recruitment_performance_service import sync_position_slots
 from app.services.recruitment_access import can_manage_position, is_admin
 
 
@@ -369,6 +370,7 @@ def create_position(db: Session, position: PositionCreate, *, actor: Optional[Us
         new_value=str(owner.id),
         event_metadata={"new_owner_name": owner.full_name or owner.email},
     )
+    sync_position_slots(db, db_position, assigned_at=occurred_at)
     db.commit()
     db.refresh(db_position)
     return db_position
@@ -453,6 +455,8 @@ def update_position(
             )
     for key, value in update_data.items():
         setattr(db_position, key, value)
+    if "headcount" in update_data:
+        sync_position_slots(db, db_position, assigned_at=now)
     db.commit()
     db.refresh(db_position)
     return db_position

@@ -2,17 +2,18 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Table, Button, Space, Tag, Modal, Form, Input, InputNumber, DatePicker,
   Select, message, Popconfirm, Badge, Tooltip, Typography, Row, Col, Statistic,
-  Drawer, Descriptions, Divider, Timeline
+  Drawer, Descriptions, Divider, Timeline, Alert
 } from 'antd';
 import {
   PlusOutlined, SwapOutlined, CheckOutlined, CloseOutlined, RollbackOutlined,
   EyeOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ReloadOutlined,
   FileTextOutlined, DollarOutlined, EnvironmentOutlined, ClockCircleOutlined,
-  RedoOutlined
+  RedoOutlined, UserAddOutlined
 } from '@ant-design/icons';
 import request from '../../utils/request';
 import dayjs from 'dayjs';
 import { useAuth } from '../../contexts/AuthContext';
+import { formatOfferDateTime } from './offerTime';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -42,6 +43,7 @@ interface Offer {
   status: string;
   sent_at: string | null;
   accepted_at: string | null;
+  actual_onboarded_at: string | null;
   rejected_at: string | null;
   rejected_reason: string | null;
   created_at: string;
@@ -131,6 +133,7 @@ const OffersList: React.FC = () => {
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
   const [acceptModalVisible, setAcceptModalVisible] = useState(false);
+  const [onboardingModalVisible, setOnboardingModalVisible] = useState(false);
   
   const [currentOffer, setCurrentOffer] = useState<Offer | null>(null);
   const [decisionAudits, setDecisionAudits] = useState<OfferDecisionAudit[]>([]);
@@ -138,6 +141,24 @@ const OffersList: React.FC = () => {
   const [editForm] = Form.useForm();
   const [rejectForm] = Form.useForm();
   const [acceptForm] = Form.useForm();
+  const [onboardingForm] = Form.useForm();
+
+  const confirmOnboarding = async () => {
+    if (!currentOffer) return;
+    const values = await onboardingForm.validateFields();
+    try {
+      await request.post(`/offers/${currentOffer.id}/confirm-onboarding`, {
+        actual_onboard_date: values.actual_onboard_date.format('YYYY-MM-DD'),
+      });
+      message.success('已确认候选人入职');
+      setOnboardingModalVisible(false);
+      onboardingForm.resetFields();
+      fetchOffers();
+      fetchStats();
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '确认入职失败');
+    }
+  };
 
   const [positions, setPositions] = useState<any[]>([]);
   const [resumes, setResumes] = useState<any[]>([]);
@@ -484,7 +505,8 @@ const OffersList: React.FC = () => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      render: (status: string) => {
+      render: (status: string, record: Offer) => {
+        if (record.actual_onboarded_at) return <Tag color="green">已入职</Tag>;
         const config = statusConfig[status] || { color: 'default', text: status };
         return <Tag color={config.color}>{config.text}</Tag>;
       },
@@ -493,7 +515,7 @@ const OffersList: React.FC = () => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      render: (date: string) => dayjs(date).format('YYYY-MM-DD HH:mm'),
+      render: (date: string) => formatOfferDateTime(date),
     },
     {
       title: '操作',
@@ -535,13 +557,22 @@ const OffersList: React.FC = () => {
             </>
           )}
           {record.status === 'accepted' && record.can_decide && (
-            <Tooltip title="更正为拒绝">
-              <Button type="text" danger icon={<CloseOutlined />} onClick={() => {
-                setCurrentOffer(record);
-                rejectForm.resetFields();
-                setRejectModalVisible(true);
-              }} />
-            </Tooltip>
+            <>
+              {!record.actual_onboarded_at && <Tooltip title="确认实际入职">
+                <Button type="text" style={{ color: '#059669' }} icon={<UserAddOutlined />} onClick={() => {
+                  setCurrentOffer(record);
+                  onboardingForm.setFieldsValue({ actual_onboard_date: dayjs() });
+                  setOnboardingModalVisible(true);
+                }} />
+              </Tooltip>}
+              <Tooltip title="更正为拒绝">
+                <Button type="text" danger icon={<CloseOutlined />} onClick={() => {
+                  setCurrentOffer(record);
+                  rejectForm.resetFields();
+                  setRejectModalVisible(true);
+                }} />
+              </Tooltip>
+            </>
           )}
           {record.status === 'rejected' && record.can_decide && (
             <Tooltip title="更正为接受">
@@ -1020,20 +1051,20 @@ const OffersList: React.FC = () => {
                 </Tag>
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
-                {dayjs(currentOffer.created_at).format('YYYY-MM-DD HH:mm')}
+                {formatOfferDateTime(currentOffer.created_at)}
               </Descriptions.Item>
               <Descriptions.Item label="发送时间">
-                {currentOffer.sent_at ? dayjs(currentOffer.sent_at).format('YYYY-MM-DD HH:mm') : '-'}
+                {formatOfferDateTime(currentOffer.sent_at)}
               </Descriptions.Item>
               {currentOffer.accepted_at && (
                 <Descriptions.Item label="接受时间">
-                  {dayjs(currentOffer.accepted_at).format('YYYY-MM-DD HH:mm')}
+                  {formatOfferDateTime(currentOffer.accepted_at)}
                 </Descriptions.Item>
               )}
               {currentOffer.rejected_at && (
                 <>
                   <Descriptions.Item label="拒绝时间">
-                    {dayjs(currentOffer.rejected_at).format('YYYY-MM-DD HH:mm')}
+                    {formatOfferDateTime(currentOffer.rejected_at)}
                   </Descriptions.Item>
                   <Descriptions.Item label="拒绝原因" span={2}>
                     {formatRejectedReason(currentOffer.rejected_reason)}
@@ -1053,7 +1084,7 @@ const OffersList: React.FC = () => {
                         {' → '}
                         {statusConfig[audit.new_status]?.text || audit.new_status}
                       </Text>
-                      <div><Text type="secondary">{audit.actor_name} · {dayjs(audit.created_at).format('YYYY-MM-DD HH:mm')}</Text></div>
+                      <div><Text type="secondary">{audit.actor_name} · {formatOfferDateTime(audit.created_at)}</Text></div>
                       {audit.rejection_reason && <div>拒绝原因：{rejectionReasonLabels[audit.rejection_reason] || audit.rejection_reason}{audit.rejection_detail ? `（${audit.rejection_detail}）` : ''}</div>}
                       {audit.correction_reason && <div>更正原因：{audit.correction_reason}</div>}
                     </div>
@@ -1099,6 +1130,27 @@ const OffersList: React.FC = () => {
           </div>
         )}
       </Drawer>
+
+      <Modal
+        title="确认实际入职"
+        open={onboardingModalVisible}
+        okText="确认入职"
+        cancelText="取消"
+        onOk={confirmOnboarding}
+        onCancel={() => setOnboardingModalVisible(false)}
+      >
+        <Alert
+          type="info"
+          showIcon
+          title="确认后，简历状态将更新为“已入职”，并用于招聘绩效结算。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={onboardingForm} layout="vertical">
+          <Form.Item name="actual_onboard_date" label="实际入职日期" rules={[{ required: true, message: '请选择实际入职日期' }]}>
+            <DatePicker style={{ width: '100%' }} disabledDate={(date) => date && date.isAfter(dayjs(), 'day')} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };

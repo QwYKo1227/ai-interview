@@ -8,6 +8,7 @@ from app.schemas.offer import (
     OfferStats,
     OfferDecisionRequest
 )
+from app.schemas.recruitment_performance import OnboardingConfirmation
 from app.services import offer_service
 from app.core.security import check_roles
 from app.models.models import User, UserRole
@@ -70,6 +71,23 @@ def get_my_pending_offer_count(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return {"count": offer_service.get_my_pending_offer_count(db, current_user)}
+
+
+@router.post("/{offer_id}/confirm-onboarding", response_model=OfferResponse)
+def confirm_offer_onboarding(
+    offer_id: UUID,
+    payload: OnboardingConfirmation,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    _require_scoped_offer(db, offer_id, current_user)
+    try:
+        offer_service.confirm_onboarding(db, offer_id, payload.actual_onboard_date, current_user)
+        return offer_service.get_offer(db, offer_id, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 @router.get("/{offer_id}", response_model=OfferResponse)
 def get_offer(

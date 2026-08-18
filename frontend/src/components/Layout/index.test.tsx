@@ -57,6 +57,7 @@ describe('AppLayout responsiveness', () => {
     render(<MemoryRouter initialEntries={['/dashboard']}><AppLayout /></MemoryRouter>)
 
     expect(screen.queryByRole('menuitem', { name: /Offer管理/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '招聘绩效' })).not.toBeInTheDocument()
   })
 
   it('shows interviewers only the review-specific resume entry', () => {

@@ -1717,13 +1717,20 @@ def test_runtime_role_has_only_runtime_privileges_and_cannot_bypass_rls(
     assert "app_runtime" not in owners
     assert privileges == (True, False, False, True, False, True, False)
     assert set(table_privileges) == APPLICATION_TABLES | {"alembic_version"}
+    append_only_tables = {
+        "position_events",
+        "offer_decision_audits",
+        "recruitment_performance_configs",
+        "resume_status_events",
+        "recruitment_settlements",
+    }
     assert all(
         table_privileges[table] == (True, False)
-        for table in APPLICATION_TABLES - {"position_events", "offer_decision_audits"}
+        for table in APPLICATION_TABLES - append_only_tables
     )
     assert all(
         table_privileges[table] == (False, False)
-        for table in {"position_events", "offer_decision_audits"}
+        for table in append_only_tables
     )
     assert table_privileges["alembic_version"] == (False, False)
     assert all(

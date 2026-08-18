@@ -19,7 +19,13 @@ from app.models.tenant_catalog import GLOBAL_TABLES, TENANT_TABLES
 SCHEMA = "ai-interview.database-permissions"
 VERSION = 1
 APPLICATION_TABLES = tuple(TENANT_TABLES) + tuple(GLOBAL_TABLES)
-APPEND_ONLY_TABLES = {"position_events", "offer_decision_audits"}
+APPEND_ONLY_TABLES = {
+    "position_events",
+    "offer_decision_audits",
+    "recruitment_performance_configs",
+    "resume_status_events",
+    "recruitment_settlements",
+}
 EXPECTED_PUBLIC_TABLES = set(APPLICATION_TABLES) | {"alembic_version"}
 
 

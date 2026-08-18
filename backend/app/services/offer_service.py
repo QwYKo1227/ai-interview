@@ -2,16 +2,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, update, case
 from app.models.models import (
     Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User,
-    UserRole, OfferDecisionAudit
+    UserRole, OfferDecisionAudit, RecruitmentHcSlot
 )
 from app.schemas.offer import OfferCreate, OfferUpdate, OfferStats
-from datetime import datetime
+from datetime import date, datetime, time, timezone
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 from fastapi import HTTPException
 
 from app.services.public_token_service import resolve_public_token, revoke_public_tokens
 from app.config.tenant_session import get_tenant_id
+from app.services.recruitment_performance_service import COMPANY_TZ, record_resume_status_event, sync_position_slots
 
 DECISION_REASONS = {
     "salary",
@@ -166,6 +167,8 @@ def get_offers(
             "status": offer.status.value,
             "sent_at": offer.sent_at,
             "accepted_at": offer.accepted_at,
+            "actual_onboarded_at": offer.actual_onboarded_at,
+            "onboarding_confirmed_by": str(offer.onboarding_confirmed_by) if offer.onboarding_confirmed_by else None,
             "rejected_at": offer.rejected_at,
             "rejected_reason": offer.rejected_reason,
             "created_at": offer.created_at,
@@ -228,6 +231,8 @@ def get_offer(
         "status": offer.status.value,
         "sent_at": offer.sent_at,
         "accepted_at": offer.accepted_at,
+        "actual_onboarded_at": offer.actual_onboarded_at,
+        "onboarding_confirmed_by": str(offer.onboarding_confirmed_by) if offer.onboarding_confirmed_by else None,
         "rejected_at": offer.rejected_at,
         "rejected_reason": offer.rejected_reason,
         "created_at": offer.created_at,
@@ -297,7 +302,12 @@ def mark_offer_pending_confirmation(db: Session, offer_id: UUID) -> Dict[str, An
     offer.status = OfferStatus.SENT
     offer.sent_at = datetime.utcnow()
     if resume:
+        old_status = resume.status
         resume.status = ResumeStatus.OFFER_PENDING
+        record_resume_status_event(
+            db, resume, old_status, ResumeStatus.OFFER_PENDING,
+            source="offer_sent", source_id=offer.id, occurred_at=offer.sent_at.replace(tzinfo=timezone.utc),
+        )
     db.commit()
     
     return {
@@ -360,10 +370,22 @@ def record_offer_decision(
 
     resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
     if resume:
+        old_status = resume.status
         resume.status = (
             ResumeStatus.OFFER_ACCEPTED
             if new_status == OfferStatus.ACCEPTED
             else ResumeStatus.OFFER_REJECTED
+        )
+        record_resume_status_event(
+            db,
+            resume,
+            old_status,
+            resume.status,
+            source="offer_decision",
+            source_id=offer.id,
+            actor_id=actor.id,
+            reason=correction_reason or rejection_detail,
+            occurred_at=now.replace(tzinfo=timezone.utc),
         )
 
     db.add(OfferDecisionAudit(
@@ -376,6 +398,51 @@ def record_offer_decision(
         rejection_detail=(rejection_detail or "").strip() or None,
         correction_reason=(correction_reason or "").strip() or None,
     ))
+    db.commit()
+    db.refresh(offer)
+    return offer
+
+
+def confirm_onboarding(db: Session, offer_id: UUID, actual_onboard_date: date, actor: User) -> Offer:
+    offer = db.query(Offer).filter(Offer.id == offer_id).first()
+    if offer is None:
+        raise ValueError("Offer不存在")
+    if not can_decide_offer(offer, actor):
+        raise PermissionError("只有该岗位招聘负责人或管理员可以确认入职")
+    if offer.status != OfferStatus.ACCEPTED:
+        raise ValueError("只有已接受Offer才能确认入职")
+    onboarded_at = datetime.combine(actual_onboard_date, time.min, COMPANY_TZ).astimezone(timezone.utc)
+    if actual_onboard_date > datetime.now(COMPANY_TZ).date():
+        raise ValueError("实际入职日期不能晚于今天")
+    accepted_at = offer.accepted_at.replace(tzinfo=timezone.utc) if offer.accepted_at and offer.accepted_at.tzinfo is None else offer.accepted_at
+    if accepted_at and actual_onboard_date < accepted_at.astimezone(COMPANY_TZ).date():
+        raise ValueError("实际入职日期不能早于接受Offer日期")
+    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
+    if resume is None:
+        raise ValueError("关联简历不存在")
+    old_status = resume.status
+    resume.status = ResumeStatus.COMPLETED
+    offer.actual_onboarded_at = onboarded_at
+    offer.onboarding_confirmed_by = actor.id
+    record_resume_status_event(
+        db,
+        resume,
+        old_status,
+        ResumeStatus.COMPLETED,
+        source="onboarding_confirmation",
+        source_id=offer.id,
+        actor_id=actor.id,
+        occurred_at=onboarded_at,
+    )
+    slots = sync_position_slots(db, offer.position)
+    slot = next((item for item in slots if item.candidate_resume_id == resume.id), None)
+    slot = slot or next((item for item in slots if item.status == "active" and item.completed_at is None), None)
+    if slot is None:
+        raise ValueError("没有可用于确认入职的HC名额")
+    slot.candidate_resume_id = resume.id
+    slot.accepted_at = accepted_at
+    slot.completed_at = onboarded_at
+    slot.status = "completed"
     db.commit()
     db.refresh(offer)
     return offer

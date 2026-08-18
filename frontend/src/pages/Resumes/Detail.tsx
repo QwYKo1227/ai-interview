@@ -32,7 +32,7 @@ const STATUS_MAP: Record<string, { text: string; color: string }> = {
   offer_pending: { text: 'Offer待确认', color: 'blue' },
   offer_accepted: { text: '已接受Offer', color: 'success' },
   offer_rejected: { text: '已拒绝Offer', color: 'error' },
-  completed: { text: '已完成', color: 'success' },
+  completed: { text: '已入职', color: 'success' },
   rejected: { text: '已淘汰', color: 'error' },
   waitlist: { text: '备选', color: 'gold' },
 };

@@ -12,7 +12,8 @@ import {
   SettingOutlined,
   FileAddOutlined,
   ApartmentOutlined,
-  AuditOutlined
+  AuditOutlined,
+  FundProjectionScreenOutlined
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -55,6 +56,12 @@ const AppLayout: React.FC = () => {
       key: '/dashboard',
       icon: <DashboardOutlined aria-hidden="true" />,
       label: '仪表盘',
+    },
+    {
+      key: '/recruitment-performance',
+      icon: <FundProjectionScreenOutlined aria-hidden="true" />,
+      label: '招聘绩效',
+      roles: ['admin', 'hr'],
     },
     {
       key: '/positions',

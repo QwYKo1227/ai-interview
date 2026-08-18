@@ -1,7 +1,7 @@
 """Keep a resume's interview-stage status aligned with its interviews."""
 
 from datetime import datetime, timezone
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models.models import (
     Interview,
@@ -11,6 +11,7 @@ from app.models.models import (
     ResumeStatus,
     ScreeningResult,
 )
+from app.services.recruitment_performance_service import record_resume_status_event
 
 
 INTERVIEW_STAGE_STATUSES = {
@@ -39,7 +40,19 @@ def _resume(interview: Interview) -> Resume | None:
 def set_resume_interview_status(interview: Interview, status: ResumeStatus) -> None:
     resume = _resume(interview)
     if resume is not None and resume.status in INTERVIEW_STAGE_STATUSES:
+        old_status = resume.status
         resume.status = status
+        db = object_session(interview)
+        if db is not None and old_status != status:
+            record_resume_status_event(
+                db,
+                resume,
+                old_status,
+                status,
+                source="interview",
+                source_id=interview.id,
+                occurred_at=interview.ended_at or datetime.now(timezone.utc),
+            )
 
 
 def mark_interview_scheduled(interview: Interview) -> None:
@@ -92,7 +105,7 @@ def apply_final_decision(interview: Interview) -> None:
         return
     target = FINAL_RESUME_STATUS.get(interview.result)
     if target is not None:
-        resume.status = target
+        set_resume_interview_status(interview, target)
     if interview.result in {InterviewResult.NEXT_ROUND, InterviewResult.PASSED, InterviewResult.HIRED}:
         resume.screening_result = ScreeningResult.PASSED
     elif interview.result == InterviewResult.REJECTED:
@@ -114,8 +127,9 @@ def restore_after_cancellation(db: Session, interview: Interview) -> None:
         .order_by(Interview.round.desc(), Interview.created_at.desc())
         .first()
     )
-    resume.status = (
+    target = (
         ResumeStatus.PENDING_NEXT_INTERVIEW
         if previous is not None and previous.result == InterviewResult.NEXT_ROUND
         else ResumeStatus.PENDING_INTERVIEW
     )
+    set_resume_interview_status(interview, target)

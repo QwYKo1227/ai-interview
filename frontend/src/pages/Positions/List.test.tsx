@@ -88,6 +88,16 @@ describe('PositionsList responsive table', () => {
     })
   })
 
+  it('reserves enough width for the row selection checkbox', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [position] : [])
+    const { container } = render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+
+    const selectionColumn = container.querySelector('.positions-table colgroup col:first-child')
+    expect(selectionColumn).toHaveStyle({ width: '64px' })
+  })
+
   it('shows every mutually exclusive recruitment progress bucket', async () => {
     const user = userEvent.setup()
     vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [{
@@ -121,6 +131,22 @@ describe('PositionsList responsive table', () => {
     ]) {
       expect(await screen.findByText(progressText)).toBeInTheDocument()
     }
+  })
+
+  it('shows a readable primary action in the batch toolbar', async () => {
+    const user = userEvent.setup()
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [position] : [])
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+    await user.click(screen.getByRole('checkbox', { name: 'Select all' }))
+
+    const toolbar = screen.getByRole('region', { name: '批量操作' })
+    expect(within(toolbar).getByText('1')).toHaveClass('positions-batch-count')
+    expect(within(toolbar).getByText('个岗位已选')).toBeInTheDocument()
+    const publishButton = within(toolbar).getByRole('button', { name: '批量发布' })
+    expect(publishButton).toHaveClass('ant-btn-primary')
+    expect(publishButton).not.toHaveClass('ant-btn-background-ghost')
   })
 
   it('opens a dedicated recycle bin instead of showing a deleted toggle', async () => {

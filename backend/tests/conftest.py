@@ -26,7 +26,8 @@ from app.models.models import (
     Base, User, UserRole, Position, PositionEvent, PositionStatus, PositionCategory, PositionType,
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
     InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission, Offer,
-    OfferDecisionAudit
+    OfferDecisionAudit, RecruitmentPerformanceConfig, RecruitmentHcSlot,
+    RecruitmentPause, ResumeStatusEvent, RecruitmentSettlement
 )
 from app.models.tenant_models import (
     PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
@@ -84,6 +85,11 @@ def db() -> Generator[Session, None, None]:
         CodingSubmission.__table__,
         Offer.__table__,
         OfferDecisionAudit.__table__,
+        RecruitmentPerformanceConfig.__table__,
+        RecruitmentHcSlot.__table__,
+        RecruitmentPause.__table__,
+        ResumeStatusEvent.__table__,
+        RecruitmentSettlement.__table__,
     ]
 
     for table in tables_to_create:
@@ -121,6 +127,7 @@ def client(db: Session) -> Generator[TestClient, None, None]:
         positions,
         resumes,
         settings,
+        recruitment_performance,
     )
 
     # 创建测试应用（不导入 question_banks 路由，因为它使用了 ARRAY 类型）
@@ -136,6 +143,7 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     test_app.include_router(settings.router, prefix="/api")
     test_app.include_router(offers.router, prefix="/api")
     test_app.include_router(offer_templates.router, prefix="/api")
+    test_app.include_router(recruitment_performance.router, prefix="/api")
 
     # 正确覆盖 get_db 依赖
     def override_get_db():

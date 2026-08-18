@@ -1,0 +1,123 @@
+.performance-page {
+  width: 100%;
+  min-width: 0;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+.performance-hero {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  overflow: hidden;
+  margin-bottom: 20px;
+  padding: 28px 30px;
+  border: 1px solid #dbe4f0;
+  border-radius: 18px;
+  background:
+    linear-gradient(115deg, rgba(238, 242, 255, 0.96), rgba(240, 253, 250, 0.92)),
+    repeating-linear-gradient(90deg, transparent 0 47px, rgba(15, 23, 42, 0.04) 48px);
+}
+
+.performance-hero > :first-child {
+  min-width: 0;
+}
+
+.performance-hero > .ant-space {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+}
+
+.performance-hero::after {
+  position: absolute;
+  right: -48px;
+  bottom: -84px;
+  width: 260px;
+  height: 260px;
+  border: 46px solid rgba(79, 70, 229, 0.08);
+  border-radius: 50%;
+  content: '';
+  pointer-events: none;
+}
+
+.performance-hero h2 {
+  margin: 0 0 4px !important;
+  color: #172554 !important;
+  letter-spacing: -0.025em;
+}
+
+.performance-status-line {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0 12px;
+}
+
+.performance-metrics .ant-card {
+  height: 100%;
+  border-color: #e2e8f0;
+  box-shadow: 0 8px 30px rgba(30, 41, 59, 0.04);
+}
+
+.performance-table-card {
+  margin-top: 16px;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 14px 40px rgba(30, 41, 59, 0.05);
+}
+
+.performance-table-card .ant-card-body,
+.performance-table-card .ant-table-wrapper,
+.performance-table-card .ant-spin-nested-loading,
+.performance-table-card .ant-spin-container {
+  min-width: 0;
+}
+
+.performance-ledger {
+  padding: 12px;
+  border-left: 3px solid #14b8a6;
+  background: #f8fafc;
+}
+
+.rule-sheet > .ant-alert {
+  margin-bottom: 16px;
+}
+
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.rule-grid .ant-input-number {
+  width: 100%;
+}
+
+.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+@media (max-width: 1000px) {
+  .performance-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .rule-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .performance-table-card {
+    animation: performance-enter 260ms ease-out both;
+  }
+}
+
+@keyframes performance-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

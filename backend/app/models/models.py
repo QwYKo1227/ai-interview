@@ -520,6 +520,8 @@ class Offer(TenantScopedMixin, Base):
     
     sent_at = Column(DateTime)
     accepted_at = Column(DateTime)
+    actual_onboarded_at = Column(DateTime(timezone=True), nullable=True)
+    onboarding_confirmed_by = Column(UUID(as_uuid=True), nullable=True)
     rejected_at = Column(DateTime)
     rejected_reason = Column(Text)
     
@@ -530,6 +532,107 @@ class Offer(TenantScopedMixin, Base):
     resume = relationship("Resume", foreign_keys=[resume_id])
     position = relationship("Position", foreign_keys=[position_id])
     creator = relationship("User", foreign_keys=[created_by])
+
+
+class RecruitmentPerformanceConfig(TenantScopedMixin, Base):
+    __tablename__ = "recruitment_performance_configs"
+    __table_args__ = (
+        _tenant_identity("recruitment_performance_configs"),
+        UniqueConstraint("tenant_id", "effective_year", "effective_quarter", "version", name="uq_recruitment_performance_config_period_version"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    effective_year = Column(Integer, nullable=False)
+    effective_quarter = Column(Integer, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    target_days = Column(JSON, nullable=False, default=dict)
+    time_coefficients = Column(JSON, nullable=False, default=dict)
+    result_coefficients = Column(JSON, nullable=False, default=dict)
+    status = Column(String, nullable=False, default="published")
+    created_by = Column(UUID(as_uuid=True), nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class RecruitmentHcSlot(TenantScopedMixin, Base):
+    __tablename__ = "recruitment_hc_slots"
+    __table_args__ = (
+        _tenant_identity("recruitment_hc_slots"),
+        _tenant_reference("recruitment_hc_slots", "position_id", "positions", ondelete="CASCADE"),
+        UniqueConstraint("tenant_id", "position_id", "slot_number", name="uq_recruitment_hc_slot_number"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    position_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    slot_number = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="active")
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    round_started_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    candidate_resume_id = Column(UUID(as_uuid=True), nullable=True)
+    recruitment_round = Column(Integer, nullable=False, default=1)
+    status_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    position = relationship("Position", foreign_keys=[position_id])
+
+
+class RecruitmentPause(TenantScopedMixin, Base):
+    __tablename__ = "recruitment_pauses"
+    __table_args__ = (
+        _tenant_identity("recruitment_pauses"),
+        _tenant_reference("recruitment_pauses", "slot_id", "recruitment_hc_slots", ondelete="CASCADE"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slot_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    requested_by = Column(UUID(as_uuid=True), nullable=True)
+    approved_by = Column(UUID(as_uuid=True), nullable=True)
+    start_at = Column(DateTime(timezone=True), nullable=False)
+    end_at = Column(DateTime(timezone=True), nullable=True)
+    reason = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    slot = relationship("RecruitmentHcSlot", foreign_keys=[slot_id])
+
+
+class ResumeStatusEvent(TenantScopedMixin, Base):
+    __tablename__ = "resume_status_events"
+    __table_args__ = (
+        _tenant_identity("resume_status_events"),
+        _tenant_reference("resume_status_events", "resume_id", "resumes", ondelete="CASCADE"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    resume_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    old_status = Column(String, nullable=True)
+    new_status = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    source_id = Column(UUID(as_uuid=True), nullable=True)
+    actor_id = Column(UUID(as_uuid=True), nullable=True)
+    reason = Column(Text, nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class RecruitmentSettlement(TenantScopedMixin, Base):
+    __tablename__ = "recruitment_settlements"
+    __table_args__ = (
+        _tenant_identity("recruitment_settlements"),
+        UniqueConstraint("tenant_id", "period", "version", name="uq_recruitment_settlement_version"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    period = Column(String, nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    status = Column(String, nullable=False, default="settled")
+    snapshot = Column(JSON, nullable=False)
+    reason = Column(Text, nullable=True)
+    settled_by = Column(UUID(as_uuid=True), nullable=True)
+    settled_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 class OfferDecisionAudit(TenantScopedMixin, Base):
     __tablename__ = "offer_decision_audits"

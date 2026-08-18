@@ -1,6 +1,6 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -95,6 +95,8 @@ class OfferResponse(BaseModel):
     
     sent_at: Optional[datetime]
     accepted_at: Optional[datetime]
+    actual_onboarded_at: Optional[datetime] = None
+    onboarding_confirmed_by: Optional[UUID] = None
     rejected_at: Optional[datetime]
     rejected_reason: Optional[str]
     
@@ -107,6 +109,21 @@ class OfferResponse(BaseModel):
     hiring_manager_id: Optional[UUID] = None
     hiring_manager_name: Optional[str] = None
     can_decide: bool = False
+
+    @field_validator(
+        "sent_at",
+        "accepted_at",
+        "actual_onboarded_at",
+        "rejected_at",
+        "created_at",
+        "updated_at",
+        mode="before",
+    )
+    @classmethod
+    def mark_legacy_timestamps_as_utc(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
     class Config:
         from_attributes = True

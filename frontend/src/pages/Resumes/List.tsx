@@ -99,7 +99,7 @@ const duplicateStatusLabels: Record<string, string> = {
   offer_accepted: '已接受Offer',
   offer_rejected: '已拒绝Offer',
   waitlist: '备选',
-  completed: '已完成',
+  completed: '已入职',
   rejected: '已淘汰',
 };
 
@@ -738,7 +738,7 @@ const ResumesList: React.FC = () => {
           case 'offer_accepted': color = 'success'; text = '已接受Offer'; break;
           case 'offer_rejected': color = 'error'; text = '已拒绝Offer'; break;
           case 'waitlist': color = 'gold'; text = '备选'; break;
-          case 'completed': color = 'success'; text = '已完成'; break;
+          case 'completed': color = 'success'; text = '已入职'; break;
           case 'rejected': color = 'error'; text = '已淘汰'; break;
           default: break;
         }
@@ -902,7 +902,7 @@ const ResumesList: React.FC = () => {
                 <Select.Option value="offer_accepted">已接受Offer</Select.Option>
                 <Select.Option value="offer_rejected">已拒绝Offer</Select.Option>
                 <Select.Option value="waitlist">备选</Select.Option>
-                <Select.Option value="completed">已完成</Select.Option>
+                <Select.Option value="completed">已入职</Select.Option>
                 <Select.Option value="rejected">已淘汰</Select.Option>
               </Select>
             </Form.Item>

@@ -99,6 +99,8 @@ WHERE schemaname = 'public'
     'users', 'positions', 'position_events', 'question_banks', 'resumes', 'department_reviews',
     'interviews', 'interview_panels', 'offers', 'offer_templates',
     'offer_decision_audits',
+    'recruitment_performance_configs', 'recruitment_hc_slots',
+    'recruitment_pauses', 'resume_status_events', 'recruitment_settlements',
     'coding_tests', 'coding_submissions', 'system_configs', 'workflows',
     'workflow_nodes', 'workflow_edges', 'workflow_executions',
     'workflow_node_executions', 'stored_files', 'tenants', 'tenant_domains',
@@ -112,7 +114,11 @@ SELECT format(
 )
 FROM pg_tables
 WHERE schemaname = 'public'
-  AND tablename = ANY (ARRAY['position_events', 'offer_decision_audits'])
+  AND tablename = ANY (ARRAY[
+    'position_events', 'offer_decision_audits',
+    'recruitment_performance_configs', 'resume_status_events',
+    'recruitment_settlements'
+  ])
 \gexec
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM app_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migration IN SCHEMA public

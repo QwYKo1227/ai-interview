@@ -403,6 +403,20 @@ def update_position(
     now = datetime.now(timezone.utc)
     current_status = db_position.status
     target_status = update_data.get("status", current_status)
+    classification_changed = any(
+        field in update_data and update_data[field] != getattr(db_position, field)
+        for field in ("priority", "category")
+    )
+    if (
+        current_status == PositionStatus.PUBLISHED
+        and actor is not None
+        and not is_admin(actor)
+        and classification_changed
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="岗位发布后，只有管理员可以修改优先度和岗位分类",
+        )
     if target_status != current_status:
         _validate_status_change(current_status, target_status, actor, status_reason)
         _add_position_event(

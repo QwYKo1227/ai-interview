@@ -11,8 +11,11 @@ vi.mock('../../utils/request', () => ({
 }))
 
 vi.mock('../../components/JDGeneratorModal', () => ({ default: () => null }))
+const authState = vi.hoisted(() => ({
+  user: { id: 'admin-1', role: 'admin' as 'admin' | 'hr' },
+}))
 vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { id: 'admin-1', role: 'admin' } }),
+  useAuth: () => authState,
 }))
 
 const position = {
@@ -48,6 +51,7 @@ describe('PositionsList responsive table', () => {
   let getComputedStyleSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
+    authState.user = { id: 'admin-1', role: 'admin' }
     const nativeGetComputedStyle = window.getComputedStyle.bind(window)
     // Ant Design probes pseudo-elements; JSDOM cannot implement that overload.
     getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => nativeGetComputedStyle(element))
@@ -181,5 +185,39 @@ describe('PositionsList responsive table', () => {
     expect(row).not.toBeNull()
     expect(within(row as HTMLElement).getByText('已删除')).toBeInTheDocument()
     expect(within(row as HTMLElement).queryByText('已关闭')).not.toBeInTheDocument()
+  })
+
+  it('disables classification fields for HR when editing a published position', async () => {
+    const user = userEvent.setup()
+    const publishedPosition = { ...position, status: 'published' }
+    authState.user = { id: 'manager-1', role: 'hr' }
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/positions') return [publishedPosition]
+      if (url === `/positions/${publishedPosition.id}`) return publishedPosition
+      return []
+    })
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: 'edit' }))
+
+    expect(await screen.findByLabelText('优先度')).toBeDisabled()
+    expect(screen.getByLabelText('岗位分类')).toBeDisabled()
+    expect(screen.getByPlaceholderText('例如：高级前端工程师')).toBeEnabled()
+  })
+
+  it('keeps classification fields enabled for admin on a published position', async () => {
+    const user = userEvent.setup()
+    const publishedPosition = { ...position, status: 'published' }
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/positions') return [publishedPosition]
+      if (url === `/positions/${publishedPosition.id}`) return publishedPosition
+      return []
+    })
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: 'edit' }))
+
+    expect(await screen.findByLabelText('优先度')).toBeEnabled()
+    expect(screen.getByLabelText('岗位分类')).toBeEnabled()
   })
 })

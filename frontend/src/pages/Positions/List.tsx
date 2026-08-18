@@ -141,6 +141,9 @@ const PositionsList: React.FC = () => {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const selectedStatus = Form.useWatch('status', form) as PositionStatus | undefined;
   const selectedOwnerId = Form.useWatch('hiring_manager_id', form) as string | undefined;
+  const classificationLocked = Boolean(
+    editingId && editingRecord?.status === 'published' && !isAdmin
+  );
 
   const [filters, setFilters] = useState<PositionListFilters>(createEmptyPositionListFilters);
   const positionListFiltersRef = useRef(filters);
@@ -788,12 +791,24 @@ const PositionsList: React.FC = () => {
               name="priority"
               label="优先度"
             >
-              <Select size="large" allowClear options={PRIORITY_OPTIONS} placeholder="请选择优先度" />
+              <Select
+                size="large"
+                allowClear
+                disabled={classificationLocked}
+                options={PRIORITY_OPTIONS}
+                placeholder="请选择优先度"
+              />
             </Form.Item>
           </div>
 
           <Form.Item name="category" label="岗位分类">
-            <Select size="large" allowClear options={POSITION_CATEGORY_OPTIONS} placeholder="请选择岗位分类" />
+            <Select
+              size="large"
+              allowClear
+              disabled={classificationLocked}
+              options={POSITION_CATEGORY_OPTIONS}
+              placeholder="请选择岗位分类"
+            />
           </Form.Item>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>

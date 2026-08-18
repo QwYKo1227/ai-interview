@@ -12,6 +12,7 @@ from app.models.models import (
     Offer,
     OfferStatus,
     Position,
+    PositionCategory,
     PositionStatus,
     Resume,
     ResumeStatus,
@@ -212,6 +213,55 @@ def test_admin_reassignment_is_audited_and_revokes_old_owner(
     assert client.get(
         f"/api/positions/{test_position.id}", headers=auth_headers
     ).status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_hr_cannot_change_published_position_priority_or_category(
+    client, db, auth_headers, test_position
+):
+    test_position.status = PositionStatus.PUBLISHED
+    original_priority = test_position.priority
+    original_category = test_position.category
+    db.commit()
+
+    blocked = client.put(
+        f"/api/positions/{test_position.id}",
+        headers=auth_headers,
+        json={"priority": 5, "category": "overseas"},
+    )
+
+    assert blocked.status_code == status.HTTP_403_FORBIDDEN
+    db.refresh(test_position)
+    assert test_position.priority == original_priority
+    assert test_position.category == original_category
+
+    allowed = client.put(
+        f"/api/positions/{test_position.id}",
+        headers=auth_headers,
+        json={
+            "title": "已发布岗位的新名称",
+            "priority": original_priority,
+            "category": original_category.value,
+        },
+    )
+    assert allowed.status_code == status.HTTP_200_OK
+    assert allowed.json()["title"] == "已发布岗位的新名称"
+
+
+def test_admin_can_change_published_position_priority_and_category(
+    client, db, admin_auth_headers, test_position
+):
+    test_position.status = PositionStatus.PUBLISHED
+    db.commit()
+
+    response = client.put(
+        f"/api/positions/{test_position.id}",
+        headers=admin_auth_headers,
+        json={"priority": 5, "category": "overseas"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["priority"] == 5
+    assert response.json()["category"] == PositionCategory.OVERSEAS.value
 
 
 def test_owner_of_open_position_must_handoff_before_deactivation(

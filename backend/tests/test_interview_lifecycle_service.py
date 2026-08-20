@@ -8,7 +8,15 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.file_models import StoredFile
-from app.models.models import Interview, InterviewPanel, InterviewStatus, User, UserRole
+from app.models.models import (
+    Interview,
+    InterviewPanel,
+    InterviewStatus,
+    ResumeStatus,
+    ScreeningResult,
+    User,
+    UserRole,
+)
 from app.services import interview_lifecycle_service
 from app.services.interview_lifecycle_service import (
     SCORE_DIMENSIONS,
@@ -367,6 +375,24 @@ def test_human_review_is_independent_and_required_for_final_decision(
     assert decided.final_decision_by == test_user.id
     assert decided.final_decision_at is not None
     assert test_interview.resume.status.value == "pending_next_interview"
+
+
+def test_final_decision_updates_resume_scheduled_from_pending_review(
+    db: Session,
+    test_interview,
+    test_interview_panel: InterviewPanel,
+    test_user,
+):
+    test_interview.lifecycle_state = "ended"
+    test_interview.resume.status = ResumeStatus.PENDING_REVIEW
+    test_interview.resume.screening_result = ScreeningResult.WAITLIST
+    test_interview_panel.human_review_submitted_at = utcnow()
+    db.commit()
+
+    decided = confirm_final_decision(db, test_interview, test_user, "passed")
+
+    assert decided.resume.status == ResumeStatus.INTERVIEW_PASSED
+    assert decided.resume.screening_result == ScreeningResult.PASSED
 
 
 def test_ai_contract_requires_timestamp_evidence_and_enforces_gates():

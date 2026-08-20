@@ -15,6 +15,7 @@ from app.services.recruitment_performance_service import record_resume_status_ev
 
 
 INTERVIEW_STAGE_STATUSES = {
+    ResumeStatus.PENDING_REVIEW,
     ResumeStatus.PENDING_INTERVIEW,
     ResumeStatus.INTERVIEW_SCHEDULED,
     ResumeStatus.INTERVIEW_IN_PROGRESS,

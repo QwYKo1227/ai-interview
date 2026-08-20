@@ -387,8 +387,8 @@ const ResumeDetail: React.FC = () => {
           content: preview.content,
         },
       };
-    } catch (error) {
-      console.error('获取部门评审邮件预览失败', error);
+    } catch {
+      console.error('获取部门评审邮件预览失败');
       // The review assignment and public link remain valid if preview generation fails.
       return { link, draft: null };
     }

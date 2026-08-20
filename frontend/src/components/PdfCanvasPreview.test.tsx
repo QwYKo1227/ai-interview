@@ -7,11 +7,12 @@ const pdfMocks = vi.hoisted(() => {
     promise: Promise.resolve(),
     cancel: vi.fn(),
   }))
+  const getViewport = vi.fn(({ scale }: { scale: number }) => ({
+    width: 400 * scale,
+    height: 600 * scale,
+  }))
   const getPage = vi.fn(async (pageNumber: number) => ({
-    getViewport: ({ scale }: { scale: number }) => ({
-      width: 400 * scale,
-      height: 600 * scale,
-    }),
+    getViewport,
     render: renderPage,
     pageNumber,
   }))
@@ -29,6 +30,7 @@ const pdfMocks = vi.hoisted(() => {
     destroyDocument,
     getDocument,
     getPage,
+    getViewport,
     loadingTaskDestroy,
     renderPage,
   }
@@ -45,6 +47,7 @@ vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url', () => ({
 describe('PdfCanvasPreview', () => {
   beforeEach(() => {
     pdfMocks.getPage.mockClear()
+    pdfMocks.getViewport.mockClear()
     pdfMocks.renderPage.mockClear()
     pdfMocks.destroyDocument.mockClear()
     pdfMocks.loadingTaskDestroy.mockClear()
@@ -56,6 +59,10 @@ describe('PdfCanvasPreview', () => {
     Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
       configurable: true,
       value: vi.fn(() => ({})),
+    })
+    Object.defineProperty(window, 'devicePixelRatio', {
+      configurable: true,
+      value: 2,
     })
   })
 
@@ -72,6 +79,22 @@ describe('PdfCanvasPreview', () => {
     fireEvent.click(screen.getByRole('button', { name: '下一页' }))
     await waitFor(() => expect(pdfMocks.getPage).toHaveBeenLastCalledWith(2))
     expect(await screen.findByText('2 / 2')).toBeInTheDocument()
+  })
+
+  it('keeps PDF layout at CSS scale and applies high-DPI scaling as an output transform', async () => {
+    render(<PdfCanvasPreview url="blob:resume" />)
+
+    await waitFor(() => expect(pdfMocks.renderPage).toHaveBeenCalled())
+    expect(pdfMocks.getViewport).toHaveBeenLastCalledWith({ scale: 1.52 })
+    expect(pdfMocks.renderPage).toHaveBeenLastCalledWith(expect.objectContaining({
+      transform: [2, 0, 0, 2, 0, 0],
+      viewport: { width: 608, height: 912 },
+    }))
+    const canvas = screen.getByLabelText('PDF 第 1 页') as HTMLCanvasElement
+    expect(canvas.width).toBe(1216)
+    expect(canvas.height).toBe(1824)
+    expect(canvas.style.width).toBe('608px')
+    expect(canvas.style.height).toBe('912px')
   })
 
   it('shows a download fallback message when PDF loading fails', async () => {

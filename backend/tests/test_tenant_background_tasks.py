@@ -177,10 +177,13 @@ def test_resume_enqueue_places_tenant_and_resource_first(monkeypatch):
     monkeypatch.setattr(resume_service, "get_task_queue", lambda: Queue())
     tenant_id, resume_id, position_id = uuid4(), uuid4(), uuid4()
 
-    resume_service.process_resume_background(tenant_id, resume_id, position_id)
+    resume_service.process_resume_background(
+        tenant_id, resume_id, position_id, ["email"]
+    )
 
     assert submitted["payload"]["tenant_id"] == tenant_id
     assert submitted["payload"]["resume_id"] == resume_id
+    assert submitted["payload"]["protected_identity_fields"] == ["email"]
     assert submitted["resource_id"] == resume_id
 
 

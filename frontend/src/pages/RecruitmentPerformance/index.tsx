@@ -85,6 +85,21 @@ type Overview = {
   people: PersonScore[];
 };
 
+type LeaderboardEntry = {
+  rank: number;
+  name: string;
+  achievement_rate: number;
+  is_current_user: boolean;
+};
+
+type Leaderboard = {
+  period: string;
+  as_of: string;
+  status: 'trial' | 'live' | 'settled';
+  settlement_version?: number;
+  entries: LeaderboardEntry[];
+};
+
 type Config = {
   effective_year: number;
   effective_quarter: number;
@@ -123,6 +138,91 @@ const resultLabels: Record<string, string> = {
 const currentQuarter = () => `${dayjs().year()}-Q${Math.floor(dayjs().month() / 3) + 1}`;
 const formatScore = (value: number) => Number(value || 0).toFixed(2);
 const formatRate = (value?: number) => value == null ? '—' : `${(value * 100).toFixed(2)}%`;
+
+const medalPalettes = {
+  1: { ribbon: '#e0a20b', ribbonLight: '#ffd45d', face: '#ffedaa', border: '#efb72e', text: '#805400' },
+  2: { ribbon: '#9aabc2', ribbonLight: '#dbe4ef', face: '#eef3f8', border: '#b7c4d5', text: '#52647d' },
+  3: { ribbon: '#bd774c', ribbonLight: '#e6ae87', face: '#f5d3ba', border: '#cf8c61', text: '#7d4625' },
+} as const;
+
+const MedalIcon = ({ rank }: { rank: 1 | 2 | 3 }) => {
+  const palette = medalPalettes[rank];
+  return (
+    <svg
+      aria-label={`第 ${rank} 名`}
+      className="performance-podium-medal"
+      role="img"
+      viewBox="0 0 40 48"
+    >
+      <path d="M6 3h12l4 12-8 7-5-10z" fill={palette.ribbonLight} stroke={palette.ribbon} />
+      <path d="M22 3h12l-3 9-5 10-8-7z" fill={palette.ribbon} stroke={palette.ribbon} />
+      <path d="M13 3h14l-7 14z" fill={palette.ribbonLight} opacity="0.72" />
+      <circle cx="20" cy="31" fill={palette.face} r="13.5" stroke={palette.border} />
+      <circle cx="20" cy="31" fill="none" opacity="0.52" r="10.5" stroke="#fff" />
+      <text
+        fill={palette.text}
+        fontSize="15"
+        fontWeight="700"
+        textAnchor="middle"
+        x="20"
+        y="36"
+      >
+        {rank}
+      </text>
+    </svg>
+  );
+};
+
+const PerformanceLeaderboard = ({ leaderboard, loading }: { leaderboard?: Leaderboard; loading: boolean }) => {
+  const entries = leaderboard?.entries || [];
+  const podium = entries.slice(0, 3);
+  const remaining = entries.slice(3);
+
+  return (
+    <section
+      aria-label="招聘绩效排行榜"
+      className={`performance-leaderboard${loading ? ' is-loading' : ''}`}
+    >
+      {entries.length === 0 ? (
+        <Empty className="performance-leaderboard-empty" description="暂无排名数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+      ) : (
+        <>
+          <div className="performance-podium">
+            {podium.map(entry => (
+              <div
+                aria-current={entry.is_current_user ? 'true' : undefined}
+                className={`performance-podium-entry performance-podium-entry--${entry.rank}`}
+                key={entry.rank}
+              >
+                <div className="performance-podium-person">
+                  <MedalIcon rank={entry.rank as 1 | 2 | 3} />
+                  <Text strong>{entry.name}</Text>
+                  <Text className="performance-podium-rate">{formatRate(entry.achievement_rate)}</Text>
+                </div>
+                <div aria-hidden="true" className="performance-podium-step" />
+              </div>
+            ))}
+          </div>
+          {remaining.length > 0 && (
+            <div className="performance-rank-list">
+              {remaining.map(entry => (
+                <div
+                  aria-current={entry.is_current_user ? 'true' : undefined}
+                  className="performance-rank-row"
+                  key={entry.rank}
+                >
+                  <Text className="performance-rank-number">{entry.rank}</Text>
+                  <Text strong>{entry.name}</Text>
+                  <Text className="performance-rank-rate">{formatRate(entry.achievement_rate)}</Text>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+};
 
 const SlotLedger = ({ slots }: { slots: HcScore[] }) => (
   <div className="performance-ledger">
@@ -273,6 +373,7 @@ const RecruitmentPerformance: React.FC = () => {
   const [periods, setPeriods] = useState<string[]>([]);
   const [periodsLoading, setPeriodsLoading] = useState(true);
   const [overview, setOverview] = useState<Overview>();
+  const [leaderboard, setLeaderboard] = useState<Leaderboard>();
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     let active = true;
@@ -292,7 +393,12 @@ const RecruitmentPerformance: React.FC = () => {
     setLoading(true);
     try {
       const endpoint = admin ? 'overview' : 'me';
-      setOverview(await request.get(`/recruitment-performance/${endpoint}?period=${period}`));
+      const [overviewData, leaderboardData] = await Promise.all([
+        request.get(`/recruitment-performance/${endpoint}?period=${period}`),
+        request.get(`/recruitment-performance/leaderboard?period=${period}`),
+      ]);
+      setOverview(overviewData);
+      setLeaderboard(leaderboardData);
     } catch { message.error('获取招聘绩效失败'); }
     finally { setLoading(false); }
   };
@@ -302,7 +408,11 @@ const RecruitmentPerformance: React.FC = () => {
     content: '结算将生成不可变快照；后续更正会形成新的修订版本。',
     okText: '确认结算',
     onOk: async () => {
-      try { setOverview(await request.post(`/recruitment-performance/settlements/${period}`, {})); message.success('季度已结算'); }
+      try {
+        await request.post(`/recruitment-performance/settlements/${period}`, {});
+        message.success('季度已结算');
+        await load();
+      }
       catch (error: any) { message.error(error?.response?.data?.detail || '结算失败'); }
     },
   });
@@ -314,11 +424,11 @@ const RecruitmentPerformance: React.FC = () => {
   return (
     <div className="performance-page">
       <header className="performance-hero">
-        <div>
+        <div className="performance-hero-title">
           <Title level={2}>招聘绩效</Title>
-          <Text type="secondary">按HC、岗位与负责人持有天数核算，季度内实时预估，结算后完整留痕。</Text>
         </div>
-        <Space wrap>
+        <PerformanceLeaderboard leaderboard={leaderboard} loading={loading} />
+        <Space className="performance-hero-actions" wrap>
           <Select
             aria-label="绩效季度"
             value={period}

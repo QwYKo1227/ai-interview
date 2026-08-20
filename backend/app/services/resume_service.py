@@ -73,21 +73,101 @@ def _clean_extracted_identity(value: Any) -> str:
     return normalized
 
 
-def _extract_document_identity(content: str) -> tuple[str, str, str]:
-    name_match = re.search(
-        r"(?im)^姓名\s*[:：]\s*([^\n|｜]{2,80})\s*$", content
+def _normalize_candidate_name(value: Any) -> str:
+    name = _clean_extracted_identity(value)
+    if not name or len(name) > 80 or "\n" in name or "\r" in name:
+        return ""
+    return name
+
+
+def _normalize_contact(value: Any) -> str:
+    contact = _clean_extracted_identity(value)
+    digits = re.sub(r"\D", "", contact)
+    if not 7 <= len(digits) <= 15:
+        return ""
+    return digits
+
+
+def _normalize_email(value: Any) -> str:
+    email = _clean_extracted_identity(value).casefold()
+    if not re.fullmatch(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", email, re.IGNORECASE):
+        return ""
+    return email
+
+
+def _contact_appears_in_document(contact: str, content: str) -> bool:
+    if not contact:
+        return False
+    candidates = {contact}
+    if len(contact) == 11 and contact.startswith("1"):
+        candidates.add(contact[1:])
+    return any(
+        any(candidate in re.sub(r"\D", "", line) for candidate in candidates)
+        for line in content.splitlines()
     )
-    phone_match = re.search(
-        r"(?<!\d)(?:\+?86[\s-]?)?(1[3-9]\d(?:[\s-]?\d){8})(?!\d)",
-        content,
-    )
-    email_match = re.search(
-        r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", content, re.IGNORECASE
-    )
-    name = _clean_extracted_identity(name_match.group(1) if name_match else "")
-    contact = re.sub(r"\D", "", phone_match.group(1)) if phone_match else ""
-    email = email_match.group(0) if email_match else ""
-    return name, contact, email
+
+
+def _email_appears_in_document(email: str, content: str) -> bool:
+    compact_content = re.sub(r"\s", "", content).casefold()
+    return bool(email) and email in compact_content
+
+
+def _unique_document_contact(content: str) -> str:
+    matches = {
+        re.sub(r"\D", "", match.group(1))
+        for match in re.finditer(
+            r"(?<!\d)(?:\+?86[\s-]?)?(1[3-9]\d(?:[\s-]?\d){8})(?!\d)",
+            content,
+        )
+    }
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def _unique_document_email(content: str) -> str:
+    matches = {
+        match.group(0).casefold()
+        for match in re.finditer(
+            r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}",
+            content,
+            re.IGNORECASE,
+        )
+    }
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def _resolve_resume_identity(
+    parsed_data: Dict[str, Any],
+    content: str,
+    user_identity: Dict[str, Any] | None = None,
+) -> Dict[str, str]:
+    """Resolve identity once: user fields, then grounded LLM fields, then exact fallbacks."""
+    contact_value, email_value = extract_contact_details(parsed_data)
+    candidate_name = _normalize_candidate_name(parsed_data.get("candidate_name"))
+    contact = _normalize_contact(contact_value)
+    email = _normalize_email(email_value)
+
+    if contact and not _contact_appears_in_document(contact, content):
+        contact = ""
+    if email and not _email_appears_in_document(email, content):
+        email = ""
+    if not contact:
+        contact = _unique_document_contact(content)
+    if not email:
+        email = _unique_document_email(content)
+
+    supplied = user_identity or {}
+    if "candidate_name" in supplied:
+        candidate_name = _normalize_candidate_name(supplied["candidate_name"])
+    if "contact" in supplied:
+        contact = _normalize_contact(supplied["contact"])
+    if "email" in supplied:
+        email = _normalize_email(supplied["email"])
+
+    return {
+        "candidate_name": candidate_name,
+        "contact": contact,
+        "email": email,
+    }
 
 
 def extract_contact_details(parsed_data: Dict[str, Any]) -> tuple[str, str]:
@@ -141,7 +221,6 @@ def _process_resume_task(
     payload: Dict[str, Any],
 ):
     position_id = payload["position_id"]
-    use_user_info = payload.get("use_user_info", False)
 
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
@@ -248,28 +327,25 @@ def _process_resume_task(
             if not ai_review and parsed_data.get("recommendation"):
                 ai_review = "### 💡 综合建议\n" + parsed_data.get("recommendation", "")
 
-        # 提取联系方式，兼容当前提示词的顶层字段和历史嵌套字段。
-        contact, email = extract_contact_details(parsed_data)
-        contact = _clean_extracted_identity(contact)
-        email = _clean_extracted_identity(email)
+        protected_fields = set(payload.get("protected_identity_fields") or ())
+        if payload.get("use_user_info", False):
+            # Compatibility for tasks queued by an older application version.
+            protected_fields.update({"candidate_name", "contact", "email"})
+        user_identity = {
+            field: getattr(resume, field)
+            for field in protected_fields
+            if field in {"candidate_name", "contact", "email"}
+        }
+        identity = _resolve_resume_identity(parsed_data, content, user_identity)
+        candidate_name = identity["candidate_name"]
+        contact = identity["contact"]
+        email = identity["email"]
 
-        # 提取姓名
-        candidate_name = _clean_extracted_identity(
-            parsed_data.get("candidate_name", "")
-        )
-        fallback_name, fallback_contact, fallback_email = _extract_document_identity(
-            content
-        )
-        candidate_name = fallback_name or candidate_name
-        contact = fallback_contact or contact
-        email = fallback_email or email
-
-        if candidate_name:
-            parsed_data["candidate_name"] = candidate_name
-        if contact:
-            parsed_data["contact"] = contact
-        if email:
-            parsed_data["email"] = email
+        for field, value in identity.items():
+            if value:
+                parsed_data[field] = value
+            else:
+                parsed_data.pop(field, None)
 
         # 提取其他岗位匹配信息
         other_matches = parsed_data.get("other_position_matches", [])
@@ -284,10 +360,9 @@ def _process_resume_task(
         if other_matches:
             resume.other_position_matches = other_matches
 
-        if not use_user_info:
-            resume.candidate_name = candidate_name or "未识别"
-            resume.contact = contact
-            resume.email = email or None
+        resume.candidate_name = candidate_name or "未识别"
+        resume.contact = contact or None
+        resume.email = email or None
 
         resume.parse_status = "success"
         resume.parse_error = None
@@ -336,7 +411,12 @@ def _on_resume_parse_failure(db: Session, resume_id: UUID, error: str):
 
 
 @background_task_context
-def process_resume_background(tenant_id: UUID, resume_id: UUID, position_id: UUID, use_user_info: bool = False):
+def process_resume_background(
+    tenant_id: UUID,
+    resume_id: UUID,
+    position_id: UUID,
+    protected_identity_fields: List[str] | None = None,
+):
     queue = get_task_queue()
     queue.submit(
         tenant_id=tenant_id,
@@ -347,7 +427,7 @@ def process_resume_background(tenant_id: UUID, resume_id: UUID, position_id: UUI
             "tenant_id": tenant_id,
             "resume_id": resume_id,
             "position_id": position_id,
-            "use_user_info": use_user_info,
+            "protected_identity_fields": protected_identity_fields or [],
         },
         callback=process_resume_task,
         on_failure=on_resume_parse_failure,
@@ -413,14 +493,22 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
         raise
     db.refresh(db_resume)
 
-    # 3. Add background task - 传递是否使用用户填写的信息标记
-    use_user_info = bool(candidate_name or email or contact)
+    # 3. Protect only identity fields actually supplied by the applicant.
+    protected_identity_fields = [
+        field
+        for field, value in (
+            ("candidate_name", candidate_name),
+            ("email", email),
+            ("contact", contact),
+        )
+        if str(value or "").strip()
+    ]
     background_tasks.add_task(
         process_resume_background,
         db_resume.tenant_id,
         db_resume.id,
         position_id,
-        use_user_info,
+        protected_identity_fields,
     )
 
     return db_resume
@@ -772,6 +860,7 @@ def get_public_review_payload(db: Session, review: DepartmentReview) -> Dict[str
             "id": str(resume.id), "candidate_name": resume.candidate_name,
             "email": resume.email, "contact": resume.contact,
             "match_score": resume.match_score, "ai_review": resume.ai_review,
+            "hr_review": resume.hr_review,
             "resume_markdown": resume.resume_markdown, "parsed_data": resume.parsed_data,
             "file_available": resume.file_id is not None,
             "status": resume.status.value if resume.status else None,

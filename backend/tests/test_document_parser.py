@@ -105,26 +105,11 @@ def test_http_document_parser_merges_discarded_headers_before_markdown():
     )
 
 
-def test_http_document_parser_adds_identity_from_pdf_text_layer(
-    tmp_path, monkeypatch
+def test_http_document_parser_returns_remote_markdown_without_native_identity(
+    tmp_path,
 ):
     document = tmp_path / "candidate.pdf"
     document.write_bytes(b"synthetic-pdf")
-
-    class FakePage:
-        def extract_text(self):
-            return (
-                "宋卓飞\n"
-                "出生年月：2002.07.22｜现居地：广东省深圳市\n"
-                "手机：13662660569｜邮箱：candidate@example.com\n"
-                "教育背景\n香港科技大学"
-            )
-
-    monkeypatch.setattr(
-        document_parser.PyPDF2,
-        "PdfReader",
-        lambda _document: type("Reader", (), {"pages": [FakePage()]})(),
-    )
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -145,12 +130,74 @@ def test_http_document_parser_adds_identity_from_pdf_text_layer(
         )
         result = parser.extract_text(str(document))
 
-    assert result.startswith(
-        "## PDF 原生个人信息\n\n"
-        "姓名：宋卓飞\n"
-        "手机：13662660569\n"
-        "邮箱：candidate@example.com"
-    )
+    assert result == "# 教育背景\n\n香港科技大学"
+
+
+@pytest.mark.parametrize(
+    ("parsed_data", "document", "expected"),
+    [
+        (
+            {
+                "candidate_name": "洪梦娇",
+                "contact": "",
+                "email": "",
+            },
+            "姓名：其他人\n电话：15808669005\n邮箱：candidate@example.com",
+            {
+                "candidate_name": "洪梦娇",
+                "contact": "15808669005",
+                "email": "candidate@example.com",
+            },
+        ),
+        (
+            {
+                "candidate_name": "Jennifer Garcia Vega",
+                "contact": "+1 (510) 459-2741",
+                "email": "JENGARCIAVEGA@ICLOUD.COM",
+            },
+            (
+                "Jennifer Garcia Vega, Director of Marketing\n"
+                "(510) 459-2741, jengarciavega@icloud.com"
+            ),
+            {
+                "candidate_name": "Jennifer Garcia Vega",
+                "contact": "15104592741",
+                "email": "jengarciavega@icloud.com",
+            },
+        ),
+        (
+            {
+                "candidate_name": "候选人",
+                "contact": "未提供",
+                "email": "未提供",
+            },
+            "姓 名 ：郑冬梅\n教育背景",
+            {"candidate_name": "", "contact": "", "email": ""},
+        ),
+    ],
+)
+def test_resume_identity_uses_llm_then_validates_and_falls_back_exact_fields(
+    parsed_data, document, expected
+):
+    assert resume_service._resolve_resume_identity(parsed_data, document) == expected
+
+
+def test_resume_identity_does_not_guess_ambiguous_contact_fields():
+    assert resume_service._resolve_resume_identity(
+        {
+            "candidate_name": "Jane Doe",
+            "contact": "",
+            "email": "",
+        },
+        (
+            "手机：13662660569，备用：15808669005\n"
+            "candidate@example.com，other@example.com"
+        ),
+    ) == {
+        "candidate_name": "Jane Doe",
+        "contact": "",
+        "email": "",
+    }
 
 
 def test_http_document_parser_rejects_empty_result_without_leaking_response(
@@ -221,19 +268,11 @@ def test_resume_processing_uses_document_parser_for_normal_pdf(
     assert test_resume.candidate_name == "Unified Candidate"
 
 
-@pytest.mark.parametrize(
-    "ai_identity",
-    [
-        ("候选人", "未提供", "未提供"),
-        ("错误姓名", "13900139000", "wrong@example.com"),
-    ],
-)
-def test_resume_processing_prefers_document_identity_over_ai_identity(
-    db, tenant_a, test_position, test_resume, monkeypatch, ai_identity
+def test_resume_processing_protects_only_user_supplied_identity_fields(
+    db, tenant_a, test_position, test_resume, monkeypatch
 ):
     extracted = (
-        "## PDF 原生个人信息\n\n"
-        "姓名：宋卓飞\n"
+        "# 宋卓飞\n"
         "手机：13662660569\n"
         "邮箱：candidate@example.com\n\n"
         "# 教育背景\n\n香港科技大学"
@@ -245,25 +284,33 @@ def test_resume_processing_prefers_document_identity_over_ai_identity(
         resume_service,
         "analyze_resume",
         lambda *_args, **_kwargs: {
-            "candidate_name": ai_identity[0],
-            "contact": ai_identity[1],
-            "email": ai_identity[2],
+            "candidate_name": "宋卓飞",
+            "contact": "13662660569",
+            "email": "candidate@example.com",
             "match_score": 75,
             "screening_result": "passed",
             "ai_review": "Suitable",
             "other_position_matches": [],
         },
     )
+    test_resume.candidate_name = "解析中..."
+    test_resume.contact = None
+    test_resume.email = "user@example.com"
+    db.commit()
 
     resume_service._process_resume_task(
         db,
         tenant_a.id,
         test_resume.id,
-        {"position_id": test_position.id},
+        {
+            "position_id": test_position.id,
+            "protected_identity_fields": ["email"],
+        },
     )
 
     db.refresh(test_resume)
     assert test_resume.parse_status == "success"
     assert test_resume.candidate_name == "宋卓飞"
     assert test_resume.contact == "13662660569"
-    assert test_resume.email == "candidate@example.com"
+    assert test_resume.email == "user@example.com"
+    assert test_resume.parsed_data["email"] == "user@example.com"

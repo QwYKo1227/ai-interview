@@ -122,6 +122,21 @@ class PerformanceOverview(BaseModel):
     people: List[PersonScore]
 
 
+class PerformanceLeaderboardEntry(BaseModel):
+    rank: int
+    name: str
+    achievement_rate: float
+    is_current_user: bool = False
+
+
+class PerformanceLeaderboard(BaseModel):
+    period: str
+    as_of: date
+    status: str
+    settlement_version: Optional[int] = None
+    entries: List[PerformanceLeaderboardEntry]
+
+
 class PerformancePeriodOptions(BaseModel):
     periods: List[str]
     default_period: str

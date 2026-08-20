@@ -8,6 +8,8 @@ import remarkGfm from 'remark-gfm';
 import {
   buildCurrentPositionListParams,
   createEmptyPositionListFilters,
+  loadPositionListFilters,
+  savePositionListFilters,
   type PositionListFilters,
   reconcileDepartmentSelection,
   reconcileHiringManagerSelection,
@@ -145,7 +147,14 @@ const PositionsList: React.FC = () => {
     editingId && editingRecord?.status === 'published' && !isAdmin
   );
 
-  const [filters, setFilters] = useState<PositionListFilters>(createEmptyPositionListFilters);
+  const [filters, setFilters] = useState<PositionListFilters>(() => {
+    if (!user) return createEmptyPositionListFilters();
+    const rememberedFilters = loadPositionListFilters(localStorage, user.id);
+    return isAdmin
+      ? rememberedFilters
+      : { ...rememberedFilters, hiringManagerId: undefined };
+  });
+  const normalFiltersRef = useRef(filters);
   const positionListFiltersRef = useRef(filters);
   positionListFiltersRef.current = filters;
   const [positionRequestCoordinator] = useState(createLatestRequestCoordinator);
@@ -236,6 +245,12 @@ const PositionsList: React.FC = () => {
     filters.category,
     filters.deletedOnly,
   ]);
+
+  useEffect(() => {
+    if (!user || filters.deletedOnly) return;
+    normalFiltersRef.current = filters;
+    savePositionListFilters(localStorage, user.id, filters);
+  }, [filters, user]);
 
   const handleAdd = () => {
     setEditingId(null);
@@ -461,10 +476,9 @@ const PositionsList: React.FC = () => {
 
   const toggleRecycleBin = () => {
     setSelectedRowKeys([]);
-    setFilters({
-      ...createEmptyPositionListFilters(),
-      deletedOnly: !isRecycleBin,
-    });
+    setFilters(isRecycleBin
+      ? { ...normalFiltersRef.current, deletedOnly: false }
+      : { ...createEmptyPositionListFilters(), deletedOnly: true });
   };
 
   const columns = [

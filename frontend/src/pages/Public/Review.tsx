@@ -21,6 +21,7 @@ interface ResumeData {
   contact: string;
   match_score: number;
   ai_review: string;
+  hr_review: string | null;
   resume_markdown: string;
   parsed_data: any;
   file_available: boolean;
@@ -260,11 +261,9 @@ const PublicReview: React.FC = () => {
           </Card>
         )}
 
-        {resume.resume_markdown && (
-          <Card title="简历详情" style={{ marginBottom: 24 }} size="small">
-            <div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
-              {resume.resume_markdown}
-            </div>
+        {resume.hr_review && (
+          <Card title="HR 评语" style={{ marginBottom: 24, borderColor: '#91caff' }} size="small">
+            <div style={{ whiteSpace: 'pre-wrap' }}>{resume.hr_review}</div>
           </Card>
         )}
 

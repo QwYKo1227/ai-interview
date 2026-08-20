@@ -7,13 +7,13 @@
 
 .performance-hero {
   position: relative;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(520px, 2.4fr) minmax(150px, 0.7fr);
+  align-items: start;
+  gap: 20px;
   overflow: hidden;
   margin-bottom: 20px;
-  padding: 28px 30px;
+  padding: 24px 30px 28px;
   border: 1px solid #dbe4f0;
   border-radius: 18px;
   background:
@@ -21,13 +21,16 @@
     repeating-linear-gradient(90deg, transparent 0 47px, rgba(15, 23, 42, 0.04) 48px);
 }
 
-.performance-hero > :first-child {
+.performance-hero-title {
+  position: relative;
+  z-index: 1;
   min-width: 0;
 }
 
-.performance-hero > .ant-space {
+.performance-hero-actions {
   position: relative;
   z-index: 1;
+  justify-self: end;
   flex: 0 0 auto;
 }
 
@@ -44,9 +47,109 @@
 }
 
 .performance-hero h2 {
-  margin: 0 0 4px !important;
+  margin: 0 !important;
   color: #172554 !important;
   letter-spacing: -0.025em;
+}
+
+.performance-leaderboard {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  transition: opacity 160ms ease;
+}
+
+.performance-podium {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  min-height: 196px;
+}
+
+.performance-podium-entry {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-self: end;
+  text-align: center;
+}
+
+.performance-podium-entry--1 { grid-column: 2; grid-row: 1; }
+.performance-podium-entry--2 {
+  grid-column: 1;
+  grid-row: 1;
+}
+.performance-podium-entry--3 {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.performance-podium-person {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 8px 10px;
+}
+
+.performance-podium-medal {
+  display: block;
+  width: 40px;
+  height: 48px;
+  margin-bottom: 2px;
+  filter: drop-shadow(0 4px 7px rgba(71, 85, 105, 0.13));
+}
+
+.performance-podium-rate {
+  color: #172554;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.performance-podium-step {
+  height: 76px;
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  background: linear-gradient(180deg, rgba(224, 231, 255, 0.82), rgba(238, 242, 255, 0.42));
+}
+
+.performance-podium-entry--1 .performance-podium-step { height: 96px; }
+.performance-podium-entry--3 .performance-podium-step { height: 60px; }
+
+.performance-rank-list {
+  max-height: 264px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(148, 163, 184, 0.28);
+  scrollbar-gutter: stable;
+}
+
+.performance-rank-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 92px;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.performance-rank-number {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.performance-rank-rate {
+  color: #172554;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.performance-leaderboard-empty {
+  margin-block: 42px 24px;
 }
 
 .performance-status-line {
@@ -102,13 +205,52 @@
 
 @media (max-width: 1000px) {
   .performance-hero {
-    align-items: flex-start;
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .performance-hero-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .performance-leaderboard {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .rule-grid {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 600px) {
+  .performance-hero {
+    gap: 16px 12px;
+    padding: 20px 16px 22px;
+  }
+
+  .performance-hero h2 {
+    font-size: 24px !important;
+  }
+
+  .performance-podium {
+    min-height: 178px;
+  }
+
+  .performance-podium-person {
+    padding-inline: 3px;
+  }
+
+  .performance-podium-person .ant-typography {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .performance-podium-step { height: 62px; }
+  .performance-podium-entry--1 .performance-podium-step { height: 82px; }
+  .performance-podium-entry--3 .performance-podium-step { height: 48px; }
 }
 
 @media (prefers-reduced-motion: no-preference) {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Descriptions, Tag, Button, Row, Col, Typography, message, Divider, Spin, Progress, Modal, Form, Input, Space, Select, Rate, List, Avatar, Statistic, Empty } from 'antd';
+import { Card, Checkbox, Descriptions, Tag, Button, Row, Col, Typography, message, Divider, Spin, Progress, Modal, Form, Input, Space, Select, Rate, List, Avatar, Statistic, Empty, Tabs } from 'antd';
 import { useParams, useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
@@ -14,6 +14,20 @@ import ScheduleInterviewModal from '../../components/ScheduleInterviewModal';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
+
+type ReviewLink = {
+  reviewId: string;
+  reviewerId: string;
+  reviewerName: string;
+  token: string;
+  link: string;
+};
+
+type ReviewEmailDraft = ReviewLink & {
+  toEmail: string;
+  subject: string;
+  content: string;
+};
 
 // 状态映射
 const STATUS_MAP: Record<string, { text: string; color: string }> = {
@@ -42,6 +56,8 @@ const ResumeDetail: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [resume, setResume] = useState<any>(null);
+  const [hrReview, setHrReview] = useState('');
+  const [savingHrReview, setSavingHrReview] = useState(false);
   const protectedFile = useAuthenticatedFileUrl(resume?.file_path);
   const [loading, setLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -67,6 +83,10 @@ const ResumeDetail: React.FC = () => {
   const [submitReviewForm] = Form.useForm();
   const [changeReviewerForm] = Form.useForm();
   const [isScheduleInterviewModalVisible, setIsScheduleInterviewModalVisible] = useState(false);
+  const [reviewEmailDrafts, setReviewEmailDrafts] = useState<ReviewEmailDraft[]>([]);
+  const [reviewEmailFallbackLinks, setReviewEmailFallbackLinks] = useState<ReviewLink[]>([]);
+  const [sendReviewEmails, setSendReviewEmails] = useState(true);
+  const [sendingReviewEmails, setSendingReviewEmails] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -75,11 +95,12 @@ const ResumeDetail: React.FC = () => {
     }
   }, [id]);
 
-  const fetchResume = async (resumeId: string) => {
-    setLoading(true);
+  const fetchResume = async (resumeId: string, showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const res = await request.get(`/resumes/${resumeId}`) as any;
       setResume(res);
+      setHrReview(res.hr_review || '');
       form.setFieldsValue({
           candidate_name: res.candidate_name,
           email: res.email,
@@ -106,7 +127,7 @@ const ResumeDetail: React.FC = () => {
     } catch (error) {
       message.error('获取简历详情失败');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -147,6 +168,31 @@ const ResumeDetail: React.FC = () => {
       } catch (error) {
           message.error('更新失败');
       }
+  };
+
+  const handleSaveHrReview = async () => {
+    const normalizedReview = hrReview.trim();
+    setSavingHrReview(true);
+    try {
+      const updated = await request.put(`/resumes/${id}`, {
+        hr_review: normalizedReview || null,
+      }) as any;
+      setHrReview(updated?.hr_review || normalizedReview);
+      setResume((current: any) => ({
+        ...current,
+        hr_review: updated?.hr_review ?? (normalizedReview || null),
+      }));
+      message.success('评语已保存');
+    } catch (error) {
+      message.error('评语保存失败，请重试');
+    } finally {
+      setSavingHrReview(false);
+    }
+  };
+
+  const openHRDecision = () => {
+    hrDecisionForm.setFieldsValue({ hr_comment: resume.hr_review || '' });
+    setIsHRDecisionModalVisible(true);
   };
 
   const getStatusInfo = (status: string, parseStatus?: string) => {
@@ -282,13 +328,6 @@ const ResumeDetail: React.FC = () => {
     }
   };
 
-  type ReviewLink = {
-    reviewerId: string;
-    reviewerName: string;
-    token: string;
-    link: string;
-  };
-
   const showReviewLinks = (successfulLinks: ReviewLink[], failedReviewers: string[]) => {
     Modal.info({
       title: '部门评审链接',
@@ -318,23 +357,79 @@ const ResumeDetail: React.FC = () => {
     setIsChangeReviewerModalVisible(true);
   };
 
+  const createReviewEmailDraft = async (
+    reviewId: string,
+    reviewerId: string,
+    reviewerName: string,
+    publicToken: string,
+  ): Promise<{ link: ReviewLink; draft: ReviewEmailDraft | null }> => {
+    const link: ReviewLink = {
+      reviewId,
+      reviewerId,
+      reviewerName,
+      token: publicToken,
+      link: `${window.location.origin}/public/review/${publicToken}`,
+    };
+    try {
+      const preview = await request.post(
+        `/resumes/${id}/department-reviews/${reviewId}/email-preview`,
+        {
+          public_token: publicToken,
+          review_url: link.link,
+        },
+      ) as any;
+      return {
+        link,
+        draft: {
+          ...link,
+          toEmail: preview.to_email,
+          subject: preview.subject,
+          content: preview.content,
+        },
+      };
+    } catch (error) {
+      console.error('获取部门评审邮件预览失败', error);
+      // The review assignment and public link remain valid if preview generation fails.
+      return { link, draft: null };
+    }
+  };
+
   const handleChangeReviewer = async () => {
     if (!selectedReview) return;
     try {
       const values = await changeReviewerForm.validateFields();
+      const reviewer = reviewers.find((item: any) => item.id === values.reviewer_id);
+      const reviewerName = reviewer?.full_name || reviewer?.email || values.reviewer_id;
       const formData = new FormData();
       formData.append('reviewer_id', values.reviewer_id);
-      await request.put(
+      const updated = await request.put(
         `/resumes/${id}/department-reviews/${selectedReview.id}/reviewer`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' } },
+      );
+      if (!updated?.public_token) {
+        throw new Error('missing public token');
+      }
+      const emailResult = await createReviewEmailDraft(
+        updated.id || selectedReview.id,
+        values.reviewer_id,
+        reviewerName,
+        updated.public_token,
       );
       message.success('部门评审人已修改');
       setIsChangeReviewerModalVisible(false);
       setSelectedReview(null);
       changeReviewerForm.resetFields();
-      fetchResume(id!);
+      fetchResume(id!, false);
       fetchDeptReviewSummary(id!);
+      if (emailResult.draft) {
+        setReviewEmailDrafts([emailResult.draft]);
+        setReviewEmailFallbackLinks([]);
+        setSendReviewEmails(true);
+      } else {
+        showReviewLinks([emailResult.link], []);
+        message.warning('邮件预览生成失败，请复制评审链接后手动通知');
+      }
     } catch (error) {
       message.error('修改评审人失败');
     }
@@ -349,6 +444,7 @@ const ResumeDetail: React.FC = () => {
         throw new Error('missing public token');
       }
       showReviewLinks([{
+        reviewId: review.id,
         reviewerId: review.reviewer_id,
         reviewerName: review.reviewer_name || '评审人',
         token: result.public_token,
@@ -364,7 +460,7 @@ const ResumeDetail: React.FC = () => {
       const values = await deptReviewForm.validateFields();
       const reviewerIds = values.reviewer_ids; // 多选
       const results = await Promise.allSettled(
-        reviewerIds.map(async (reviewerId: string): Promise<ReviewLink> => {
+        reviewerIds.map(async (reviewerId: string): Promise<{ link: ReviewLink; draft: ReviewEmailDraft | null }> => {
           const reviewer = reviewers.find((item: any) => item.id === reviewerId);
           const reviewerName = reviewer?.full_name || reviewer?.email || reviewerId;
           const formData = new FormData();
@@ -375,17 +471,25 @@ const ResumeDetail: React.FC = () => {
           if (!created?.public_token) {
             throw new Error(reviewerName);
           }
-          return {
+          return createReviewEmailDraft(
+            created.id,
             reviewerId,
             reviewerName,
-            token: created.public_token,
-            link: `${window.location.origin}/public/review/${created.public_token}`,
-          };
+            created.public_token,
+          );
         })
       );
       const successfulLinks = results
-        .filter((result): result is PromiseFulfilledResult<ReviewLink> => result.status === 'fulfilled')
-        .map(result => result.value);
+        .filter((result): result is PromiseFulfilledResult<{ link: ReviewLink; draft: ReviewEmailDraft | null }> => result.status === 'fulfilled')
+        .map(result => result.value.link);
+      const emailDrafts = results
+        .filter((result): result is PromiseFulfilledResult<{ link: ReviewLink; draft: ReviewEmailDraft | null }> => result.status === 'fulfilled')
+        .map(result => result.value.draft)
+        .filter((draft): draft is ReviewEmailDraft => draft !== null);
+      const fallbackLinks = results
+        .filter((result): result is PromiseFulfilledResult<{ link: ReviewLink; draft: ReviewEmailDraft | null }> => result.status === 'fulfilled')
+        .filter(result => result.value.draft === null)
+        .map(result => result.value.link);
       const failedReviewers = results
         .map((result, index) => result.status === 'rejected'
           ? (reviewers.find((item: any) => item.id === reviewerIds[index])?.full_name
@@ -394,18 +498,77 @@ const ResumeDetail: React.FC = () => {
           : null)
         .filter((name): name is string => Boolean(name));
 
-      showReviewLinks(successfulLinks, failedReviewers);
       if (failedReviewers.length > 0) {
         message.warning(`成功 ${successfulLinks.length} 位，失败 ${failedReviewers.length} 位`);
-      } else {
-        message.success(`已指派 ${successfulLinks.length} 位评审人`);
       }
-      setIsAssignReviewerModalVisible(false);
       deptReviewForm.resetFields();
-      fetchResume(id!);
+      fetchResume(id!, false);
       fetchDeptReviewSummary(id!);
+      if (emailDrafts.length > 0) {
+        setReviewEmailDrafts(emailDrafts);
+        setReviewEmailFallbackLinks(fallbackLinks);
+        setSendReviewEmails(true);
+      } else {
+        setIsAssignReviewerModalVisible(false);
+        showReviewLinks(successfulLinks, failedReviewers);
+        if (failedReviewers.length === 0) {
+          message.success(`已指派 ${successfulLinks.length} 位评审人`);
+        }
+      }
     } catch (error) {
       message.error('指派失败');
+    }
+  };
+
+  const updateReviewEmailDraft = (
+    reviewId: string,
+    field: 'subject' | 'content',
+    value: string,
+  ) => {
+    setReviewEmailDrafts(current => current.map(draft => (
+      draft.reviewId === reviewId ? { ...draft, [field]: value } : draft
+    )));
+  };
+
+  const closeReviewEmailModal = () => {
+    setIsAssignReviewerModalVisible(false);
+    setIsChangeReviewerModalVisible(false);
+    setReviewEmailDrafts([]);
+    setReviewEmailFallbackLinks([]);
+    message.success('部门评审任务已保存，未发送邮件');
+  };
+
+  const handleSendReviewEmails = async () => {
+    if (!sendReviewEmails) {
+      closeReviewEmailModal();
+      return;
+    }
+    if (reviewEmailDrafts.some(draft => !draft.subject.trim() || !draft.content.trim())) {
+      message.error('请填写完整的邮件主题和内容');
+      return;
+    }
+
+    setSendingReviewEmails(true);
+    try {
+      const results = await Promise.allSettled(reviewEmailDrafts.map(draft => (
+        request.post(`/resumes/${id}/department-reviews/${draft.reviewId}/send-email`, {
+          subject: draft.subject.trim(),
+          content: draft.content,
+        })
+      )));
+      const sentCount = results.filter(result => result.status === 'fulfilled').length;
+      const failedCount = results.length - sentCount;
+      if (failedCount > 0) {
+        message.warning(`部门评审任务已保存，邮件发送成功 ${sentCount} 封，失败 ${failedCount} 封`);
+      } else {
+        message.success(`${sentCount} 封评审通知邮件已发送`);
+      }
+      setIsAssignReviewerModalVisible(false);
+      setIsChangeReviewerModalVisible(false);
+      setReviewEmailDrafts([]);
+      setReviewEmailFallbackLinks([]);
+    } finally {
+      setSendingReviewEmails(false);
     }
   };
 
@@ -422,7 +585,7 @@ const ResumeDetail: React.FC = () => {
       const payload: any = {
         hr_id: user?.id,
         decision: values.decision,
-        hr_comment: values.hr_comment || null,
+        hr_comment: values.hr_comment?.trim() || null,
       };
 
       if (values.decision === 'rejected') {
@@ -546,14 +709,14 @@ const ResumeDetail: React.FC = () => {
       // 待评审状态：可指派部门评测人，也可由 HR 直接决策
       buttons.push(
         <Button key="assign-reviewer" icon={<TeamOutlined />} onClick={() => setIsAssignReviewerModalVisible(true)}>指派部门评审人</Button>,
-        <Button key="hr-decision" icon={<SolutionOutlined />} onClick={() => setIsHRDecisionModalVisible(true)}>HR直接决策</Button>
+        <Button key="hr-decision" icon={<SolutionOutlined />} onClick={openHRDecision}>HR直接决策</Button>
       );
     } else if (resume.status === 'pending_hr_decision') {
       buttons.push(
-        <Button key="hr-decision" type="primary" icon={<SolutionOutlined />} onClick={() => setIsHRDecisionModalVisible(true)}>HR决策</Button>
+        <Button key="hr-decision" type="primary" icon={<SolutionOutlined />} onClick={openHRDecision}>HR决策</Button>
       );
-    } else if (resume.status === 'pending_interview') {
-      // 初审通过，可以安排面试
+    } else if (['pending_interview', 'pending_next_interview'].includes(resume.status)) {
+      // 初审通过或已进入下一轮，可以安排面试
       buttons.push(
         <Button
           key="schedule-interview"
@@ -839,6 +1002,39 @@ const ResumeDetail: React.FC = () => {
             </ReactMarkdown>
           </div>
 
+          {((userRole === 'admin' || userRole === 'hr') || resume.hr_review) && (
+            <>
+              <Divider style={{ borderColor: '#E2E8F0' }}>HR 评语</Divider>
+              {(userRole === 'admin' || userRole === 'hr') ? (
+                <div>
+                  <TextArea
+                    aria-label="HR 评语"
+                    rows={4}
+                    value={hrReview}
+                    onChange={(event) => setHrReview(event.target.value)}
+                    placeholder="添加供部门评审人查看的评语"
+                    maxLength={5000}
+                    showCount
+                  />
+                  <div style={{ marginTop: 12, textAlign: 'right' }}>
+                    <Button
+                      type="primary"
+                      icon={<SaveOutlined />}
+                      loading={savingHrReview}
+                      onClick={handleSaveHrReview}
+                    >
+                      保存评语
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ whiteSpace: 'pre-wrap', background: '#EFF6FF', padding: 16, borderRadius: 8, border: '1px solid #BFDBFE' }}>
+                  {resume.hr_review}
+                </div>
+              )}
+            </>
+          )}
+
           {/* 其他岗位匹配推荐 */}
           {resume.other_position_matches && resume.other_position_matches.length > 0 && (
             <>
@@ -927,7 +1123,7 @@ const ResumeDetail: React.FC = () => {
       {/* 指派评审人弹窗 */}
       <Modal
         title="指派部门评审人"
-        open={isAssignReviewerModalVisible}
+        open={isAssignReviewerModalVisible && reviewEmailDrafts.length === 0}
         onOk={handleAssignReviewer}
         onCancel={() => { setIsAssignReviewerModalVisible(false); deptReviewForm.resetFields(); }}
         okText="确认指派"
@@ -953,6 +1149,88 @@ const ResumeDetail: React.FC = () => {
             </Select>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="邮件预览"
+        open={reviewEmailDrafts.length > 0}
+        onCancel={closeReviewEmailModal}
+        width={800}
+        centered
+        destroyOnHidden
+        footer={[
+          <Button key="cancel" onClick={closeReviewEmailModal}>暂不发送</Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            loading={sendingReviewEmails}
+            onClick={() => void handleSendReviewEmails()}
+          >
+            确认
+          </Button>,
+        ]}
+      >
+        {reviewEmailFallbackLinks.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <Text type="warning">
+              {reviewEmailFallbackLinks.map(item => item.reviewerName).join('、')} 的邮件预览生成失败，请复制评审链接后手动通知。
+            </Text>
+            <Space wrap style={{ marginTop: 8 }}>
+              {reviewEmailFallbackLinks.map(item => (
+                <Button key={item.reviewId} size="small" onClick={() => void copyReviewLink(item.token)}>
+                  复制 {item.reviewerName} 的链接
+                </Button>
+              ))}
+            </Space>
+          </div>
+        )}
+        <Tabs
+          items={reviewEmailDrafts.map(draft => ({
+            key: draft.reviewId,
+            label: draft.reviewerName,
+            children: (
+              <div>
+                <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 8 }}>
+                  <p><strong>收件人：</strong>{draft.toEmail}</p>
+                  <p><strong>评审人：</strong>{draft.reviewerName}</p>
+                  <Button size="small" icon={<LinkOutlined />} onClick={() => void copyReviewLink(draft.token)}>
+                    复制评审链接
+                  </Button>
+                </div>
+                <Form layout="vertical">
+                  <Form.Item label="邮件主题" required>
+                    <Input
+                      aria-label={`${draft.reviewerName} 的邮件主题`}
+                      value={draft.subject}
+                      onChange={event => updateReviewEmailDraft(draft.reviewId, 'subject', event.target.value)}
+                      placeholder="邮件主题"
+                      size="large"
+                    />
+                  </Form.Item>
+                  <Form.Item label="邮件内容" required>
+                    <Input.TextArea
+                      aria-label={`${draft.reviewerName} 的邮件内容`}
+                      rows={10}
+                      value={draft.content}
+                      onChange={event => updateReviewEmailDraft(draft.reviewId, 'content', event.target.value)}
+                      placeholder="邮件内容（支持 HTML 格式）"
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                  </Form.Item>
+                  <Form.Item label="邮件预览">
+                    <div
+                      style={{ border: '1px solid #d9d9d9', borderRadius: 8, padding: 16, maxHeight: 300, overflow: 'auto', background: '#fff' }}
+                      dangerouslySetInnerHTML={{ __html: draft.content }}
+                    />
+                  </Form.Item>
+                </Form>
+              </div>
+            ),
+          }))}
+        />
+        <Checkbox checked={sendReviewEmails} onChange={event => setSendReviewEmails(event.target.checked)}>
+          发送邮件通知评审人
+        </Checkbox>
       </Modal>
 
       {/* 修改评审人弹窗 */}
@@ -1026,9 +1304,9 @@ const ResumeDetail: React.FC = () => {
 
           <Form.Item
             name="hr_comment"
-            label="HR备注"
+            label="HR评语"
           >
-            <TextArea rows={3} placeholder="请输入备注信息（可选）" maxLength={500} showCount />
+            <TextArea rows={4} placeholder="添加供部门评审人查看的评语" maxLength={5000} showCount />
           </Form.Item>
         </Form>
       </Modal>

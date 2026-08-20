@@ -12,10 +12,12 @@ from app.schemas.recruitment_performance import (
     PauseRequest,
     PerformanceConfigPayload,
     PerformanceConfigResponse,
+    PerformanceLeaderboard,
     PerformanceOverview,
     PerformancePeriodOptions,
     SettlementRequest,
 )
+from app.services.recruitment_leaderboard_service import calculate_leaderboard
 from app.services.recruitment_performance_service import (
     available_periods,
     calculate_overview,
@@ -53,6 +55,15 @@ def my_performance(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     return calculate_overview(db, period, user=current_user)
+
+
+@router.get("/leaderboard", response_model=PerformanceLeaderboard)
+def leaderboard(
+    period: str = Query(default_factory=current_period),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    return calculate_leaderboard(db, period, current_user=current_user)
 
 
 @router.get("/people/{user_id}", response_model=PerformanceOverview)

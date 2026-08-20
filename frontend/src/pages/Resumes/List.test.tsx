@@ -91,4 +91,21 @@ describe('ResumesList pagination', () => {
     await user.click(await screen.findByRole('button', { name: /历史后端岗位/ }));
     expect(await screen.findByText('其他简历详情页')).toBeInTheDocument();
   });
+
+  it('allows a candidate entering the next round to schedule another interview', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => (
+      url === '/resumes'
+        ? [{ ...resumes[0], status: 'pending_next_interview' }]
+        : []
+    ));
+
+    render(
+      <MemoryRouter>
+        <ResumesList />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Candidate 1');
+    expect(screen.getByRole('button', { name: '安排面试' })).toBeInTheDocument();
+  });
 });

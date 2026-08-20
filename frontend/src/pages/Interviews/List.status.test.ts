@@ -6,8 +6,10 @@ import {
   createEmptyInterviewListFilters,
   getInterviewMemberIds,
   getInterviewProgress,
+  mergeSchedulableResumes,
   matchesInterviewFilters,
   normalizeInterviewResult,
+  SCHEDULABLE_RESUME_STATUSES,
 } from './List';
 
 
@@ -50,6 +52,23 @@ describe('interview list status presentation', () => {
 
   it('resets every interview filter', () => {
     expect(createEmptyInterviewListFilters()).toEqual({});
+  });
+
+  it('includes both first-round and next-round candidates when scheduling', () => {
+    expect(SCHEDULABLE_RESUME_STATUSES).toEqual([
+      'pending_interview',
+      'pending_next_interview',
+    ]);
+    expect(mergeSchedulableResumes([
+      [{ id: 'first-round', status: 'pending_interview' }],
+      [
+        { id: 'next-round', status: 'pending_next_interview' },
+        { id: 'first-round', status: 'pending_interview' },
+      ],
+    ])).toEqual([
+      { id: 'first-round', status: 'pending_interview' },
+      { id: 'next-round', status: 'pending_next_interview' },
+    ]);
   });
 
   it('clears schedule fields that do not apply to the selected interview form', () => {

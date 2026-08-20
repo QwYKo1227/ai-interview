@@ -16,6 +16,12 @@ import {
   validateInterviewTimeRange,
 } from './interviewSchedule';
 
+export const SCHEDULABLE_RESUME_STATUSES = ['pending_interview', 'pending_next_interview'] as const;
+
+export const mergeSchedulableResumes = (groups: any[][]) => (
+  Array.from(new Map(groups.flat().map((resume) => [resume.id, resume])).values())
+);
+
 const { Text } = Typography;
 
 export const getInterviewProgress = (record: any) => {
@@ -420,8 +426,12 @@ const InterviewsList: React.FC = () => {
     setLoadingResumes(true);
     setSelectResumeModalVisible(true);
     try {
-      const res = await request.get('/resumes', { params: { status: 'pending_interview' } });
-      setPendingInterviewResumes(res || []);
+      const groups = await Promise.all(
+        SCHEDULABLE_RESUME_STATUSES.map((status) => (
+          request.get('/resumes', { params: { status } }) as Promise<any[]>
+        )),
+      );
+      setPendingInterviewResumes(mergeSchedulableResumes(groups.map((group) => group || [])));
     } catch (error) {
       message.error('获取简历列表失败');
     } finally {

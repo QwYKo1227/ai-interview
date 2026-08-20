@@ -27,6 +27,7 @@ def _client(db, current_user=None):
 def test_public_review_requires_the_assigned_authenticated_reviewer(
     db, tenant_a, test_resume, test_user, test_admin
 ):
+    test_resume.hr_review = "请重点关注跨部门协作经验"
     review = DepartmentReview(
         tenant_id=tenant_a.id,
         resume_id=test_resume.id,
@@ -66,3 +67,4 @@ def test_public_review_requires_the_assigned_authenticated_reviewer(
         f"/api/public/review/{raw_token}"
     )
     assert assigned_user.status_code == 200
+    assert assigned_user.json()["resume"]["hr_review"] == "请重点关注跨部门协作经验"

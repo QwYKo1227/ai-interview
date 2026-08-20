@@ -3,8 +3,10 @@ import {
   buildCurrentPositionListParams,
   buildPositionListParams,
   createEmptyPositionListFilters,
+  loadPositionListFilters,
   reconcileDepartmentSelection,
   reconcileHiringManagerSelection,
+  savePositionListFilters,
 } from './filters';
 import { createLatestRequestCoordinator } from '../../utils/latestRequest';
 import { PRIORITY_OPTIONS } from './options';
@@ -95,6 +97,51 @@ describe('buildCurrentPositionListParams', () => {
       status: 'published',
       hiring_manager_id: 'manager-b',
     });
+  });
+});
+
+describe('position list filter memory', () => {
+  const createStorage = () => {
+    const values = new Map<string, string>();
+    return {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+  };
+
+  it('restores each user\'s remembered filters without reopening the recycle bin', () => {
+    const storage = createStorage();
+    savePositionListFilters(storage, 'user-a', {
+      title: 'Backend',
+      department: 'Engineering',
+      hiringManagerId: 'manager-a',
+      priority: 5,
+      category: 'domestic_rd',
+      status: 'published',
+      deletedOnly: true,
+    });
+
+    expect(loadPositionListFilters(storage, 'user-a')).toEqual({
+      title: 'Backend',
+      department: 'Engineering',
+      hiringManagerId: 'manager-a',
+      priority: 5,
+      category: 'domestic_rd',
+      status: 'published',
+      deletedOnly: false,
+    });
+    expect(loadPositionListFilters(storage, 'user-b')).toEqual(
+      createEmptyPositionListFilters(),
+    );
+  });
+
+  it('falls back safely when remembered data is malformed', () => {
+    const storage = createStorage();
+    storage.setItem('position-list-filters:user-a', '{not-json');
+
+    expect(loadPositionListFilters(storage, 'user-a')).toEqual(
+      createEmptyPositionListFilters(),
+    );
   });
 });
 

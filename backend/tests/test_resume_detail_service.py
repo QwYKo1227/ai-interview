@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
+
 from app.models.models import ResumeStatus, ReviewRecommendation
-from app.schemas.resume import ResumeUpdate
+from app.schemas.resume import HRDecisionCreate, ResumeUpdate
 from app.services.resume_service import (
     _send_hr_review_notification,
     extract_contact_details,
@@ -65,6 +68,28 @@ def test_resume_update_accepts_numeric_parsed_experience():
     )
 
     assert update.years_of_experience == "5"
+
+
+def test_hr_review_is_trimmed_and_blank_content_clears_it():
+    assert ResumeUpdate(hr_review="  给部门的说明\n").hr_review == "给部门的说明"
+    assert ResumeUpdate(hr_review=" \n ").hr_review is None
+    assert HRDecisionCreate(
+        hr_id="00000000-0000-0000-0000-000000000001",
+        decision="pending_interview",
+        hr_comment="  决策说明  ",
+    ).hr_comment == "决策说明"
+
+
+def test_hr_review_rejects_content_longer_than_5000_characters():
+    with pytest.raises(ValidationError):
+        ResumeUpdate(hr_review="评" * 5001)
+
+    with pytest.raises(ValidationError):
+        HRDecisionCreate(
+            hr_id="00000000-0000-0000-0000-000000000001",
+            decision="pending_interview",
+            hr_comment="评" * 5001,
+        )
 
 
 def test_extract_contact_details_falls_back_to_flat_ai_fields():

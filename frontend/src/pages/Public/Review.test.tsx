@@ -24,6 +24,7 @@ const reviewPayload = {
     contact: '13800000000',
     match_score: 88,
     ai_review: '',
+    hr_review: null,
     resume_markdown: '',
     parsed_data: {},
     file_available: true,
@@ -119,6 +120,37 @@ describe('PublicReview', () => {
     expect(screen.getByRole('button', { name: 'clock-circle待定' })).toHaveStyle({
       borderColor: '#faad14',
     })
+  })
+
+  it('shows a non-empty HR review before the department review form', async () => {
+    vi.mocked(request.get).mockResolvedValueOnce({
+      ...reviewPayload,
+      resume: { ...reviewPayload.resume, hr_review: '请重点关注系统设计经验' },
+    })
+    renderReview()
+
+    const hrReview = await screen.findByText('请重点关注系统设计经验')
+    const formTitle = screen.getByText('评审意见')
+    expect(hrReview.compareDocumentPosition(formTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('hides the HR review section when the review is empty', async () => {
+    renderReview()
+
+    await screen.findByText('测试候选人')
+    expect(screen.queryByText('HR 评语')).not.toBeInTheDocument()
+  })
+
+  it('does not render parsed resume details on the dedicated review page', async () => {
+    vi.mocked(request.get).mockResolvedValueOnce({
+      ...reviewPayload,
+      resume: { ...reviewPayload.resume, resume_markdown: '不应显示的解析简历详情' },
+    })
+    renderReview()
+
+    await screen.findByText('测试候选人')
+    expect(screen.queryByText('简历详情')).not.toBeInTheDocument()
+    expect(screen.queryByText('不应显示的解析简历详情')).not.toBeInTheDocument()
   })
 
   it('renders the same completed receipt when an unexpired link is reopened', async () => {

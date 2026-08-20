@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 from datetime import datetime, timezone
+from email import policy
+from email.parser import Parser
 import smtplib
 
 import pytest
@@ -116,6 +118,24 @@ def test_smtp_close_error_does_not_log_secret_for_shared_send_path(mock_get_conf
         ) is True
 
     assert secret not in caplog.text
+
+
+@patch("app.services.mail_service.get_system_config")
+def test_shared_send_path_preserves_the_preview_html_in_the_mime_part(mock_get_config):
+    mock_get_config.return_value = _mail_config("ssl")
+    service = MailService(MagicMock())
+    server = MagicMock()
+    service._create_smtp_connection = MagicMock(return_value=server)
+    preview_html = '<table role="presentation"><tr><td><a href="https://example.com/review">立即审核</a></td></tr></table>'
+
+    assert service._send_email("recipient@example.com", "评审邀请", preview_html)
+
+    raw_message = server.sendmail.call_args.args[2]
+    parsed = Parser(policy=policy.default).parsestr(raw_message)
+    html_part = next(
+        part for part in parsed.walk() if part.get_content_type() == "text/html"
+    )
+    assert html_part.get_content().strip() == preview_html
 
 
 @patch("app.services.mail_service.get_system_config")

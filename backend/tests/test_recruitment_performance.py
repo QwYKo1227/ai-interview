@@ -1,6 +1,13 @@
 from datetime import date, datetime, timedelta, timezone
 
-from app.models.models import Offer, OfferStatus, RecruitmentHcSlot, ResumeStatus
+from app.models.models import (
+    Offer,
+    OfferStatus,
+    PositionEvent,
+    PositionEventType,
+    RecruitmentHcSlot,
+    ResumeStatus,
+)
 from app.services.recruitment_performance_service import available_periods, calculate_overview, sync_position_slots
 
 
@@ -69,6 +76,47 @@ def test_result_coefficient_applies_to_complete_quarter_holding_days(
     assert slot.effective_held_days == 10
     assert slot.result_coefficient == 0.6
     assert slot.score == slot.task_points * slot.time_coefficient * 0.6
+
+
+def test_actual_days_restart_when_a_new_owner_takes_over(
+    db, test_position, test_user, test_admin
+):
+    round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    owner_changed_at = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
+    test_position.created_at = round_started_at
+    sync_position_slots(db, test_position, assigned_at=round_started_at)
+    db.add_all([
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.INITIAL_OWNER,
+            new_value=str(test_user.id),
+            occurred_at=round_started_at,
+        ),
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.OWNER_CHANGED,
+            old_value=str(test_user.id),
+            new_value=str(test_admin.id),
+            occurred_at=owner_changed_at,
+        ),
+    ])
+    test_position.hiring_manager_id = test_admin.id
+    db.commit()
+
+    overview = calculate_overview(
+        db,
+        "2026-Q3",
+        user=test_admin,
+        now=cutoff,
+        use_settlement=False,
+    )
+
+    slots = overview.people[0].positions[0].slots
+    assert {slot.actual_days for slot in slots} == {11}
+    assert {slot.effective_held_days for slot in slots} == {11}
 
 
 def test_admin_can_publish_next_quarter_config(client, admin_auth_headers):

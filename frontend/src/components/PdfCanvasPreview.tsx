@@ -82,16 +82,23 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({ url }) => {
         const baseViewport = page.getViewport({ scale: 1 })
         const displayScale = Math.max((containerWidth - 32) / baseViewport.width, 0.1)
         const outputScale = window.devicePixelRatio || 1
-        const viewport = page.getViewport({ scale: displayScale * outputScale })
+        const viewport = page.getViewport({ scale: displayScale })
         const context = canvas.getContext('2d')
         if (!context) throw new Error('Canvas is unavailable')
 
-        canvas.width = Math.floor(viewport.width)
-        canvas.height = Math.floor(viewport.height)
-        canvas.style.width = `${Math.floor(viewport.width / outputScale)}px`
-        canvas.style.height = `${Math.floor(viewport.height / outputScale)}px`
+        canvas.width = Math.floor(viewport.width * outputScale)
+        canvas.height = Math.floor(viewport.height * outputScale)
+        canvas.style.width = `${Math.floor(viewport.width)}px`
+        canvas.style.height = `${Math.floor(viewport.height)}px`
         renderTaskRef.current?.cancel()
-        const task = page.render({ canvas, canvasContext: context, viewport })
+        const task = page.render({
+          canvas,
+          canvasContext: context,
+          viewport,
+          transform: outputScale === 1
+            ? undefined
+            : [outputScale, 0, 0, outputScale, 0, 0],
+        })
         renderTaskRef.current = task
         return task.promise
       })

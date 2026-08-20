@@ -761,8 +761,8 @@ const ResumesList: React.FC = () => {
         }
 
         // HR和管理员的操作
-        // 只有初审通过（pending_interview）才能安排面试
-        const canScheduleInterview = record.status === 'pending_interview';
+        // 初审通过或已进入下一轮的候选人可以安排面试
+        const canScheduleInterview = ['pending_interview', 'pending_next_interview'].includes(record.status);
         // 可以进行评审操作的状态
         const canReview = ['pending_review', 'pending_dept_review', 'pending_hr_decision', 'auto_rejected_pending_review'].includes(record.status);
 
@@ -771,10 +771,15 @@ const ResumesList: React.FC = () => {
             <Tooltip title="查看详情">
               <Button type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/resumes/${record.id}`)} />
             </Tooltip>
-            {/* Only Admin and HR can schedule interviews - only after initial review passed */}
+            {/* Only Admin and HR can schedule interviews for eligible interview-stage candidates */}
             {(user?.role === 'admin' || user?.role === 'hr') && canScheduleInterview && (
               <Tooltip title="安排面试">
-                <Button type="text" icon={<TeamOutlined style={{ color: '#10B981' }} />} onClick={() => handleCreateInterviewClick(record)} />
+                <Button
+                  type="text"
+                  aria-label="安排面试"
+                  icon={<TeamOutlined style={{ color: '#10B981' }} />}
+                  onClick={() => handleCreateInterviewClick(record)}
+                />
               </Tooltip>
             )}
             {/* 如果可以评审，显示评审入口提示 */}

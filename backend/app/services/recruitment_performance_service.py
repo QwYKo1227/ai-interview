@@ -451,7 +451,7 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
                 pauses = _approved_pauses(db, slot.id)
                 deducted = _deducted_days(pauses, slot_start, weight_end) if slot_start <= weight_end else 0
                 effective_days = max(0, _day_count(slot_start, weight_end) - deducted)
-                cycle_start = _aware(slot.round_started_at)
+                cycle_start = max(_aware(slot.round_started_at), span_start)
                 cycle_end = min(accepted_at or span_end, span_end, cutoff)
                 cycle_deducted = _deducted_days(pauses, cycle_start, cycle_end)
                 actual_days = max(1, _day_count(cycle_start, cycle_end) - cycle_deducted)

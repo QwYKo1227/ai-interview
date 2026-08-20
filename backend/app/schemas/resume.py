@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
@@ -47,7 +47,7 @@ class ResumeCreate(ResumeBase):
 
 class ResumeUpdate(BaseModel):
     screening_result: Optional[ScreeningResult] = None
-    hr_review: Optional[str] = None
+    hr_review: Optional[str] = Field(default=None, max_length=5000)
     status: Optional[ResumeStatus] = None
     candidate_name: Optional[str] = None
     contact: Optional[str] = None
@@ -73,6 +73,14 @@ class ResumeUpdate(BaseModel):
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             return str(v)
         return v
+
+    @field_validator("hr_review", mode="before")
+    @classmethod
+    def normalize_hr_review(cls, v):
+        if not isinstance(v, str):
+            return v
+        normalized = v.strip()
+        return normalized or None
 
 class ResumeResponse(ResumeBase):
     id: UUID
@@ -173,6 +181,36 @@ class DepartmentReviewLinkResponse(BaseModel):
     public_token: str
 
 
+class DepartmentReviewEmailPreviewRequest(BaseModel):
+    public_token: str = Field(min_length=40, max_length=128)
+    review_url: AnyHttpUrl
+
+    @model_validator(mode="after")
+    def validate_review_url(self):
+        expected_path = f"/public/review/{self.public_token}"
+        if (
+            self.review_url.path != expected_path
+            or self.review_url.query is not None
+            or self.review_url.fragment is not None
+        ):
+            raise ValueError("评审链接与评审令牌不匹配")
+        return self
+
+
+class DepartmentReviewEmailPreviewResponse(BaseModel):
+    review_id: UUID
+    to_email: str
+    reviewer_name: str
+    candidate_name: Optional[str] = None
+    subject: str
+    content: str
+
+
+class DepartmentReviewEmailSendRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=100_000)
+
+
 # HR决策相关 Schema
 class HRDecisionCreate(BaseModel):
     hr_id: UUID = Field(
@@ -183,12 +221,20 @@ class HRDecisionCreate(BaseModel):
     decision: ResumeStatus  # REJECTED, WAITLIST, PENDING_INTERVIEW 等
     reject_reason_category: Optional[RejectReasonCategory] = None
     reject_reason_detail: Optional[str] = None
-    hr_comment: Optional[str] = None
+    hr_comment: Optional[str] = Field(default=None, max_length=5000)
 
     @field_validator("reject_reason_category", mode="before")
     @classmethod
     def validate_reject_reason(cls, v):
         return _validate_reject_reason_category(v)
+
+    @field_validator("hr_comment", mode="before")
+    @classmethod
+    def normalize_hr_comment(cls, v):
+        if not isinstance(v, str):
+            return v
+        normalized = v.strip()
+        return normalized or None
 
 
 class HRDecisionResponse(BaseModel):

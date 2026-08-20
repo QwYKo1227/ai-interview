@@ -2,12 +2,10 @@ import json
 import logging
 import mimetypes
 import os
-import re
 from pathlib import Path
 from typing import Any
 
 import httpx
-import PyPDF2
 
 
 logger = logging.getLogger(__name__)
@@ -82,11 +80,7 @@ class HttpDocumentParser:
                         f"{self.base_url}/file_parse", data=data, files=files
                     )
             response.raise_for_status()
-            markdown = self._extract_markdown(response.json())
-            native_identity = self._extract_native_pdf_identity(path)
-            if native_identity:
-                return f"{native_identity}\n\n{markdown}"
-            return markdown
+            return self._extract_markdown(response.json())
         except (OSError, httpx.HTTPError, ValueError, TypeError, KeyError) as error:
             status_code = (
                 error.response.status_code
@@ -233,86 +227,6 @@ class HttpDocumentParser:
             return int(value)
         except (TypeError, ValueError):
             return default
-
-    @staticmethod
-    def _extract_native_pdf_identity(path: Path) -> str:
-        """Build deterministic identity hints from a PDF's native text layer."""
-        if path.suffix.casefold() != ".pdf":
-            return ""
-
-        try:
-            with path.open("rb") as document:
-                reader = PyPDF2.PdfReader(document)
-                if not reader.pages:
-                    return ""
-                text = reader.pages[0].extract_text() or ""
-        except Exception as error:
-            logger.info(
-                "Native PDF identity extraction unavailable",
-                extra={"exception_type": type(error).__name__},
-            )
-            return ""
-
-        lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
-        name = HttpDocumentParser._find_candidate_name(lines)
-        email_match = re.search(
-            r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, re.IGNORECASE
-        )
-        phone_match = re.search(
-            r"(?<!\d)(?:\+?86[\s-]?)?(1[3-9]\d(?:[\s-]?\d){8})(?!\d)",
-            text,
-        )
-
-        identity_lines = []
-        if name:
-            identity_lines.append(f"姓名：{name}")
-        if phone_match:
-            phone = re.sub(r"\D", "", phone_match.group(1))
-            identity_lines.append(f"手机：{phone}")
-        if email_match:
-            identity_lines.append(f"邮箱：{email_match.group(0)}")
-        if not identity_lines:
-            return ""
-        return "## PDF 原生个人信息\n\n" + "\n".join(identity_lines)
-
-    @staticmethod
-    def _find_candidate_name(lines: list[str]) -> str:
-        ignored_titles = {
-            "个人简历",
-            "简历",
-            "求职简历",
-            "个人履历",
-            "个人信息",
-            "基本信息",
-            "联系方式",
-            "教育背景",
-            "工作经历",
-            "实习经历",
-            "项目经历",
-            "专业技能",
-            "技能清单",
-            "校园经历",
-            "求职意向",
-            "自我评价",
-            "resume",
-            "curriculum vitae",
-            "cv",
-        }
-        for line in lines[:15]:
-            candidate = line.strip(" |｜·•")
-            if not candidate or candidate.casefold() in ignored_titles:
-                continue
-            if len(candidate) > 50 or re.search(r"\d|[:：@|｜]", candidate):
-                continue
-            if re.fullmatch(r"[\u3400-\u9fff·]{2,8}", candidate):
-                return candidate
-            if re.fullmatch(
-                r"[A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){1,4}",
-                candidate,
-            ):
-                return candidate
-        return ""
-
 
 def extract_document_text(file_path: str) -> str:
     """Small interface used by resume processing for all document extraction."""

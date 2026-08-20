@@ -6,6 +6,8 @@ from app.schemas.resume import (
     ResumeResponse, ResumeCreate, ResumeUpdate,
     DepartmentReviewCreate, DepartmentReviewUpdate, DepartmentReviewResponse,
     AssignedDepartmentReviewResponse, DepartmentReviewLinkResponse,
+    DepartmentReviewEmailPreviewRequest, DepartmentReviewEmailPreviewResponse,
+    DepartmentReviewEmailSendRequest,
     HRDecisionCreate, HRDecisionResponse,
     DuplicateCheckRequest, DuplicateCheckResponse, DuplicateResumeSummary,
     DepartmentReviewSummary
@@ -21,13 +23,14 @@ from app.services.resume_service import (
     get_resume_with_reviews, transfer_resume_position
 )
 from app.models.models import (
-    Position, ResumeStatus, RejectReasonCategory, User, UserRole, Resume,
+    DepartmentReview, Position, ResumeStatus, RejectReasonCategory, User, UserRole, Resume,
 )
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List, Dict, Any, Optional
 from uuid import UUID
-from app.services.public_token_service import resolve_public_tenant
+from datetime import datetime
+from app.services.public_token_service import resolve_public_tenant, resolve_public_token
 from app.core.rate_limit import enforce_rate_limit
 from app.core.proxy import resolve_request_host
 from app.services.recruitment_access import (
@@ -283,6 +286,90 @@ def create_department_review_route(
     指派部门评审人
     """
     return create_department_review(db, resume_id, reviewer_id)
+
+
+def _require_department_review(
+    db: Session,
+    resume_id: UUID,
+    review_id: UUID,
+) -> DepartmentReview:
+    review = db.query(DepartmentReview).filter(
+        DepartmentReview.id == review_id,
+        DepartmentReview.resume_id == resume_id,
+    ).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="评审记录不存在")
+    return review
+
+
+@router.post(
+    "/{resume_id}/department-reviews/{review_id}/email-preview",
+    response_model=DepartmentReviewEmailPreviewResponse,
+)
+def preview_department_review_email(
+    resume_id: UUID,
+    review_id: UUID,
+    payload: DepartmentReviewEmailPreviewRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    """预览发送给部门评审人的指派邮件。"""
+    resume = require_resume_access(db, resume_id, current_user, manage=True)
+    review = _require_department_review(db, resume_id, review_id)
+    resolved = resolve_public_token(db, payload.public_token, "department_review")
+    if resolved.resource_id != review.id:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+
+    reviewer = db.query(User).filter(User.id == review.reviewer_id).first()
+    if reviewer is None or not reviewer.email:
+        raise HTTPException(status_code=400, detail="评审人邮箱为空")
+
+    from app.services.mail_service import get_mail_service
+    position_title = resume.position.title if resume.position else "未知岗位"
+    content = get_mail_service(db)._render_template("review_notification.html", {
+        "reviewer_name": reviewer.full_name or reviewer.email,
+        "candidate_name": resume.candidate_name or "候选人",
+        "position_title": position_title,
+        "match_score": resume.match_score or 0,
+        "submitted_at": resume.created_at.strftime("%Y-%m-%d %H:%M") if resume.created_at else "",
+        "hr_review": resume.hr_review,
+        "review_url": str(payload.review_url),
+        "current_year": datetime.utcnow().year,
+    })
+    return {
+        "review_id": review.id,
+        "to_email": reviewer.email,
+        "reviewer_name": reviewer.full_name or reviewer.email,
+        "candidate_name": resume.candidate_name,
+        "subject": f"简历评审邀请 - {position_title}",
+        "content": content,
+    }
+
+
+@router.post("/{resume_id}/department-reviews/{review_id}/send-email")
+def send_department_review_email(
+    resume_id: UUID,
+    review_id: UUID,
+    payload: DepartmentReviewEmailSendRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    """发送可编辑的部门评审指派邮件。"""
+    require_resume_access(db, resume_id, current_user, manage=True)
+    review = _require_department_review(db, resume_id, review_id)
+    reviewer = db.query(User).filter(User.id == review.reviewer_id).first()
+    if reviewer is None or not reviewer.email:
+        raise HTTPException(status_code=400, detail="评审人邮箱为空")
+
+    from app.services.mail_service import get_mail_service
+
+    if not get_mail_service(db)._send_email(
+        to_email=reviewer.email,
+        subject=payload.subject,
+        html_content=payload.content,
+    ):
+        raise HTTPException(status_code=500, detail="邮件发送失败")
+    return {"message": "邮件发送成功"}
 
 
 @router.put("/{resume_id}/department-reviews/{review_id}", response_model=DepartmentReviewResponse)

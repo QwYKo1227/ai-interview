@@ -188,93 +188,6 @@ def generate_interview_questions(
         print("Question generation failed")
         return []
 
-def generate_interview_evaluation(
-    questions: list, 
-    scores: Dict[str, Any], 
-    total_score: int,
-    panel_details: str = "",
-    transcripts: str = "", # New parameter for candidate audio transcripts
-    *,
-    db: Session | None = None,
-) -> Dict[str, str]:
-    prompt_data = prompt_manager.get_prompt(
-        "generate_interview_evaluation",
-        db=db,
-        questions=json.dumps(questions, ensure_ascii=False), 
-        scores=json.dumps(scores, ensure_ascii=False),
-        total_score=total_score,
-        panel_details=panel_details,
-        transcripts=transcripts
-    )
-    
-    if not prompt_data.get("user"):
-        return {"evaluation": "生成评价失败", "suggestion": "waitlist"}
-        
-    try:
-        cfg = _get_llm_config(db)
-        extra = {"temperature": cfg["llm_temperature"]}
-        if cfg["llm_max_tokens"] is not None:
-            extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client(config=cfg).chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'system', 'content': prompt_data['system']},
-                {'role': 'user', 'content': prompt_data['user']}
-            ],
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(config=cfg),
-            **extra,
-        )
-        result = json.loads(completion.choices[0].message.content)
-        return result
-    except Exception as e:
-        print("Evaluation generation failed")
-        return {"evaluation": "生成评价失败", "suggestion": "waitlist"}
-
-
-def generate_interview_evaluation_from_transcript(
-    transcript: str,
-    interviewer_evaluation: str,
-    interviewer_score: int,
-    *,
-    db: Session | None = None,
-) -> Dict[str, str]:
-    """
-    根据录音转写和面试官评价生成综合评价
-    """
-    prompt_data = prompt_manager.get_prompt(
-        "generate_interview_evaluation_from_transcript",
-        db=db,
-        transcript=transcript,
-        interviewer_evaluation=interviewer_evaluation,
-        interviewer_score=interviewer_score
-    )
-    
-    if not prompt_data.get("user"):
-        return {"evaluation": interviewer_evaluation, "suggestion": "waitlist"}
-        
-    try:
-        cfg = _get_llm_config(db)
-        extra = {"temperature": cfg["llm_temperature"]}
-        if cfg["llm_max_tokens"] is not None:
-            extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client(config=cfg).chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'system', 'content': prompt_data['system']},
-                {'role': 'user', 'content': prompt_data['user']}
-            ],
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(config=cfg),
-            **extra,
-        )
-        result = json.loads(completion.choices[0].message.content)
-        return result
-    except Exception as e:
-        print("Evaluation from transcript generation failed")
-        return {"evaluation": interviewer_evaluation, "suggestion": "waitlist"}
-
-
 def generate_coding_test_evaluation(
     title: str,
     description: str,
@@ -489,7 +402,13 @@ def chat_jd_stream(
         ))
 
 
-def generate_text(prompt: str, *, db: Session | None = None) -> str:
+def generate_text(
+    prompt: str,
+    *,
+    db: Session | None = None,
+    system_prompt: str | None = None,
+    json_response: bool = False,
+) -> str:
     """
     通用文本生成函数，用于生成面试评价等文本内容
     """
@@ -499,13 +418,20 @@ def generate_text(prompt: str, *, db: Session | None = None) -> str:
         if cfg["llm_max_tokens"] is not None:
             extra["max_tokens"] = cfg["llm_max_tokens"]
 
-        completion = _get_client(config=cfg).chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'user', 'content': prompt}
-            ],
-            extra_body=_get_extra_body(config=cfg),
+        messages = []
+        if system_prompt:
+            messages.append({'role': 'system', 'content': system_prompt})
+        messages.append({'role': 'user', 'content': prompt})
+        request = {
+            "model": cfg["llm_model"],
+            "messages": messages,
+            "extra_body": _get_extra_body(config=cfg),
             **extra,
+        }
+        if json_response:
+            request["response_format"] = {"type": "json_object"}
+        completion = _get_client(config=cfg).chat.completions.create(
+            **request,
         )
         return completion.choices[0].message.content
     except Exception as e:

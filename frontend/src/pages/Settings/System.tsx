@@ -54,7 +54,6 @@ const promptNames: Record<string, string> = {
   generate_resume_markdown: '简历Markdown生成',
   generate_interview_questions: '面试题目生成',
   generate_interview_evaluation: '面试评价生成',
-  generate_interview_evaluation_from_transcript: '转写评价生成',
   generate_coding_test_evaluation: '笔试代码评价',
 
 };
@@ -309,6 +308,13 @@ const SystemSettingsPage: React.FC = () => {
       if (unknownVariables.length > 0) {
         message.warning(`提示词中包含未知变量: ${unknownVariables.map(v => `{${v}}`).join(', ')}，请检查是否填写正确`);
         return;
+      }
+      if (activePromptKey === 'generate_interview_evaluation') {
+        const missingVariables = allowedVariables.filter(variable => !usedVariables.includes(variable));
+        if (missingVariables.length > 0) {
+          message.warning(`面试评价提示词缺少必需变量: ${missingVariables.map(v => `{${v}}`).join(', ')}`);
+          return;
+        }
       }
 
       setPromptSaving(true);

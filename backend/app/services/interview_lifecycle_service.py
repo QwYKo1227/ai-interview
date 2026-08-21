@@ -23,7 +23,6 @@ from app.models.models import (
     InterviewResult,
     InterviewStatus,
     Position,
-    Resume,
     User,
     UserRole,
 )
@@ -42,6 +41,7 @@ from app.services.audio_service import (
     transcribe_audio,
 )
 from app.services.ai_service import generate_text
+from app.utils.prompt_manager import prompt_manager
 from app.utils.file_storage import (
     MAX_UPLOAD_SIZE,
     UPLOAD_ROOT,
@@ -449,38 +449,116 @@ def seal_recording(db: Session, interview_id: UUID, session_id: UUID, user: User
     return interview
 
 
+class AnalysisContractError(ValueError):
+    """Raised when the model does not return the configured analysis contract."""
+
+
 def _extract_json(value: str) -> dict:
     match = re.search(r"\{.*\}", value or "", re.DOTALL)
     if not match:
-        return {"report": value}
+        raise AnalysisContractError("AI 返回内容不是合法 JSON")
     try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {"report": value}
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError as error:
+        raise AnalysisContractError("AI 返回的 JSON 格式错误") from error
+    if not isinstance(parsed, dict):
+        raise AnalysisContractError("AI 返回结果必须是 JSON 对象")
+    return parsed
 
 
-def enforce_analysis_contract(value: dict) -> dict:
-    dimensions = value.get("dimensions") if isinstance(value.get("dimensions"), dict) else {}
+def _normalized_evidence(value: object, transcript_data: dict | None = None) -> dict:
+    if not isinstance(value, dict):
+        raise AnalysisContractError("评价证据必须是对象")
+    start = value.get("start")
+    end = value.get("end")
+    quote = value.get("quote")
+    if (
+        not isinstance(start, (int, float))
+        or isinstance(start, bool)
+        or not isinstance(end, (int, float))
+        or isinstance(end, bool)
+        or start < 0
+        or end < start
+        or not isinstance(quote, str)
+        or not quote.strip()
+    ):
+        raise AnalysisContractError("评价证据缺少有效的时间点或原话")
+    normalized = {"start": float(start), "end": float(end), "quote": quote.strip()}
+    if transcript_data is not None:
+        normalized_quote = "".join(normalized["quote"].split())
+        overlapping_text = []
+        for segment in transcript_data.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            segment_text = "".join(str(segment.get("text") or "").split())
+            segment_start = segment.get("start")
+            segment_end = segment.get("end")
+            if (
+                isinstance(segment_start, (int, float))
+                and isinstance(segment_end, (int, float))
+                and normalized["start"] <= float(segment_end) + 2
+                and normalized["end"] >= float(segment_start) - 2
+            ):
+                overlapping_text.append(segment_text)
+        if normalized_quote not in "".join(overlapping_text):
+            raise AnalysisContractError("评价证据与录音转写或时间点不匹配")
+    return normalized
+
+
+def _required_text(value: dict, key: str) -> str:
+    text = value.get(key)
+    if not isinstance(text, str) or not text.strip():
+        raise AnalysisContractError(f"AI 返回结果缺少 {key}")
+    return text.strip()
+
+
+def _normalize_findings(value: dict, key: str, transcript_data: dict | None) -> list[dict]:
+    findings = value.get(key)
+    if not isinstance(findings, list) or len(findings) > 4:
+        raise AnalysisContractError(f"{key} 必须是最多 4 条的数组")
+    normalized = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise AnalysisContractError(f"{key} 中的条目格式错误")
+        normalized.append({
+            "conclusion": _required_text(finding, "conclusion"),
+            "evidence": _normalized_evidence(finding.get("evidence"), transcript_data),
+            "job_impact": _required_text(finding, "job_impact"),
+        })
+    return normalized
+
+
+def enforce_analysis_contract(value: dict, transcript_data: dict | None = None) -> dict:
+    if value.get("format_version") != 2:
+        raise AnalysisContractError("AI 返回结果缺少 format_version 2")
+    dimensions = value.get("dimensions")
+    if not isinstance(dimensions, dict):
+        raise AnalysisContractError("AI 返回结果缺少 dimensions")
     normalized = {}
     gate_missing = False
     gate_failed = False
     weighted_total = 0.0
     coverage = 0
     for key, config in SCORE_DIMENSIONS.items():
-        item = dimensions.get(key) if isinstance(dimensions.get(key), dict) else {}
+        item = dimensions.get(key)
+        if not isinstance(item, dict):
+            raise AnalysisContractError(f"AI 返回结果缺少评分维度 {key}")
         score = item.get("score")
-        evidence = [
-            evidence_item
-            for evidence_item in (item.get("evidence") or [])
-            if isinstance(evidence_item, dict)
-            and isinstance(evidence_item.get("quote"), str)
-            and evidence_item.get("quote").strip()
-            and isinstance(evidence_item.get("start"), (int, float))
-            and isinstance(evidence_item.get("end"), (int, float))
-        ]
-        if not isinstance(score, (int, float)) or not 1 <= score <= 10 or not evidence:
-            score = None
-            evidence = []
+        raw_evidence = item.get("evidence")
+        if not isinstance(raw_evidence, list):
+            raise AnalysisContractError(f"评分维度 {key} 的 evidence 必须是数组")
+        evidence = [_normalized_evidence(entry, transcript_data) for entry in raw_evidence]
+        assessment = _required_text(item, "assessment")
+        if score is None:
+            if evidence:
+                raise AnalysisContractError(f"评分维度 {key} 无评分时不能包含证据")
+        elif (
+            not isinstance(score, (int, float))
+            or isinstance(score, bool)
+            or not 1 <= score <= 10
+            or not evidence
+        ):
+            raise AnalysisContractError(f"评分维度 {key} 的评分或证据无效")
         else:
             score = round(float(score), 1)
             coverage += config["weight"]
@@ -491,22 +569,35 @@ def enforce_analysis_contract(value: dict) -> dict:
             gate_failed = True
         normalized[key] = {
             "score": score,
-            "assessment": item.get("assessment") or "",
+            "assessment": assessment,
             "evidence": evidence,
         }
     recommendation = value.get("recommendation")
     if recommendation not in {"next_round", "passed", "waitlist", "rejected", "inconclusive"}:
-        recommendation = "inconclusive"
+        raise AnalysisContractError("AI 返回的 recommendation 无效")
     if gate_missing:
         recommendation = "inconclusive"
     elif gate_failed and recommendation in {"next_round", "passed"}:
         recommendation = "waitlist"
+    questions = value.get("next_round_questions")
+    if (
+        not isinstance(questions, list)
+        or any(not isinstance(question, str) or not question.strip() for question in questions)
+    ):
+        raise AnalysisContractError("next_round_questions 必须是字符串数组")
+    if recommendation == "inconclusive" and not questions:
+        raise AnalysisContractError("证据不足时必须提供下一轮验证问题")
     return {
-        **value,
+        "format_version": 2,
         "dimensions": normalized,
         "weighted_score": round(weighted_total, 1) if coverage else None,
         "coverage": coverage,
         "recommendation": recommendation,
+        "summary": _required_text(value, "summary"),
+        "strengths": _normalize_findings(value, "strengths", transcript_data),
+        "risks": _normalize_findings(value, "risks", transcript_data),
+        "recommendation_reason": _required_text(value, "recommendation_reason"),
+        "next_round_questions": [question.strip() for question in questions],
     }
 
 
@@ -734,6 +825,12 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
                     str(stored_file_path(stored)),
                     config=get_transcription_config(db),
                 )
+            if (
+                not isinstance(transcript_data, dict)
+                or not isinstance(transcript_data.get("segments"), list)
+                or not transcript_data["segments"]
+            ):
+                raise AnalysisContractError("录音转写缺少带时间戳的有效分段")
             transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
             transcript_values = dict(interview.transcripts or {})
             if use_corrected and corrected_data:
@@ -745,21 +842,28 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
             interview.ai_analysis_status = "analyzing"
             db.commit()
 
-            resume = db.query(Resume).filter(Resume.id == interview.resume_id).first()
             position = db.query(Position).filter(Position.id == interview.position_id).first()
-            matrix = json.dumps(SCORE_DIMENSIONS, ensure_ascii=False)
-            prompt = f"""你是结构化面试分析助手。只能依据录音转写，不得引用面试官评分。
-候选人：{resume.candidate_name if resume else '未知'}
-岗位：{position.title if position else '未知'}
-评分矩阵：{matrix}
-Gate 阈值为 6 分。每个维度按 1-10 分评分；证据不足时 score 必须为 null。
-每个非空评分必须包含 evidence 数组，每条含 start、end、quote。任一 Gate 低于 6，建议不得为 passed 或 next_round；Gate 缺证据时 recommendation 必须为 inconclusive。
-输出严格 JSON：{{"dimensions":{{...}},"weighted_score":number|null,"coverage":number,"recommendation":"next_round|passed|waitlist|rejected|inconclusive","summary":string,"strengths":[string],"risks":[string]}}。
-
-转写及分段：
-{json.dumps(transcript_data, ensure_ascii=False)}"""
-            raw = generate_text(prompt, db=db)
-            analysis = enforce_analysis_contract(_extract_json(raw))
+            position_description = "\n\n".join(filter(None, [
+                position.description if position else "",
+                f"任职要求：\n{position.requirements}" if position and position.requirements else "",
+            ]))
+            prompt = prompt_manager.get_prompt(
+                "generate_interview_evaluation",
+                db=db,
+                position_title=position.title if position else "未知岗位",
+                position_description=position_description or "未提供岗位描述",
+                score_dimensions=json.dumps(SCORE_DIMENSIONS, ensure_ascii=False),
+                transcript_data=json.dumps(transcript_data, ensure_ascii=False),
+            )
+            if prompt["user"] in {"", "提示词变量缺失", "提示词格式化失败"}:
+                raise AnalysisContractError("面试评价提示词配置无效")
+            raw = generate_text(
+                prompt["user"],
+                db=db,
+                system_prompt=prompt["system"],
+                json_response=True,
+            )
+            analysis = enforce_analysis_contract(_extract_json(raw), transcript_data)
             analysis["matrix"] = SCORE_DIMENSIONS
             analysis["source"] = "corrected_transcript" if use_corrected and corrected_data else "recording_only"
             interview.ai_analysis = analysis
@@ -774,7 +878,11 @@ Gate 阈值为 6 分。每个维度按 1-10 分评分；证据不足时 score �
             interview = db.query(Interview).filter(Interview.id == interview_id).first()
             if interview:
                 interview.ai_analysis_status = "failed"
-                interview.ai_analysis_error = type(error).__name__
+                interview.ai_analysis_error = (
+                    str(error)
+                    if isinstance(error, AnalysisContractError)
+                    else "AI 分析服务异常，请稍后重试"
+                )
                 interview.status = InterviewStatus.COMPLETED
                 db.commit()
 

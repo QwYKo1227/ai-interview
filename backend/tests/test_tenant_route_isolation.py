@@ -680,6 +680,8 @@ def test_prompt_settings_get_put_and_reload_are_tenant_scoped(
 
     assert response_a.status_code == 200
     assert response_a.json()["prompts"]["tenant_prompt"]["system"] == "A system"
+    assert "generate_interview_evaluation" in response_a.json()["prompts"]
+    assert "generate_interview_evaluation_from_transcript" not in response_a.json()["prompts"]
     assert response_b.status_code == 200
     assert response_b.json()["prompts"]["tenant_prompt"]["system"] == "B system"
     assert update_a.status_code == 200
@@ -688,6 +690,24 @@ def test_prompt_settings_get_put_and_reload_are_tenant_scoped(
     db.expire_all()
     assert db.get(SystemConfig, config_a.id).prompt_configs["tenant_prompt"]["system"] == "A updated"
     assert db.get(SystemConfig, config_b.id).prompt_configs["tenant_prompt"]["system"] == "B system"
+
+
+def test_interview_evaluation_prompt_requires_all_recording_analysis_variables(
+    business_client: TestClient,
+    admin_auth_headers: dict[str, str],
+):
+    response = business_client.put(
+        "/api/settings/prompts/generate_interview_evaluation",
+        headers=admin_auth_headers,
+        json={
+            "system": "Return JSON.",
+            "user": "岗位：{position_title}\n转写：{transcript_data}",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "{position_description}" in response.json()["detail"]
+    assert "{score_dimensions}" in response.json()["detail"]
 
 
 def test_prompt_settings_first_update_initializes_new_tenant(

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, Tuple
 import os
+from string import Formatter
 
 from app.core.tenant_dependencies import get_tenant_db
 from app.core.security import check_roles
@@ -274,6 +275,30 @@ def update_prompt_config(
     if not isinstance(existing_config, dict):
         existing_config = {}
     data = payload.dict(exclude_unset=True)
+
+    if key == "generate_interview_evaluation" and "user" in data:
+        required_variables = {
+            "position_title",
+            "position_description",
+            "score_dimensions",
+            "transcript_data",
+        }
+        try:
+            used_variables = {
+                field_name
+                for _, field_name, _, _ in Formatter().parse(data["user"] or "")
+                if field_name
+            }
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="提示词中的大括号格式无效") from error
+        missing_variables = sorted(required_variables - used_variables)
+        unknown_variables = sorted(used_variables - required_variables)
+        if missing_variables:
+            missing = "、".join(f"{{{name}}}" for name in missing_variables)
+            raise HTTPException(status_code=422, detail=f"面试评价提示词缺少必需变量：{missing}")
+        if unknown_variables:
+            unknown = "、".join(f"{{{name}}}" for name in unknown_variables)
+            raise HTTPException(status_code=422, detail=f"面试评价提示词包含未知变量：{unknown}")
 
     # 更新配置
     if 'system' in data:

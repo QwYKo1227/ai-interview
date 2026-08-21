@@ -396,6 +396,9 @@ def test_final_decision_updates_resume_scheduled_from_pending_review(
 
 
 def test_ai_contract_requires_timestamp_evidence_and_enforces_gates():
+    transcript_data = {
+        "segments": [{"start": 1.0, "end": 2.0, "text": "evidence"}],
+    }
     dimensions = {
         key: {
             "score": 8,
@@ -405,16 +408,57 @@ def test_ai_contract_requires_timestamp_evidence_and_enforces_gates():
         for key in SCORE_DIMENSIONS
     }
     dimensions["technical_fit"]["score"] = 5
+    dimensions["culture_fit"]["score"] = None
     dimensions["culture_fit"]["evidence"] = []
 
     result = enforce_analysis_contract({
+        "format_version": 2,
         "dimensions": dimensions,
         "recommendation": "passed",
-    })
+        "summary": "候选人的回答能够覆盖多数评分维度，但关键技术 Gate 的论述深度未达到通过标准，需要结合目标岗位要求继续验证具体实现细节和复杂场景下的判断能力。",
+        "strengths": [{
+            "conclusion": "能够给出相关回答",
+            "evidence": {"start": 1.0, "end": 2.0, "quote": "evidence"},
+            "job_impact": "具备继续验证岗位匹配度的基础",
+        }],
+        "risks": [{
+            "conclusion": "技术深度未达到 Gate",
+            "evidence": {"start": 1.0, "end": 2.0, "quote": "evidence"},
+            "job_impact": "可能影响复杂任务的独立交付",
+        }],
+        "recommendation_reason": "关键技术 Gate 低于阈值，当前不宜直接通过；建议在后续环节围绕实际实现细节、异常处理和复杂场景决策进行针对性验证后再作判断。",
+        "next_round_questions": ["请说明复杂场景下的具体实现和异常处理。"],
+    }, transcript_data)
 
     assert result["recommendation"] == "waitlist"
     assert result["dimensions"]["culture_fit"]["score"] is None
     assert result["coverage"] == 95
+
+
+def test_ai_contract_rejects_finding_evidence_not_found_in_transcript():
+    dimensions = {
+        key: {
+            "score": 8,
+            "assessment": "Supported",
+            "evidence": [{"start": 1.0, "end": 2.0, "quote": "真实回答"}],
+        }
+        for key in SCORE_DIMENSIONS
+    }
+    with pytest.raises(ValueError, match="证据与录音转写"):
+        enforce_analysis_contract({
+            "format_version": 2,
+            "dimensions": dimensions,
+            "recommendation": "passed",
+            "summary": "综合表现说明",
+            "strengths": [{
+                "conclusion": "虚构优势",
+                "evidence": {"start": 1.0, "end": 2.0, "quote": "不存在的回答"},
+                "job_impact": "虚构影响",
+            }],
+            "risks": [],
+            "recommendation_reason": "录用建议说明",
+            "next_round_questions": [],
+        }, {"segments": [{"start": 1.0, "end": 2.0, "text": "真实回答"}]})
 
 
 def test_admin_can_correct_locked_final_decision_with_audit(

@@ -211,6 +211,57 @@ describe('InterviewResultPage', () => {
     expect(screen.getByText('评价结论：通过')).toBeInTheDocument()
     expect(screen.getByText('评价说明：技术基础扎实，沟通清晰。')).toBeInTheDocument()
   })
+
+  it('shows the detailed evidence-based AI interview evaluation for version 2 analyses', async () => {
+    vi.mocked(request.get).mockResolvedValue({
+      ...interviewPayload,
+      lifecycle_state: 'ended',
+      ai_analysis_status: 'completed',
+      ai_analysis_version: 2,
+      ai_analysis: {
+        format_version: 2,
+        dimensions: {},
+        weighted_score: 7.2,
+        coverage: 90,
+        recommendation: 'next_round',
+        summary: '候选人能够说明嵌入式项目的基础实现，但关键工程细节仍需继续验证。',
+        strengths: [{
+          conclusion: '具备 Bootloader 分包思路',
+          evidence: { start: 1960, end: 1963, quote: '需要进行一个分包操作' },
+          job_impact: '能够支撑固件升级功能的基础开发',
+        }],
+        risks: [{
+          conclusion: '未说明校验与恢复边界',
+          evidence: { start: 1999, end: 2003, quote: '失败的话，我会选择重传' },
+          job_impact: '可能影响升级链路的可靠性',
+        }],
+        recommendation_reason: '建议进入下一轮，重点验证工程实现深度。',
+        next_round_questions: ['Bootloader 如何完成分包校验与断点恢复？'],
+      },
+    })
+
+    renderResult()
+
+    expect(await screen.findByText('AI 面试评价')).toBeInTheDocument()
+    expect(screen.getByText('综合表现')).toBeInTheDocument()
+    expect(screen.getByText('主要优势')).toBeInTheDocument()
+    expect(screen.getByText('风险与不足')).toBeInTheDocument()
+    expect(screen.getByText('具备 Bootloader 分包思路')).toBeInTheDocument()
+    expect(screen.getByText('“需要进行一个分包操作”')).toBeInTheDocument()
+    expect(screen.getByText('Bootloader 如何完成分包校验与断点恢复？')).toBeInTheDocument()
+  })
+
+  it('marks interviews without recording evidence as not analyzed', async () => {
+    vi.mocked(request.get).mockResolvedValue({
+      ...interviewPayload,
+      lifecycle_state: 'ended',
+      ai_analysis_status: 'not_applicable',
+    })
+
+    renderResult()
+
+    expect(await screen.findByText('无录音证据，未执行 AI 分析')).toBeInTheDocument()
+  })
 })
 
 describe('mergeAdjacentTranscriptSegments', () => {

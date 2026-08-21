@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import StaticPool
 
 # 确保可以导入 app 模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +34,7 @@ from app.models.tenant_models import (
     PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
 )
 from app.models.file_models import StoredFile
+from app.config import database as database_config
 from app.config.database import get_db
 from app.config.tenant_session import TenantCapableSession
 from app.core.security import get_password_hash, create_access_token
@@ -46,8 +48,13 @@ SQLALCHEMY_DATABASE_URL = "sqlite:///file:test_db?mode=memory&cache=shared&uri=t
 test_engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
-    poolclass=None  # 使用默认连接池
+    poolclass=StaticPool,
 )
+
+# Keep request-scoped TenantSessionLocal calls on the same thread-safe test
+# engine. Otherwise TestClient workers open a second SQLite pool against the
+# shared in-memory database and can close connections still owned by fixtures.
+database_config.engine = test_engine
 
 # 创建测试会话工厂
 TestingSessionLocal = sessionmaker(

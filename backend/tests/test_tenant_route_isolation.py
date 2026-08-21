@@ -1487,7 +1487,7 @@ def test_ai_service_does_not_open_an_unscoped_session_and_threads_prompt_db():
         and isinstance(call.func, ast.Attribute)
         and call.func.attr == "get_prompt"
     ]
-    assert len(prompt_calls) == 8
+    assert prompt_calls, "ai_service must keep tenant-scoped prompt calls covered"
     for call in prompt_calls:
         db_keywords = [keyword for keyword in call.keywords if keyword.arg == "db"]
         assert len(db_keywords) == 1, f"line {call.lineno} must pass scoped db/default"

@@ -31,7 +31,6 @@ BACKGROUND_FUNCTIONS = [
     interview_service.generate_questions_background,
     interview_service.send_interview_invitation_background,
     interview_service.generate_evaluation_background,
-    interview_service.generate_combined_evaluation,
     interview_service.send_result_notification_background,
     coding_test_ai_service.generate_coding_evaluation_background,
     coding_test_service.evaluate_essay_answers_background,

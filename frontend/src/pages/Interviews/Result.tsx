@@ -24,6 +24,7 @@ const scoreDimensions = [
 const decisionLabels: Record<string, string> = {
   next_round: '进入下一轮',
   passed: '通过',
+  waitlist: '备选',
   rejected: '淘汰',
   inconclusive: '证据不足',
 };
@@ -768,7 +769,7 @@ const InterviewResultPage: React.FC = () => {
             <Alert type="error" showIcon message="AI 分析失败" description={interview.ai_analysis_error || '请联系 HR/Admin 重试'} />
           )}
           {interview.ai_analysis_status === 'not_applicable' && (
-            <Alert type="info" showIcon message="本次面试使用人工评分或历史评价流程，未执行录音 AI 分析" />
+            <Alert type="info" showIcon message="无录音证据，未执行 AI 分析" />
           )}
           {interview.ai_analysis_status === 'completed' && (
             <>
@@ -798,7 +799,70 @@ const InterviewResultPage: React.FC = () => {
                 <Descriptions.Item label="证据覆盖率">{analysis.coverage == null ? '—' : `${analysis.coverage}%`}</Descriptions.Item>
                 <Descriptions.Item label="分析版本">v{interview.ai_analysis_version}</Descriptions.Item>
               </Descriptions>
-              {(analysis.summary || analysis.report) && <Paragraph style={{ marginTop: 16, whiteSpace: 'pre-wrap' }}>{analysis.summary || analysis.report}</Paragraph>}
+              {analysis.format_version === 2 ? (
+                <section style={{ marginTop: 24 }}>
+                  <Title level={4}>AI 面试评价</Title>
+
+                  <Title level={5}>综合表现</Title>
+                  <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{analysis.summary}</Paragraph>
+
+                  <Title level={5}>主要优势</Title>
+                  {(analysis.strengths || []).length > 0 ? (
+                    <List
+                      dataSource={analysis.strengths}
+                      renderItem={(item: any) => (
+                        <List.Item>
+                          <div style={{ width: '100%' }}>
+                            <Text strong>{item.conclusion}</Text>
+                            <div style={{ marginTop: 6, padding: 8, background: '#F0FDF4', borderRadius: 6 }}>
+                              <Text type="secondary">{formatTranscriptTime(item.evidence?.start)}–{formatTranscriptTime(item.evidence?.end)}</Text>
+                              <div>“{item.evidence?.quote}”</div>
+                            </div>
+                            <Paragraph style={{ margin: '6px 0 0' }}>岗位影响：{item.job_impact}</Paragraph>
+                          </div>
+                        </List.Item>
+                      )}
+                    />
+                  ) : <Text type="secondary">未发现有充分录音证据支撑的明确优势</Text>}
+
+                  <Title level={5} style={{ marginTop: 20 }}>风险与不足</Title>
+                  {(analysis.risks || []).length > 0 ? (
+                    <List
+                      dataSource={analysis.risks}
+                      renderItem={(item: any) => (
+                        <List.Item>
+                          <div style={{ width: '100%' }}>
+                            <Text strong>{item.conclusion}</Text>
+                            <div style={{ marginTop: 6, padding: 8, background: '#FFF7ED', borderRadius: 6 }}>
+                              <Text type="secondary">{formatTranscriptTime(item.evidence?.start)}–{formatTranscriptTime(item.evidence?.end)}</Text>
+                              <div>“{item.evidence?.quote}”</div>
+                            </div>
+                            <Paragraph style={{ margin: '6px 0 0' }}>岗位影响：{item.job_impact}</Paragraph>
+                          </div>
+                        </List.Item>
+                      )}
+                    />
+                  ) : <Text type="secondary">未发现有充分录音证据支撑的明确风险</Text>}
+
+                  <Title level={5} style={{ marginTop: 20 }}>录用建议</Title>
+                  <Paragraph>
+                    <Tag color="blue">{decisionLabels[analysis.recommendation] || analysis.recommendation}</Tag>
+                    {analysis.recommendation_reason}
+                  </Paragraph>
+                  {(analysis.next_round_questions || []).length > 0 && (
+                    <>
+                      <Text strong>下一轮重点验证</Text>
+                      <List
+                        size="small"
+                        dataSource={analysis.next_round_questions}
+                        renderItem={(question: string) => <List.Item>{question}</List.Item>}
+                      />
+                    </>
+                  )}
+                </section>
+              ) : (
+                (analysis.summary || analysis.report) && <Paragraph style={{ marginTop: 16, whiteSpace: 'pre-wrap' }}>{analysis.summary || analysis.report}</Paragraph>
+              )}
             </>
           )}
         </Card>

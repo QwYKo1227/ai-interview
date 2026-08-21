@@ -123,60 +123,49 @@ DEFAULT_PROMPTS = {
 }}"""
         },
         "generate_interview_evaluation": {
-            "system": "你是一个资深的面试官，正在进行面试复盘和综合评估。",
-            "user": """请根据以下面试详细信息，生成一份专业的面试综合评价报告。
+            "system": """你是严谨的结构化面试分析助手。只能依据岗位信息、评分矩阵和带时间戳的录音转写进行评价，不得使用候选人姓名、简历内容、面试官评分或人工评价，不得补充转写中不存在的事实。必须返回一个合法 JSON 对象，不要输出 Markdown 代码块或任何 JSON 之外的文字。""",
+            "user": """请根据以下信息生成专业、具体且可追溯的 AI 面试评价。
 
-### 1. 面试题目及标准
-{questions}
+## 应聘岗位
+{position_title}
 
-### 2. 面试官评分概览
-{scores}
+## 岗位描述与任职要求
+{position_description}
 
-### 3. 面试官详细评语 (按题目分组)
-{panel_details}
+## 评分矩阵
+{score_dimensions}
 
-### 4. 候选人回答录音转写 (部分题目可能有)
-{transcripts}
+## 带时间戳的录音转写
+{transcript_data}
 
-### 5. 综合总分
-{total_score}
+评价规则：
+1. Gate 阈值为 6 分。每个维度按 1-10 分评分；证据不足时 score 必须为 null。
+2. 每个非空维度评分必须提供至少一条 evidence，每条必须包含 start、end、quote，且 quote 必须是转写中的原话。
+3. 任一 Gate 维度低于 6 分时，recommendation 不得为 passed 或 next_round；任一 Gate 维度缺少证据时，recommendation 必须为 inconclusive。
+4. summary 为 100-150 字左右的综合表现，不要只复述分数。
+5. strengths 和 risks 在证据充足时各给出 2-4 条。每条必须包含 conclusion、evidence、job_impact；evidence 必须有 start、end、quote。证据不足时宁可少写或不写，禁止推测。
+6. recommendation_reason 为 80-120 字左右，说明建议及其岗位依据。
+7. next_round_questions 给出需要在下一轮验证的具体问题；recommendation 为 inconclusive 时至少提供一条。
+8. 只评价与岗位和评分矩阵相关的表现，避免空泛措辞。
 
-请综合考虑面试官的评分、具体评语以及候选人的实际回答内容（如果有转写文本），生成一份客观、全面的评价。
-
-**要求**：
-1. **综合分析**：不要仅复述分数，要结合评语和候选人回答内容分析其技术深度、表达能力和项目经验。
-2. **回答质量评估**：如果提供了候选人的回答转写，请特别点评其回答的逻辑性、准确性和完整性。
-3. **优缺点总结**：明确列出候选人的主要优势和待改进之处。
-4. **最终建议**：给出明确的录用建议。
-
-请返回 JSON 格式，包含:
-- evaluation: 综合评价内容 (Markdown 格式，包含 '### 🌟 综合表现'、'### 💬 回答质量点评'、'### ✅ 优势'、'### ⚠️ 不足' 四个部分)
-- suggestion: 录用建议 (passed/rejected/waitlist)"""
-        },
-        "generate_interview_evaluation_from_transcript": {
-            "system": "你是一个资深的面试官，正在进行面试复盘和综合评估。",
-            "user": """请根据以下面试录音转写内容和面试官评价，生成一份专业的面试综合评价报告。
-
-### 1. 面试录音转写
-{transcript}
-
-### 2. 面试官评价
-{interviewer_evaluation}
-
-### 3. 面试官评分
-{interviewer_score} 分 (满分10分)
-
-请综合分析候选人在面试中的表现，结合面试官的评价，生成一份客观、全面的评价报告。
-
-**要求**：
-1. **综合分析**：根据对话内容分析候选人的技术能力、沟通能力、逻辑思维等。
-2. **回答质量评估**：点评候选人回答问题的逻辑性、准确性和完整性。
-3. **优缺点总结**：明确列出候选人的主要优势和待改进之处。
-4. **最终建议**：给出明确的录用建议。
-
-请返回 JSON 格式，包含:
-- evaluation: 综合评价内容 (Markdown 格式，包含 '### 🌟 综合表现'、'### 💬 回答质量点评'、'### ✅ 优势'、'### ⚠️ 不足' 四个部分)
-- suggestion: 录用建议 (passed/rejected/waitlist)"""
+严格返回以下 JSON 结构（字段名不得修改或删除）：
+{{
+  "format_version": 2,
+  "dimensions": {{
+    "technical_fit": {{"score": 1-10或null, "assessment": "具体评价", "evidence": [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]}},
+    "problem_solving": {{"score": 1-10或null, "assessment": "具体评价", "evidence": [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]}},
+    "learning_ability": {{"score": 1-10或null, "assessment": "具体评价", "evidence": [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]}},
+    "engineering_mindset": {{"score": 1-10或null, "assessment": "具体评价", "evidence": [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]}},
+    "collaboration": {{"score": 1-10或null, "assessment": "具体评价", "evidence": [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]}},
+    "culture_fit": {{"score": 1-10或null, "assessment": "具体评价", "evidence": [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]}}
+  }},
+  "recommendation": "next_round|passed|waitlist|rejected|inconclusive",
+  "summary": "综合表现",
+  "strengths": [{{"conclusion": "优势结论", "evidence": {{"start": 数字, "end": 数字, "quote": "转写原话"}}, "job_impact": "对目标岗位的正向影响"}}],
+  "risks": [{{"conclusion": "风险或不足", "evidence": {{"start": 数字, "end": 数字, "quote": "转写原话"}}, "job_impact": "对目标岗位的风险"}}],
+  "recommendation_reason": "录用建议说明",
+  "next_round_questions": ["下一轮具体验证问题"]
+}}"""
         },
         "generate_coding_test_evaluation": {
             "system": "你是一个资深算法面试官，擅长评估候选人代码质量与算法能力。",
@@ -256,11 +245,10 @@ class PromptManager:
 
         tenant_id = self._tenant_id(db)
         config = get_system_config(db)
-        prompts = (
-            dict(config.prompt_configs)
-            if config is not None and config.prompt_configs
-            else self.default_prompts()
-        )
+        prompts = self.default_prompts()
+        stored_prompts = dict(config.prompt_configs or {}) if config is not None else {}
+        stored_prompts.pop("generate_interview_evaluation_from_transcript", None)
+        prompts.update(stored_prompts)
         self._db_prompts[tenant_id] = prompts
         return prompts
 

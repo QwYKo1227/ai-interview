@@ -239,7 +239,7 @@ def aggregate_panel_scores(db: Session, interview_id: UUID, background_tasks: Ba
         return db_interview
     return None
 from fastapi import HTTPException
-from app.services.ai_service import generate_interview_questions, generate_interview_evaluation
+from app.services.ai_service import generate_interview_questions
 from app.services.resume_service import read_file_content
 import json
 from datetime import timezone
@@ -981,8 +981,6 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
         db.commit()
             
         scores = score_data.get('scores', {})
-        panel_details = score_data.get('panel_details', "")
-        transcripts = score_data.get('transcripts', "")
         
         if not scores:
             db_interview.result = InterviewResult.PENDING
@@ -996,22 +994,10 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
         
         db_interview.total_score = average_score
         
-        try:
-            questions = db_interview.questions or []
-            evaluation_result = generate_interview_evaluation(
-                questions,
-                scores,
-                average_score,
-                panel_details=panel_details,
-                transcripts=transcripts,
-                db=db,
-            )
-            db_interview.evaluation = evaluation_result.get("evaluation")
-            db_interview.suggestion = evaluation_result.get("suggestion")
-        except Exception:
-            print(f"Evaluation generation failed for interview {interview_id}")
-            db_interview.evaluation = "AI评价生成失败，请手动填写评价"
-            db_interview.suggestion = "waitlist"
+        # Legacy score-only interviews have no sealed recording evidence and
+        # must not invoke the recording analysis prompt.
+        db_interview.evaluation = "无录音证据，未执行 AI 分析"
+        db_interview.suggestion = "waitlist"
         
         db_interview.result = InterviewResult.PENDING
         mark_legacy_interview_completed(db_interview)
@@ -1025,46 +1011,6 @@ def _generate_evaluation_background(db: Session, interview_id: UUID, score_data:
             extra={"resource_id": str(interview_id)},
         )
         raise RuntimeError("interview background task failed") from None
-
-
-@background_task_context
-def generate_combined_evaluation(tenant_id: UUID, interview_id: UUID, transcript: str, interviewer_evaluation: str, interviewer_suggestion: str, interviewer_score: int):
-    """
-    后台任务：结合录音转写和面试官评价生成综合评价
-    """
-    from app.services.ai_service import generate_interview_evaluation_from_transcript
-    
-    with tenant_session(tenant_id) as db:
-        db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
-        if not db_interview:
-            logger.warning(
-                "Combined interview evaluation resource not found",
-                extra={"tenant_id": str(tenant_id), "resource_id": str(interview_id)},
-            )
-            return
-        
-        if db_interview.status != InterviewStatus.ANALYZING:
-            db_interview.status = InterviewStatus.ANALYZING
-        mark_legacy_interview_ended(db_interview)
-        db.commit()
-        
-        try:
-            evaluation_result = generate_interview_evaluation_from_transcript(
-                transcript,
-                interviewer_evaluation,
-                interviewer_score,
-                db=db,
-            )
-            db_interview.evaluation = evaluation_result.get("evaluation", interviewer_evaluation)
-            db_interview.suggestion = evaluation_result.get("suggestion", interviewer_suggestion)
-        except Exception:
-            print("Combined evaluation generation failed")
-            db_interview.evaluation = interviewer_evaluation
-            db_interview.suggestion = interviewer_suggestion
-        
-        db_interview.result = InterviewResult.PENDING
-        mark_legacy_interview_completed(db_interview)
-        db.commit()
 
 
 def confirm_interview_result(db: Session, interview_id: UUID, result: str, background_tasks: BackgroundTasks = None):

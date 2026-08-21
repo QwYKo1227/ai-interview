@@ -424,22 +424,10 @@ def mock_ai_service(monkeypatch):
             {"title": "测试问题2", "content": "问题内容2", "reference_answer": "参考答案2"}
         ]
 
-    def mock_generate_evaluation(*args, **kwargs):
-        return {
-            "evaluation": "候选人表现良好，建议录用。",
-            "suggestion": "建议加强技术深度。"
-        }
-
     monkeypatch.setattr(
         "app.services.interview_service.generate_interview_questions",
         mock_generate_questions
     )
-    monkeypatch.setattr(
-        "app.services.interview_service.generate_interview_evaluation",
-        mock_generate_evaluation
-    )
-
-
 class MockBackgroundTasks:
     """
     Mock BackgroundTasks，用于测试中收集后台任务而不实际执行

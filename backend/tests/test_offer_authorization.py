@@ -174,6 +174,63 @@ def test_admin_can_override_an_assigned_manager_and_status_cannot_be_edited(
     assert bypass.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
+def test_owner_can_edit_pending_offer_and_clear_optional_fields(
+    client: TestClient, db, auth_headers: dict,
+    test_position, test_resume, test_user
+):
+    offer = Offer(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        position_id=test_position.id,
+        candidate_name=test_resume.candidate_name,
+        candidate_email=test_resume.email,
+        position_title=test_position.title,
+        department="原部门",
+        notes="待清空",
+        status=OfferStatus.PENDING,
+        created_by=test_user.id,
+    )
+    db.add(offer)
+    db.commit()
+
+    response = client.put(
+        f"/api/offers/{offer.id}",
+        headers=auth_headers,
+        json={
+            "position_title": "高级研发工程师",
+            "department": "研发中心",
+            "salary_monthly": 30000,
+            "notes": None,
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["position_title"] == "高级研发工程师"
+    assert response.json()["department"] == "研发中心"
+    assert response.json()["salary_monthly"] == "30000.0"
+    assert response.json()["notes"] is None
+    db.refresh(offer)
+    assert offer.notes is None
+
+
+def test_accepted_offer_can_be_edited(
+    client: TestClient, db, auth_headers: dict,
+    test_position, test_resume, test_user
+):
+    offer = _sent_offer(db, test_position, test_resume, test_user)
+    offer.status = OfferStatus.ACCEPTED
+    db.commit()
+
+    response = client.put(
+        f"/api/offers/{offer.id}",
+        headers=auth_headers,
+        json={"salary_monthly": 30000},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["salary_monthly"] == "30000.0"
+
+
 def test_offer_template_routes_forbid_interviewer(
     client: TestClient, interviewer_auth_headers: dict
 ):

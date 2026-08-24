@@ -142,6 +142,7 @@ const OffersList: React.FC = () => {
   const [rejectForm] = Form.useForm();
   const [acceptForm] = Form.useForm();
   const [onboardingForm] = Form.useForm();
+  const [editSubmitting, setEditSubmitting] = useState(false);
 
   const confirmOnboarding = async () => {
     if (!currentOffer) return;
@@ -275,19 +276,24 @@ const OffersList: React.FC = () => {
 
   const handleEdit = async (values: any) => {
     if (!currentOffer) return;
+    setEditSubmitting(true);
     try {
       const data = {
         ...values,
-        onboard_date: values.onboard_date?.toISOString(),
-        valid_until: values.valid_until?.toISOString(),
+        onboard_date: values.onboard_date?.toISOString() ?? null,
+        valid_until: values.valid_until?.toISOString() ?? null,
       };
       await request.put(`/offers/${currentOffer.id}`, data);
       message.success('Offer更新成功');
       setEditModalVisible(false);
       editForm.resetFields();
+      setCurrentOffer(null);
       fetchOffers();
+      fetchStats();
     } catch (error: any) {
       message.error(error.response?.data?.detail || '更新失败');
+    } finally {
+      setEditSubmitting(false);
     }
   };
 
@@ -525,11 +531,11 @@ const OffersList: React.FC = () => {
           <Tooltip title="查看详情">
             <Button type="text" icon={<EyeOutlined />} onClick={() => openDetailDrawer(record)} />
           </Tooltip>
+          {canManageOffer && <Tooltip title="编辑">
+            <Button aria-label={`编辑 ${record.candidate_name} 的 Offer`} type="text" icon={<EditOutlined />} onClick={() => openEditModal(record)} />
+          </Tooltip>}
           {['draft', 'pending'].includes(record.status) && (
             <>
-              {canManageOffer && record.status === 'draft' && <Tooltip title="编辑">
-                <Button type="text" icon={<EditOutlined />} onClick={() => openEditModal(record)} />
-              </Tooltip>}
               {canManageOffer && <Tooltip title="变更为Offer待确认">
                 <Button type="text" icon={<SwapOutlined />} onClick={() => {
                   setCurrentOffer(record);
@@ -880,11 +886,36 @@ const OffersList: React.FC = () => {
       <Modal
         title="编辑Offer"
         open={editModalVisible}
-        onCancel={() => setEditModalVisible(false)}
+        onCancel={() => {
+          setEditModalVisible(false);
+          editForm.resetFields();
+          setCurrentOffer(null);
+        }}
         onOk={() => editForm.submit()}
+        confirmLoading={editSubmitting}
+        okText="保存"
+        cancelText="取消"
         width={700}
       >
         <Form form={editForm} layout="vertical" onFinish={handleEdit}>
+          <Alert
+            type="info"
+            showIcon
+            title={`正在编辑 ${currentOffer?.candidate_name || ''} 的 Offer`}
+            style={{ marginBottom: 16 }}
+          />
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="position_title" label="岗位名称" rules={[{ required: true, message: '请填写岗位名称' }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="department" label="部门">
+                <Input />
+              </Form.Item>
+            </Col>
+          </Row>
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item name="salary_monthly" label="月薪(元)">

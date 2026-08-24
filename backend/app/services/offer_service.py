@@ -267,21 +267,24 @@ def update_offer(db: Session, offer_id: UUID, offer_data: OfferUpdate) -> Option
     if not offer:
         return None
     
-    if offer.status not in [OfferStatus.DRAFT, OfferStatus.PENDING]:
-        raise ValueError("当前状态不允许修改")
-    
     update_fields = [
         'salary_monthly', 'salary_annual', 'salary_structure', 'position_title',
         'department', 'report_to', 'work_location', 'work_hours', 'onboard_date',
         'probation_months', 'benefits', 'bonus', 'special_terms', 'notes', 'valid_until'
     ]
     
+    # Only update fields present in the request. Explicit null values are kept so
+    # optional content (for example notes or an onboarding date) can be cleared.
+    submitted_fields = offer_data.model_fields_set
     for field in update_fields:
-        value = getattr(offer_data, field, None)
-        if value is not None:
-            if field in ['salary_monthly', 'salary_annual'] and value is not None:
-                value = float(value)
-            setattr(offer, field, value)
+        if field not in submitted_fields:
+            continue
+        value = getattr(offer_data, field)
+        if field == 'position_title' and value is None:
+            raise ValueError("岗位名称不能为空")
+        if field in ['salary_monthly', 'salary_annual'] and value is not None:
+            value = float(value)
+        setattr(offer, field, value)
     
     db.commit()
     db.refresh(offer)

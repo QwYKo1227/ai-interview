@@ -200,6 +200,7 @@ def test_owner_can_edit_pending_offer_and_clear_optional_fields(
             "position_title": "高级研发工程师",
             "department": "研发中心",
             "salary_monthly": 30000,
+            "onboard_date": "2026-08-31",
             "notes": None,
         },
     )
@@ -208,8 +209,10 @@ def test_owner_can_edit_pending_offer_and_clear_optional_fields(
     assert response.json()["position_title"] == "高级研发工程师"
     assert response.json()["department"] == "研发中心"
     assert response.json()["salary_monthly"] == "30000.0"
+    assert response.json()["onboard_date"].startswith("2026-08-31")
     assert response.json()["notes"] is None
     db.refresh(offer)
+    assert offer.onboard_date.date().isoformat() == "2026-08-31"
     assert offer.notes is None
 
 

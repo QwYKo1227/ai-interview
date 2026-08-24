@@ -14,6 +14,7 @@ import request from '../../utils/request';
 import dayjs from 'dayjs';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatOfferDateTime } from './offerTime';
+import { serializeOfferDate } from './offerDate';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -260,8 +261,8 @@ const OffersList: React.FC = () => {
     try {
       const data = {
         ...values,
-        onboard_date: values.onboard_date?.toISOString(),
-        valid_until: values.valid_until?.toISOString(),
+        onboard_date: serializeOfferDate(values.onboard_date),
+        valid_until: serializeOfferDate(values.valid_until),
       };
       await request.post('/offers', data);
       message.success('Offer创建成功');
@@ -280,8 +281,8 @@ const OffersList: React.FC = () => {
     try {
       const data = {
         ...values,
-        onboard_date: values.onboard_date?.toISOString() ?? null,
-        valid_until: values.valid_until?.toISOString() ?? null,
+        onboard_date: serializeOfferDate(values.onboard_date),
+        valid_until: serializeOfferDate(values.valid_until),
       };
       await request.put(`/offers/${currentOffer.id}`, data);
       message.success('Offer更新成功');

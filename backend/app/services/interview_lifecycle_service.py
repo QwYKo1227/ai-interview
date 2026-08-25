@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
@@ -352,12 +353,31 @@ def force_end_interview(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin or HR access required")
 
     interview = _locked_interview(db, interview_id)
-    if interview.lifecycle_state == "ended":
+    if interview.lifecycle_state == "ended" and not interview.recording_chunks:
         return interview
-    if interview.lifecycle_state not in {"in_progress", "ending"}:
+    if interview.lifecycle_state not in {"in_progress", "ending", "ended"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only an interview in progress can be force-ended",
+        )
+
+    if interview.recording_chunks:
+        interview.lifecycle_state = "ending"
+        interview.recording_state = "ending"
+        interview.end_reason = reason.strip()
+        interview.ai_analysis_status = "pending"
+        interview.ai_analysis_error = None
+        interview.asr_job_id = None
+        interview.asr_job_status = "pending"
+        interview.asr_job_attempts = 0
+        interview.asr_job_next_poll_at = utcnow()
+        interview.asr_job_delete_pending = False
+        db.commit()
+        return seal_recording(
+            db,
+            interview.id,
+            interview.recording_session_id or uuid4(),
+            user,
         )
 
     now = utcnow()
@@ -369,7 +389,7 @@ def force_end_interview(
     interview.recording_reservation_expires_at = None
     interview.recording_heartbeat_at = None
     interview.ai_analysis_status = "failed"
-    interview.ai_analysis_error = "Interview was force-ended without a sealed recording"
+    interview.ai_analysis_error = "Interview was force-ended without any recording chunks"
     interview.asr_job_status = "failed"
     interview.asr_job_next_poll_at = None
     interview.status = InterviewStatus.COMPLETED
@@ -466,43 +486,104 @@ def _extract_json(value: str) -> dict:
     return parsed
 
 
-def _normalized_evidence(value: object, transcript_data: dict | None = None) -> dict:
+def _evidence_match_text(value: object) -> str:
+    """Normalize harmless ASR/LLM punctuation differences for quote matching."""
+    return "".join(
+        character.casefold()
+        for character in str(value or "")
+        if not character.isspace()
+        and not unicodedata.category(character).startswith("P")
+    )
+
+
+def _normalized_evidence(
+    value: object,
+    transcript_data: dict | None = None,
+) -> dict | None:
+    """Resolve one model quote to authoritative transcript segment timestamps."""
     if not isinstance(value, dict):
-        raise AnalysisContractError("评价证据必须是对象")
+        return None
+    quote = value.get("quote")
+    if not isinstance(quote, str) or not quote.strip():
+        return None
+
     start = value.get("start")
     end = value.get("end")
-    quote = value.get("quote")
-    if (
-        not isinstance(start, (int, float))
-        or isinstance(start, bool)
-        or not isinstance(end, (int, float))
-        or isinstance(end, bool)
-        or start < 0
-        or end < start
-        or not isinstance(quote, str)
-        or not quote.strip()
-    ):
-        raise AnalysisContractError("评价证据缺少有效的时间点或原话")
-    normalized = {"start": float(start), "end": float(end), "quote": quote.strip()}
-    if transcript_data is not None:
-        normalized_quote = "".join(normalized["quote"].split())
-        overlapping_text = []
-        for segment in transcript_data.get("segments") or []:
-            if not isinstance(segment, dict):
-                continue
-            segment_text = "".join(str(segment.get("text") or "").split())
-            segment_start = segment.get("start")
-            segment_end = segment.get("end")
-            if (
-                isinstance(segment_start, (int, float))
-                and isinstance(segment_end, (int, float))
-                and normalized["start"] <= float(segment_end) + 2
-                and normalized["end"] >= float(segment_start) - 2
-            ):
-                overlapping_text.append(segment_text)
-        if normalized_quote not in "".join(overlapping_text):
-            raise AnalysisContractError("评价证据与录音转写或时间点不匹配")
-    return normalized
+    claimed_range_valid = (
+        isinstance(start, (int, float))
+        and not isinstance(start, bool)
+        and isinstance(end, (int, float))
+        and not isinstance(end, bool)
+        and start >= 0
+        and end >= start
+    )
+    if transcript_data is None:
+        if not claimed_range_valid:
+            return None
+        return {"start": float(start), "end": float(end), "quote": quote.strip()}
+
+    normalized_quote = _evidence_match_text(quote)
+    if not normalized_quote:
+        return None
+    indexed_segments = []
+    transcript_text = ""
+    for segment in transcript_data.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        segment_start = segment.get("start")
+        segment_end = segment.get("end")
+        if (
+            not isinstance(segment_start, (int, float))
+            or isinstance(segment_start, bool)
+            or not isinstance(segment_end, (int, float))
+            or isinstance(segment_end, bool)
+            or segment_start < 0
+            or segment_end < segment_start
+        ):
+            continue
+        segment_text = _evidence_match_text(segment.get("text"))
+        if not segment_text:
+            continue
+        text_start = len(transcript_text)
+        transcript_text += segment_text
+        indexed_segments.append({
+            "text_start": text_start,
+            "text_end": len(transcript_text),
+            "start": float(segment_start),
+            "end": float(segment_end),
+        })
+
+    candidates = []
+    search_from = 0
+    while True:
+        match_start = transcript_text.find(normalized_quote, search_from)
+        if match_start < 0:
+            break
+        match_end = match_start + len(normalized_quote)
+        matched_segments = [
+            segment
+            for segment in indexed_segments
+            if segment["text_end"] > match_start and segment["text_start"] < match_end
+        ]
+        if matched_segments:
+            resolved_start = matched_segments[0]["start"]
+            resolved_end = matched_segments[-1]["end"]
+            distance = (
+                abs(resolved_start - float(start)) + abs(resolved_end - float(end))
+                if claimed_range_valid
+                else resolved_start
+            )
+            candidates.append((distance, resolved_start, resolved_end))
+        search_from = match_start + 1
+
+    if not candidates:
+        return None
+    _, resolved_start, resolved_end = min(candidates, key=lambda item: item[0])
+    return {
+        "start": resolved_start,
+        "end": resolved_end,
+        "quote": quote.strip(),
+    }
 
 
 def _required_text(value: dict, key: str) -> str:
@@ -520,9 +601,12 @@ def _normalize_findings(value: dict, key: str, transcript_data: dict | None) -> 
     for finding in findings:
         if not isinstance(finding, dict):
             raise AnalysisContractError(f"{key} 中的条目格式错误")
+        evidence = _normalized_evidence(finding.get("evidence"), transcript_data)
+        if evidence is None:
+            continue
         normalized.append({
             "conclusion": _required_text(finding, "conclusion"),
-            "evidence": _normalized_evidence(finding.get("evidence"), transcript_data),
+            "evidence": evidence,
             "job_impact": _required_text(finding, "job_impact"),
         })
     return normalized
@@ -547,18 +631,23 @@ def enforce_analysis_contract(value: dict, transcript_data: dict | None = None) 
         raw_evidence = item.get("evidence")
         if not isinstance(raw_evidence, list):
             raise AnalysisContractError(f"评分维度 {key} 的 evidence 必须是数组")
-        evidence = [_normalized_evidence(entry, transcript_data) for entry in raw_evidence]
+        evidence = [
+            normalized_evidence
+            for entry in raw_evidence
+            if (normalized_evidence := _normalized_evidence(entry, transcript_data))
+            is not None
+        ]
         assessment = _required_text(item, "assessment")
         if score is None:
-            if evidence:
-                raise AnalysisContractError(f"评分维度 {key} 无评分时不能包含证据")
+            evidence = []
         elif (
             not isinstance(score, (int, float))
             or isinstance(score, bool)
             or not 1 <= score <= 10
-            or not evidence
         ):
             raise AnalysisContractError(f"评分维度 {key} 的评分或证据无效")
+        elif not evidence:
+            score = None
         else:
             score = round(float(score), 1)
             coverage += config["weight"]
@@ -586,7 +675,7 @@ def enforce_analysis_contract(value: dict, transcript_data: dict | None = None) 
     ):
         raise AnalysisContractError("next_round_questions 必须是字符串数组")
     if recommendation == "inconclusive" and not questions:
-        raise AnalysisContractError("证据不足时必须提供下一轮验证问题")
+        questions = ["请在下一轮围绕证据不足的关键维度补充具体案例和实现细节。"]
     return {
         "format_version": 2,
         "dimensions": normalized,

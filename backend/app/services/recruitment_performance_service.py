@@ -16,8 +16,6 @@ from app.models.models import (
     OfferStatus,
     Position,
     PositionCategory,
-    PositionEvent,
-    PositionEventType,
     RecruitmentHcSlot,
     RecruitmentPause,
     RecruitmentPerformanceConfig,
@@ -357,35 +355,6 @@ def _time_coefficient(actual_days: int, target_days: int, coefficients: dict) ->
     return float(coefficients[key])
 
 
-def _owner_spans(db: Session, position: Position, start: datetime, end: datetime) -> list[tuple[UUID, datetime, datetime]]:
-    events = (
-        db.query(PositionEvent)
-        .filter(
-            PositionEvent.position_id == position.id,
-            PositionEvent.event_type.in_([PositionEventType.INITIAL_OWNER, PositionEventType.OWNER_CHANGED]),
-            PositionEvent.occurred_at < end,
-        )
-        .order_by(PositionEvent.occurred_at, PositionEvent.id)
-        .all()
-    )
-    owner = None
-    cursor = start
-    spans = []
-    for event in events:
-        event_at = _aware(event.occurred_at)
-        if event_at <= start:
-            owner = event.new_value
-            continue
-        if owner and event_at > cursor:
-            spans.append((UUID(owner), cursor, min(event_at - timedelta(microseconds=1), end)))
-        owner = event.new_value
-        cursor = event_at
-    owner = owner or (str(position.hiring_manager_id) if position.hiring_manager_id else None)
-    if owner and cursor <= end:
-        spans.append((UUID(owner), cursor, end))
-    return spans
-
-
 def calculate_overview(db: Session, period: str, *, user: Optional[User] = None, now: Optional[datetime] = None, use_settlement: bool = True) -> PerformanceOverview:
     year, quarter, period_start, period_next = parse_period(period)
     now = _aware(now) or datetime.now(timezone.utc)
@@ -419,77 +388,75 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
         category = getattr(position.category, "value", position.category)
         if category not in config.target_days:
             continue
+        owner_id = position.hiring_manager_id
+        if owner_id is None or (user is not None and owner_id != user.id):
+            continue
         target_days = int(config.target_days[category])
         slots = db.query(RecruitmentHcSlot).filter(RecruitmentHcSlot.position_id == position.id).order_by(RecruitmentHcSlot.slot_number).all()
         candidates = allocations.get(position.id, [])
-        spans = _owner_spans(db, position, period_start, cutoff)
-        for owner_id, span_start, span_end in spans:
-            if user is not None and owner_id != user.id:
-                continue
-            hc_scores = []
-            for index, slot in enumerate(slots):
-                candidate = candidates[index] if index < len(candidates) else None
-                resume, stage, _ = candidate if candidate else (None, "open", cutoff)
-                result_coefficient = float(config.result_coefficients[stage])
-                status = slot.status
-                if status in {"cancelled", "frozen"}:
-                    hc_scores.append(HcScore(
-                        slot_id=slot.id, slot_number=slot.slot_number, candidate_name=None,
-                        result_stage="已剔除", result_coefficient=0, target_days=target_days,
-                        actual_days=0, deducted_days=0, effective_held_days=0,
-                        time_coefficient=0, task_points=0, score=0, status=status,
-                    ))
-                    continue
-                slot_start = max(_aware(slot.assigned_at), span_start, period_start)
-                slot_end = min(span_end, cutoff)
-                offer = None
-                if resume is not None:
-                    offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
-                accepted_at = _aware(offer.accepted_at if offer and offer.status == OfferStatus.ACCEPTED else slot.accepted_at)
-                onboarded_at = _aware(offer.actual_onboarded_at if offer else slot.completed_at)
-                weight_end = min([value for value in [slot_end, accepted_at, onboarded_at] if value is not None])
-                pauses = _approved_pauses(db, slot.id)
-                deducted = _deducted_days(pauses, slot_start, weight_end) if slot_start <= weight_end else 0
-                effective_days = max(0, _day_count(slot_start, weight_end) - deducted)
-                cycle_start = max(_aware(slot.round_started_at), span_start)
-                cycle_end = min(accepted_at or span_end, span_end, cutoff)
-                cycle_deducted = _deducted_days(pauses, cycle_start, cycle_end)
-                actual_days = max(1, _day_count(cycle_start, cycle_end) - cycle_deducted)
-                time_coefficient = _time_coefficient(actual_days, target_days, config.time_coefficients)
-                task_points = float(position.priority * effective_days)
-                score = task_points * time_coefficient * result_coefficient
+        hc_scores = []
+        for index, slot in enumerate(slots):
+            candidate = candidates[index] if index < len(candidates) else None
+            resume, stage, _ = candidate if candidate else (None, "open", cutoff)
+            result_coefficient = float(config.result_coefficients[stage])
+            status = slot.status
+            if status in {"cancelled", "frozen"}:
                 hc_scores.append(HcScore(
-                    slot_id=slot.id,
-                    slot_number=slot.slot_number,
-                    candidate_name=resume.candidate_name if resume else None,
-                    result_stage=RESULT_LABELS[stage],
-                    result_coefficient=result_coefficient,
-                    target_days=target_days,
-                    actual_days=actual_days,
-                    deducted_days=deducted,
-                    effective_held_days=effective_days,
-                    time_coefficient=time_coefficient,
-                    task_points=task_points,
-                    score=score,
-                    status="completed" if stage == "onboarded" else status,
+                    slot_id=slot.id, slot_number=slot.slot_number, candidate_name=None,
+                    result_stage="已剔除", result_coefficient=0, target_days=target_days,
+                    actual_days=0, deducted_days=0, effective_held_days=0,
+                    time_coefficient=0, task_points=0, score=0, status=status,
                 ))
-            task_points = sum(item.task_points for item in hc_scores)
-            score = sum(item.score for item in hc_scores)
-            valid = [item for item in hc_scores if item.status not in {"cancelled", "frozen"}]
-            person_positions[owner_id].append(PositionScore(
-                position_id=position.id,
-                title=position.title,
-                category=category,
-                priority=position.priority,
-                hc_count=len(valid),
-                onboarded_count=sum(item.status == "completed" for item in valid),
-                excluded_count=len(hc_scores) - len(valid),
+                continue
+            slot_start = max(_aware(slot.assigned_at), period_start)
+            offer = None
+            if resume is not None:
+                offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
+            accepted_at = _aware(offer.accepted_at if offer and offer.status == OfferStatus.ACCEPTED else slot.accepted_at)
+            onboarded_at = _aware(offer.actual_onboarded_at if offer else slot.completed_at)
+            weight_end = min([value for value in [cutoff, accepted_at, onboarded_at] if value is not None])
+            pauses = _approved_pauses(db, slot.id)
+            deducted = _deducted_days(pauses, slot_start, weight_end) if slot_start <= weight_end else 0
+            effective_days = max(0, _day_count(slot_start, weight_end) - deducted)
+            cycle_start = max(_aware(slot.round_started_at), period_start)
+            cycle_end = min(accepted_at or cutoff, cutoff)
+            cycle_deducted = _deducted_days(pauses, cycle_start, cycle_end)
+            actual_days = max(1, _day_count(cycle_start, cycle_end) - cycle_deducted)
+            time_coefficient = _time_coefficient(actual_days, target_days, config.time_coefficients)
+            task_points = float(position.priority * effective_days)
+            score = task_points * time_coefficient * result_coefficient
+            hc_scores.append(HcScore(
+                slot_id=slot.id,
+                slot_number=slot.slot_number,
+                candidate_name=resume.candidate_name if resume else None,
+                result_stage=RESULT_LABELS[stage],
+                result_coefficient=result_coefficient,
+                target_days=target_days,
+                actual_days=actual_days,
+                deducted_days=deducted,
+                effective_held_days=effective_days,
+                time_coefficient=time_coefficient,
                 task_points=task_points,
                 score=score,
-                achievement_rate=(score / task_points if task_points else None),
-                highest_result_stage=max(valid, key=lambda item: item.result_coefficient).result_stage if valid else "无有效任务",
-                slots=hc_scores,
+                status="completed" if stage == "onboarded" else status,
             ))
+        task_points = sum(item.task_points for item in hc_scores)
+        score = sum(item.score for item in hc_scores)
+        valid = [item for item in hc_scores if item.status not in {"cancelled", "frozen"}]
+        person_positions[owner_id].append(PositionScore(
+            position_id=position.id,
+            title=position.title,
+            category=category,
+            priority=position.priority,
+            hc_count=len(valid),
+            onboarded_count=sum(item.status == "completed" for item in valid),
+            excluded_count=len(hc_scores) - len(valid),
+            task_points=task_points,
+            score=score,
+            achievement_rate=(score / task_points if task_points else None),
+            highest_result_stage=max(valid, key=lambda item: item.result_coefficient).result_stage if valid else "无有效任务",
+            slots=hc_scores,
+        ))
 
     result_people = []
     for owner_id, scores in person_positions.items():

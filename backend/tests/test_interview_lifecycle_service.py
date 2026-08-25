@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -302,6 +302,98 @@ def test_admin_can_force_end_interview_without_recording_session(
     assert test_interview_panel.notes_frozen_at == ended.ended_at
 
 
+@pytest.mark.parametrize("initial_lifecycle", ["in_progress", "ended"])
+def test_force_end_seals_existing_chunks_for_asr_and_analysis(
+    db: Session,
+    test_interview,
+    test_admin,
+    tmp_path,
+    monkeypatch,
+    initial_lifecycle,
+):
+    session_id = uuid4()
+    chunk_records = []
+    paths = {}
+    for index, content in enumerate((b"first-webm-chunk", b"second-webm-chunk")):
+        record = StoredFile(
+            id=uuid4(),
+            tenant_id=test_interview.tenant_id,
+            object_key=f"{test_interview.tenant_id}/interview_audio/chunk-{index}.webm",
+            original_filename=f"chunk-{index}.webm",
+            content_type="audio/webm",
+            size=len(content),
+            category="interview_audio",
+            resource_type="interview_recording_chunk",
+            resource_id=test_interview.id,
+        )
+        path = tmp_path / f"chunk-{index}.webm"
+        path.write_bytes(content)
+        paths[record.id] = path
+        chunk_records.append(record)
+        db.add(record)
+
+    test_interview.lifecycle_state = initial_lifecycle
+    test_interview.recording_state = "failed" if initial_lifecycle == "ended" else "recording"
+    test_interview.recording_session_id = session_id
+    test_interview.recording_owner_id = test_admin.id
+    test_interview.status = InterviewStatus.IN_PROGRESS
+    test_interview.recording_chunks = [
+        {"index": index, "file_id": str(record.id), "size": record.size}
+        for index, record in enumerate(chunk_records)
+    ]
+    db.commit()
+
+    def fake_save_upload_file(upload, tenant_id, category, **kwargs):
+        content = upload.file.read()
+        record = StoredFile(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            object_key=f"{tenant_id}/interview_audio/full.webm",
+            original_filename="full_interview.webm",
+            content_type="audio/webm",
+            size=len(content),
+            category=category,
+            resource_type=kwargs["resource_type"],
+            resource_id=kwargs["resource_id"],
+        )
+        path = tmp_path / "full.webm"
+        path.write_bytes(content)
+        paths[record.id] = path
+        return record
+
+    monkeypatch.setattr(
+        interview_lifecycle_service,
+        "stored_file_path",
+        lambda record: paths[record.id],
+    )
+    monkeypatch.setattr(
+        interview_lifecycle_service,
+        "save_upload_file",
+        fake_save_upload_file,
+    )
+    monkeypatch.setattr(interview_lifecycle_service, "remux_seekable_webm", lambda _path: None)
+    monkeypatch.setattr(interview_lifecycle_service, "stage_file_deletions", lambda _db, _records: [])
+    monkeypatch.setattr(interview_lifecycle_service, "unlink_file_locations", lambda _locations: None)
+
+    ended = force_end_interview(
+        db,
+        test_interview.id,
+        test_admin,
+        "Recorder could not finish normally",
+    )
+
+    assert ended.lifecycle_state == "ended"
+    assert ended.recording_state == "sealed"
+    assert ended.status == InterviewStatus.ANALYZING
+    assert ended.end_reason == "Recorder could not finish normally"
+    assert ended.recording_chunks == []
+    assert ended.asr_job_status == "pending"
+    assert ended.ai_analysis_status == "pending"
+    assert ended.ai_analysis_error is None
+    full_file_id = UUID(ended.audio_records["full_interview"].rsplit("/", 1)[-1])
+    assert paths[full_file_id].read_bytes() == b"first-webm-chunksecond-webm-chunk"
+
+
 def test_interviewer_cannot_force_end_interview(
     db: Session,
     test_interview,
@@ -435,7 +527,7 @@ def test_ai_contract_requires_timestamp_evidence_and_enforces_gates():
     assert result["coverage"] == 95
 
 
-def test_ai_contract_rejects_finding_evidence_not_found_in_transcript():
+def test_ai_contract_drops_finding_evidence_not_found_in_transcript():
     dimensions = {
         key: {
             "score": 8,
@@ -444,21 +536,93 @@ def test_ai_contract_rejects_finding_evidence_not_found_in_transcript():
         }
         for key in SCORE_DIMENSIONS
     }
-    with pytest.raises(ValueError, match="证据与录音转写"):
-        enforce_analysis_contract({
-            "format_version": 2,
-            "dimensions": dimensions,
-            "recommendation": "passed",
-            "summary": "综合表现说明",
-            "strengths": [{
-                "conclusion": "虚构优势",
-                "evidence": {"start": 1.0, "end": 2.0, "quote": "不存在的回答"},
-                "job_impact": "虚构影响",
+    result = enforce_analysis_contract({
+        "format_version": 2,
+        "dimensions": dimensions,
+        "recommendation": "passed",
+        "summary": "综合表现说明",
+        "strengths": [{
+            "conclusion": "虚构优势",
+            "evidence": {"start": 1.0, "end": 2.0, "quote": "不存在的回答"},
+            "job_impact": "虚构影响",
+        }],
+        "risks": [],
+        "recommendation_reason": "录用建议说明",
+        "next_round_questions": [],
+    }, {"segments": [{"start": 1.0, "end": 2.0, "text": "真实回答"}]})
+
+    assert result["strengths"] == []
+    assert result["recommendation"] == "passed"
+
+
+def test_ai_contract_ignores_punctuation_and_repairs_evidence_timestamps():
+    transcript_data = {
+        "segments": [
+            {"start": 10.0, "end": 12.0, "text": "我负责，销售预测"},
+            {"start": 12.0, "end": 14.5, "text": "以及库存协同。"},
+        ],
+    }
+    dimensions = {
+        key: {
+            "score": 8,
+            "assessment": "Supported",
+            "evidence": [{
+                "start": 100.0,
+                "end": 101.0,
+                "quote": "我负责销售预测，以及库存协同",
             }],
-            "risks": [],
-            "recommendation_reason": "录用建议说明",
-            "next_round_questions": [],
-        }, {"segments": [{"start": 1.0, "end": 2.0, "text": "真实回答"}]})
+        }
+        for key in SCORE_DIMENSIONS
+    }
+
+    result = enforce_analysis_contract({
+        "format_version": 2,
+        "dimensions": dimensions,
+        "recommendation": "passed",
+        "summary": "综合表现说明",
+        "strengths": [],
+        "risks": [],
+        "recommendation_reason": "录用建议说明",
+        "next_round_questions": [],
+    }, transcript_data)
+
+    evidence = result["dimensions"]["technical_fit"]["evidence"][0]
+    assert evidence["start"] == 10.0
+    assert evidence["end"] == 14.5
+    assert result["recommendation"] == "passed"
+
+
+def test_ai_contract_downgrades_score_when_its_only_evidence_is_unmatched():
+    transcript_data = {
+        "segments": [{"start": 1.0, "end": 2.0, "text": "真实回答"}],
+    }
+    dimensions = {
+        key: {
+            "score": 8,
+            "assessment": "Supported",
+            "evidence": [{"start": 1.0, "end": 2.0, "quote": "真实回答"}],
+        }
+        for key in SCORE_DIMENSIONS
+    }
+    dimensions["technical_fit"]["evidence"] = [
+        {"start": 1.0, "end": 2.0, "quote": "不存在的回答"}
+    ]
+
+    result = enforce_analysis_contract({
+        "format_version": 2,
+        "dimensions": dimensions,
+        "recommendation": "passed",
+        "summary": "综合表现说明",
+        "strengths": [],
+        "risks": [],
+        "recommendation_reason": "录用建议说明",
+        "next_round_questions": [],
+    }, transcript_data)
+
+    assert result["dimensions"]["technical_fit"]["score"] is None
+    assert result["dimensions"]["technical_fit"]["evidence"] == []
+    assert result["recommendation"] == "inconclusive"
+    assert result["next_round_questions"]
 
 
 def test_admin_can_correct_locked_final_decision_with_audit(

@@ -78,7 +78,7 @@ def test_result_coefficient_applies_to_complete_quarter_holding_days(
     assert slot.score == slot.task_points * slot.time_coefficient * 0.6
 
 
-def test_actual_days_restart_when_a_new_owner_takes_over(
+def test_reassigned_position_belongs_only_to_current_owner_for_full_cycle(
     db, test_position, test_user, test_admin
 ):
     round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -109,14 +109,60 @@ def test_actual_days_restart_when_a_new_owner_takes_over(
     overview = calculate_overview(
         db,
         "2026-Q3",
-        user=test_admin,
         now=cutoff,
         use_settlement=False,
     )
 
+    assert [person.user_id for person in overview.people] == [test_admin.id]
+    assert len(overview.people[0].positions) == 1
     slots = overview.people[0].positions[0].slots
-    assert {slot.actual_days for slot in slots} == {11}
-    assert {slot.effective_held_days for slot in slots} == {11}
+    assert {slot.actual_days for slot in slots} == {20}
+    assert {slot.effective_held_days for slot in slots} == {20}
+
+
+def test_position_reassigned_back_to_same_owner_is_not_duplicated(
+    db, test_position, test_user, test_admin
+):
+    round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    test_position.created_at = round_started_at
+    sync_position_slots(db, test_position, assigned_at=round_started_at)
+    db.add_all([
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.INITIAL_OWNER,
+            new_value=str(test_user.id),
+            occurred_at=round_started_at,
+        ),
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.OWNER_CHANGED,
+            old_value=str(test_user.id),
+            new_value=str(test_admin.id),
+            occurred_at=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        ),
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.OWNER_CHANGED,
+            old_value=str(test_admin.id),
+            new_value=str(test_user.id),
+            occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        ),
+    ])
+    db.commit()
+
+    overview = calculate_overview(
+        db,
+        "2026-Q3",
+        now=datetime(2026, 7, 20, 12, tzinfo=timezone.utc),
+        use_settlement=False,
+    )
+
+    assert [person.user_id for person in overview.people] == [test_user.id]
+    assert len(overview.people[0].positions) == 1
+    assert {slot.actual_days for slot in overview.people[0].positions[0].slots} == {20}
 
 
 def test_admin_can_publish_next_quarter_config(client, admin_auth_headers):

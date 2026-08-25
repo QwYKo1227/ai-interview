@@ -513,6 +513,94 @@ class TestCancelInterviewRoute:
 
 
 class TestForceEndInterviewRoute:
+    def test_force_end_with_recording_schedules_offline_processing(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+        monkeypatch,
+    ):
+        processed = []
+
+        def fake_force_end(db, interview_id, user, reason):
+            interview = db.query(Interview).filter(Interview.id == interview_id).first()
+            interview.lifecycle_state = "ended"
+            interview.recording_state = "sealed"
+            interview.audio_records = {"full_interview": f"/api/files/{uuid4()}"}
+            interview.ai_analysis_status = "pending"
+            interview.status = InterviewStatus.ANALYZING
+            interview.end_reason = reason
+            db.commit()
+            db.refresh(interview)
+            return interview
+
+        monkeypatch.setattr("app.routes.interviews.force_end_interview", fake_force_end)
+        monkeypatch.setattr(
+            "app.routes.interviews.process_asr_job",
+            lambda tenant_id, interview_id: processed.append((tenant_id, interview_id)),
+        )
+        test_interview.lifecycle_state = "in_progress"
+        test_interview.status = InterviewStatus.IN_PROGRESS
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/force-end",
+            headers=auth_headers,
+            json={"reason": "正常封存按钮不可用"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["recording_state"] == "sealed"
+        assert response.json()["status"] == "analyzing"
+        assert processed == [(test_interview.tenant_id, test_interview.id)]
+
+    def test_retry_recovers_chunks_left_by_legacy_force_end(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+        monkeypatch,
+    ):
+        processed = []
+        test_interview.lifecycle_state = "ended"
+        test_interview.recording_state = "failed"
+        test_interview.status = InterviewStatus.COMPLETED
+        test_interview.recording_chunks = [
+            {"index": 0, "file_id": str(uuid4()), "size": 100}
+        ]
+        test_interview.audio_records = None
+        test_interview.ai_analysis_status = "failed"
+        db.commit()
+
+        def fake_force_end(db, interview_id, user, reason):
+            interview = db.query(Interview).filter(Interview.id == interview_id).first()
+            interview.recording_chunks = []
+            interview.recording_state = "sealed"
+            interview.audio_records = {"full_interview": f"/api/files/{uuid4()}"}
+            interview.status = InterviewStatus.ANALYZING
+            db.commit()
+            db.refresh(interview)
+            return interview
+
+        monkeypatch.setattr("app.routes.interviews.force_end_interview", fake_force_end)
+        monkeypatch.setattr(
+            "app.routes.interviews.process_asr_job",
+            lambda tenant_id, interview_id: processed.append((tenant_id, interview_id)),
+        )
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/analysis/retry",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["recording_state"] == "sealed"
+        assert response.json()["asr_job_status"] == "pending"
+        assert response.json()["ai_analysis_status"] == "pending"
+        assert processed == [(test_interview.tenant_id, test_interview.id)]
+
     def test_hr_can_force_end_without_recording_session(
         self,
         client: TestClient,

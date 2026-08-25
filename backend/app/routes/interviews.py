@@ -361,11 +361,15 @@ def end_interview_route(
 def force_end_interview_route(
     interview_id: UUID,
     payload: ForceEndInterviewRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     require_interview_access(db, interview_id, current_user)
-    return force_end_interview(db, interview_id, current_user, payload.reason)
+    interview = force_end_interview(db, interview_id, current_user, payload.reason)
+    if interview.recording_state == "sealed" and (interview.audio_records or {}).get("full_interview"):
+        background_tasks.add_task(process_asr_job, interview.tenant_id, interview.id)
+    return interview
 
 
 @router.post("/{interview_id}/recording/seal", response_model=InterviewResponse)
@@ -390,6 +394,17 @@ def retry_analysis_route(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     interview = require_interview_access(db, interview_id, current_user)
+    if (
+        interview.lifecycle_state == "ended"
+        and not (interview.audio_records or {}).get("full_interview")
+        and interview.recording_chunks
+    ):
+        interview = force_end_interview(
+            db,
+            interview.id,
+            current_user,
+            interview.end_reason or "Recover existing recording chunks",
+        )
     if interview.lifecycle_state != "ended" or not (interview.audio_records or {}).get("full_interview"):
         raise HTTPException(status_code=409, detail="A sealed recording is required")
     interview.ai_analysis_status = "pending"

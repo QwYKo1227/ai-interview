@@ -245,8 +245,20 @@ const InterviewScore: React.FC = () => {
   };
 
   // “开始面试”与开始录音是同一个原子化用户动作。
-  const handleStartInterview = async () => {
-    await startFullRecording();
+  const handleStartInterview = () => {
+    const timing = getInterviewStartTiming(interview?.interview_time);
+    if (!timing.isEarlyStart) {
+      void startFullRecording();
+      return;
+    }
+
+    Modal.confirm({
+      title: '确认提前开始面试',
+      content: '当前尚未到计划开始时间。提前开始后将立即启动录音，是否继续？',
+      okText: '继续',
+      cancelText: '取消',
+      onOk: startFullRecording,
+    });
   };
 
   const handleAddQuestionClick = () => {
@@ -978,8 +990,10 @@ const InterviewScore: React.FC = () => {
          {canOperateRecording && (interview?.lifecycle_state === 'scheduled'
            || (interview?.lifecycle_state === 'in_progress' && !fullRecording)) && (
            <Tooltip title={interview?.lifecycle_state === 'scheduled' && !startTiming.canStart
-             ? `面试尚未开始，距离计划时间还有 ${startTiming.countdownText}`
-             : interview?.lifecycle_state === 'scheduled' ? '开始面试并录音' : '接管录音'}>
+             ? `面试尚未进入可提前开始时间，距离按钮启用还有 ${startTiming.countdownText}`
+             : interview?.lifecycle_state === 'scheduled' && startTiming.isEarlyStart
+               ? '当前已可提前开始面试'
+               : interview?.lifecycle_state === 'scheduled' ? '开始面试并录音' : '接管录音'}>
              <Button
                type="primary"
                icon={<PlayCircleOutlined />}
@@ -1064,13 +1078,17 @@ const InterviewScore: React.FC = () => {
             {headerExtra}
           </div>
 
-          {interview?.lifecycle_state === 'scheduled' && !startTiming.canStart && (
+          {interview?.lifecycle_state === 'scheduled' && (
             <Alert
               type="warning"
               showIcon
               style={{ marginBottom: 16 }}
               message={`面试计划于 ${new Date(interview.interview_time).toLocaleString()} 开始`}
-              description={`当前可提前查看资料，距离“开始面试”按钮启用还有 ${startTiming.countdownText}。`}
+              description={!startTiming.canStart
+                ? `当前可提前查看资料，距离“开始面试”按钮启用还有 ${startTiming.countdownText}。`
+                : startTiming.isEarlyStart
+                  ? '当前已可提前开始面试。'
+                  : '当前已可开始面试。'}
             />
           )}
 

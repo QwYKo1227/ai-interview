@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import dayjs from 'dayjs';
 
-import { formatInterviewRange, validateInterviewTimeRange } from './interviewSchedule';
+import {
+  buildInterviewTimePayload,
+  formatInterviewRange,
+  validateInterviewTimeRange,
+} from './interviewSchedule';
 
 describe('interview schedule time range', () => {
   it('formats explicit Beijing-time ranges', () => {
@@ -19,6 +23,20 @@ describe('interview schedule time range', () => {
   it('accepts quarter-hour ranges', () => {
     expect(validateInterviewTimeRange(dayjs('2026-08-01 10:15'), dayjs('2026-08-01 10:45')))
       .toBeNull();
+  });
+
+  it('normalizes hidden seconds produced by minute-only picker shortcuts', () => {
+    const start = dayjs('2026-08-30 17:00:38.400');
+    const end = dayjs('2026-08-30 18:00:38.400');
+
+    expect(validateInterviewTimeRange(start, end)).toBeNull();
+    expect(buildInterviewTimePayload({
+      interview_time: start,
+      interview_end_time: end,
+    })).toEqual({
+      interview_time: '2026-08-30T09:00:00.000Z',
+      interview_end_time: '2026-08-30T10:00:00.000Z',
+    });
   });
 
   it('rejects non-quarter-hour, reversed, and cross-day ranges', () => {

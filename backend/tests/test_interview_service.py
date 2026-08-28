@@ -344,7 +344,7 @@ class TestStartInterview:
         assert result is None
 
     def test_start_interview_rejects_before_scheduled_time(self, db: Session, test_interview: Interview):
-        test_interview.interview_time = datetime.now(timezone.utc) + timedelta(minutes=15)
+        test_interview.interview_time = datetime.now(timezone.utc) + timedelta(minutes=20)
         db.commit()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -353,6 +353,15 @@ class TestStartInterview:
         assert exc_info.value.status_code == 409
         assert "面试尚未到开始时间" in exc_info.value.detail
         assert test_interview.status == InterviewStatus.SCHEDULED
+
+    def test_start_interview_allows_fifteen_minutes_early(self, db: Session, test_interview: Interview):
+        test_interview.interview_time = datetime.now(timezone.utc) + timedelta(minutes=14)
+        db.commit()
+
+        result = interview_service.start_interview(db, test_interview.id)
+
+        assert result.status == InterviewStatus.IN_PROGRESS
+        assert result.lifecycle_state == "in_progress"
 
     def test_start_interview_wrong_status(self, db: Session, test_interview_in_progress: Interview):
         """测试面试状态不正确时无法开始"""

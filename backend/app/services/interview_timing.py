@@ -9,6 +9,7 @@ from app.models.models import Interview
 
 
 CHINA_TIMEZONE = timezone(timedelta(hours=8))
+INTERVIEW_EARLY_START_WINDOW = timedelta(minutes=15)
 
 
 def as_utc(value: datetime | None) -> datetime | None:
@@ -34,15 +35,19 @@ def require_interview_start_time(
 ) -> None:
     scheduled_at = as_utc(interview.interview_time)
     current = as_utc(now) if now is not None else datetime.now(timezone.utc)
-    if scheduled_at is None or current >= scheduled_at:
+    if scheduled_at is None:
         return
 
-    remaining_seconds = max(1, ceil((scheduled_at - current).total_seconds()))
+    start_available_at = scheduled_at - INTERVIEW_EARLY_START_WINDOW
+    if current >= start_available_at:
+        return
+
+    remaining_seconds = max(1, ceil((start_available_at - current).total_seconds()))
     scheduled_text = scheduled_at.astimezone(CHINA_TIMEZONE).strftime("%Y年%m月%d日 %H:%M")
     raise HTTPException(
         status_code=409,
         detail=(
             f"面试尚未到开始时间，计划开始时间为 {scheduled_text}，"
-            f"还需等待 {_remaining_text(remaining_seconds)}"
+            f"距离“开始面试”按钮启用还需等待 {_remaining_text(remaining_seconds)}"
         ),
     )

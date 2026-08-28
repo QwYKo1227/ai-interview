@@ -9,6 +9,8 @@ export const BEIJING_TIMEZONE = 'Asia/Shanghai';
 export const LEGACY_INTERVIEW_MINUTES = 60;
 export const INTERVIEW_MINUTE_STEP = 15;
 
+export const normalizeInterviewTime = (value: Dayjs) => value.second(0).millisecond(0);
+
 export const toBeijingTime = (value?: string | Date | Dayjs | null) => {
   if (!value) return null;
   return dayjs(value).tz(BEIJING_TIMEZONE);
@@ -41,22 +43,24 @@ export const formatInterviewRange = (record: any) => {
 
 export const validateInterviewTimeRange = (start?: Dayjs | null, end?: Dayjs | null) => {
   if (!start || !end) return null;
-  const startCn = start.tz(BEIJING_TIMEZONE, true);
-  const endCn = end.tz(BEIJING_TIMEZONE, true);
+  const startCn = normalizeInterviewTime(start.tz(BEIJING_TIMEZONE, true));
+  const endCn = normalizeInterviewTime(end.tz(BEIJING_TIMEZONE, true));
   if (!endCn.isAfter(startCn)) return '结束时间必须晚于开始时间';
   if (startCn.format('YYYY-MM-DD') !== endCn.format('YYYY-MM-DD')) return '开始和结束时间必须在同一天';
-  if ([startCn, endCn].some((value) => value.minute() % INTERVIEW_MINUTE_STEP !== 0 || value.second() !== 0)) {
+  if ([startCn, endCn].some((value) => value.minute() % INTERVIEW_MINUTE_STEP !== 0)) {
     return '请选择 15 分钟刻度的时间';
   }
   return null;
 };
 
 export const buildInterviewTimePayload = (values: any) => ({
-  interview_time: toBeijingIso(values.interview_time),
-  interview_end_time: toBeijingIso(values.interview_end_time),
+  interview_time: toBeijingIso(normalizeInterviewTime(values.interview_time)),
+  interview_end_time: toBeijingIso(normalizeInterviewTime(values.interview_end_time)),
 });
 
-export const defaultInterviewEnd = (start: Dayjs) => start.add(LEGACY_INTERVIEW_MINUTES, 'minute');
+export const defaultInterviewEnd = (start: Dayjs) => (
+  normalizeInterviewTime(start).add(LEGACY_INTERVIEW_MINUTES, 'minute')
+);
 
 export const getScheduleErrorMessage = (error: unknown, fallback: string) => {
   const detail = (error as any)?.response?.data?.detail;

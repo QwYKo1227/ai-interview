@@ -1,8 +1,11 @@
 export type InterviewStartTiming = {
   canStart: boolean;
+  isEarlyStart: boolean;
   remainingSeconds: number;
   countdownText: string;
 };
+
+export const INTERVIEW_EARLY_START_WINDOW_MS = 15 * 60 * 1000;
 
 export const formatStartCountdown = (totalSeconds: number): string => {
   const seconds = Math.max(0, Math.ceil(totalSeconds));
@@ -20,14 +23,23 @@ export const getInterviewStartTiming = (
   interviewTime?: string | null,
   nowMs = Date.now(),
 ): InterviewStartTiming => {
-  if (!interviewTime) return { canStart: true, remainingSeconds: 0, countdownText: '可以开始' };
+  if (!interviewTime) {
+    return { canStart: true, isEarlyStart: false, remainingSeconds: 0, countdownText: '可以开始' };
+  }
   const scheduledMs = new Date(interviewTime).getTime();
   if (!Number.isFinite(scheduledMs) || nowMs >= scheduledMs) {
-    return { canStart: true, remainingSeconds: 0, countdownText: '可以开始' };
+    return { canStart: true, isEarlyStart: false, remainingSeconds: 0, countdownText: '可以开始' };
   }
-  const remainingSeconds = Math.ceil((scheduledMs - nowMs) / 1000);
+
+  const startAvailableMs = scheduledMs - INTERVIEW_EARLY_START_WINDOW_MS;
+  if (nowMs >= startAvailableMs) {
+    return { canStart: true, isEarlyStart: true, remainingSeconds: 0, countdownText: '可以开始' };
+  }
+
+  const remainingSeconds = Math.ceil((startAvailableMs - nowMs) / 1000);
   return {
     canStart: false,
+    isEarlyStart: false,
     remainingSeconds,
     countdownText: formatStartCountdown(remainingSeconds),
   };

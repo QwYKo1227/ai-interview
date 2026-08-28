@@ -1090,7 +1090,7 @@ const ResumesList: React.FC = () => {
             <Col span={12}>
               <Form.Item name="interview_time" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
                 <DatePicker
-                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }}
+                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP, showNow: false }}
                   format="YYYY-MM-DD HH:mm"
                   style={{ width: '100%' }}
                   size="large"
@@ -1118,7 +1118,7 @@ const ResumesList: React.FC = () => {
                   }),
                 ]}
               >
-                <DatePicker showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} size="large" />
+                <DatePicker showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP, showNow: false }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} size="large" />
               </Form.Item>
             </Col>
           </Row>

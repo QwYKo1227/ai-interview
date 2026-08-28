@@ -948,7 +948,7 @@ const InterviewsList: React.FC = () => {
                 rules={[{ required: true, message: '请选择开始时间' }]}
               >
                 <DatePicker
-                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }}
+                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP, showNow: false }}
                   format="YYYY-MM-DD HH:mm"
                   style={{ width: '100%' }}
                   onChange={(value) => {
@@ -975,7 +975,7 @@ const InterviewsList: React.FC = () => {
                   }),
                 ]}
               >
-                <DatePicker showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
+                <DatePicker showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP, showNow: false }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>
@@ -1283,7 +1283,7 @@ const InterviewsList: React.FC = () => {
                 rules={[{ required: true, message: '请选择开始时间' }]}
               >
                 <DatePicker
-                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }}
+                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP, showNow: false }}
                   format="YYYY-MM-DD HH:mm"
                   style={{ width: '100%' }}
                   size="large"
@@ -1314,7 +1314,7 @@ const InterviewsList: React.FC = () => {
                 ]}
               >
                 <DatePicker
-                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP }}
+                  showTime={{ format: 'HH:mm', minuteStep: INTERVIEW_MINUTE_STEP, showNow: false }}
                   format="YYYY-MM-DD HH:mm"
                   style={{ width: '100%' }}
                   size="large"

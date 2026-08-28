@@ -64,10 +64,21 @@ type PositionScore = {
   slots: HcScore[];
 };
 
+type HandoffCredit = {
+  position_id: string;
+  position_title: string;
+  transferred_at: string;
+  milestone_at: string;
+  task_points: number;
+  score: number;
+  slots: HcScore[];
+};
+
 type PersonScore = {
   user_id: string;
   name: string;
   email: string;
+  is_active: boolean;
   hc_count: number;
   excluded_count: number;
   onboarded_count: number;
@@ -75,6 +86,7 @@ type PersonScore = {
   score: number;
   achievement_rate?: number;
   positions: PositionScore[];
+  handoff_credits: HandoffCredit[];
 };
 
 type Overview = {
@@ -266,6 +278,38 @@ const PositionTable = ({ positions }: { positions: PositionScore[] }) => (
   />
 );
 
+const HandoffCreditTable = ({ credits }: { credits: HandoffCredit[] }) => {
+  if (credits.length === 0) return null;
+  return (
+    <div className="performance-handoff-credits">
+      <Title level={5}>录用阶段转交积分</Title>
+      <Table
+        rowKey={row => `${row.position_id}-${row.transferred_at}`}
+        pagination={false}
+        size="small"
+        scroll={{ x: 720 }}
+        dataSource={credits}
+        expandable={{ expandedRowRender: row => <SlotLedger slots={row.slots} /> }}
+        columns={[
+          { title: '岗位', dataIndex: 'position_title', render: value => <Text strong>{value}</Text> },
+          { title: '首次达到录用阶段', dataIndex: 'milestone_at', render: value => dayjs(value).format('YYYY-MM-DD HH:mm') },
+          { title: '岗位转交时间', dataIndex: 'transferred_at', render: value => dayjs(value).format('YYYY-MM-DD HH:mm') },
+          { title: '合格 HC', dataIndex: 'slots', render: value => value.length },
+          { title: '冻结任务积分', dataIndex: 'task_points', render: formatScore },
+          { title: '冻结得分', dataIndex: 'score', render: value => <Text strong>{formatScore(value)}</Text> },
+        ]}
+      />
+    </div>
+  );
+};
+
+const PersonDetails = ({ person }: { person: PersonScore }) => (
+  <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    <PositionTable positions={person.positions} />
+    <HandoffCreditTable credits={person.handoff_credits || []} />
+  </Space>
+);
+
 const ScoreWorkspace = ({ overview, admin }: { overview?: Overview; admin: boolean }) => {
   const people = overview?.people || [];
   const totals = useMemo(() => ({
@@ -306,9 +350,9 @@ const ScoreWorkspace = ({ overview, admin }: { overview?: Overview; admin: boole
             dataSource={people}
             pagination={false}
             scroll={{ x: 760 }}
-            expandable={{ expandedRowRender: person => <PositionTable positions={person.positions} /> }}
+            expandable={{ expandedRowRender: person => <PersonDetails person={person} /> }}
             columns={[
-              { title: 'Recruiter', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name), render: (value, row) => <div><Text strong>{value}</Text><div><Text type="secondary">{row.email}</Text></div></div> },
+              { title: 'Recruiter', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name), render: (value, row) => <div><Space><Text strong>{value}</Text>{!row.is_active && <Tag>已停用</Tag>}</Space><div><Text type="secondary">{row.email}</Text></div></div> },
               { title: 'HC任务', dataIndex: 'hc_count', render: (value, row) => `${value}${row.excluded_count ? `（剔除 ${row.excluded_count}）` : ''}` },
               { title: '已入职', dataIndex: 'onboarded_count', sorter: (a, b) => a.onboarded_count - b.onboarded_count },
               { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, render: formatScore },
@@ -316,7 +360,7 @@ const ScoreWorkspace = ({ overview, admin }: { overview?: Overview; admin: boole
               { title: '总达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), render: value => formatRate(value) },
             ]}
           />
-        ) : <PositionTable positions={people[0]?.positions || []} />}
+        ) : people[0] ? <PersonDetails person={people[0]} /> : null}
       </Card>
     </>
   );

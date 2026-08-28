@@ -101,17 +101,29 @@ class PositionScore(BaseModel):
     slots: List[HcScore]
 
 
+class HandoffCredit(BaseModel):
+    position_id: UUID
+    position_title: str
+    transferred_at: datetime
+    milestone_at: datetime
+    task_points: float
+    score: float
+    slots: List[HcScore]
+
+
 class PersonScore(BaseModel):
     user_id: UUID
     name: str
     email: str
+    is_active: bool = True
     hc_count: int
     excluded_count: int
     onboarded_count: int
     task_points: float
     score: float
     achievement_rate: Optional[float]
-    positions: List[PositionScore] = []
+    positions: List[PositionScore] = Field(default_factory=list)
+    handoff_credits: List[HandoffCredit] = Field(default_factory=list)
 
 
 class PerformanceOverview(BaseModel):

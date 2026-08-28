@@ -25,7 +25,10 @@ from typing import List, Optional
 from app.services.ai_service import generate_jd
 from fastapi import HTTPException
 from datetime import datetime, timezone
-from app.services.recruitment_performance_service import sync_position_slots
+from app.services.recruitment_performance_service import (
+    build_handoff_credit_metadata,
+    sync_position_slots,
+)
 from app.services.recruitment_access import can_manage_position, is_admin
 
 
@@ -453,6 +456,18 @@ def update_position(
                 "reason": effective_owner_reason,
             })
             db_position.hiring_manager_history = history
+            handoff_credit = build_handoff_credit_metadata(
+                db,
+                db_position,
+                transfer_at=now,
+                old_owner_id=db_position.hiring_manager_id,
+            )
+            event_metadata = {
+                "old_owner_name": (old_owner.full_name or old_owner.email) if old_owner else None,
+                "new_owner_name": new_owner.full_name or new_owner.email,
+            }
+            if handoff_credit is not None:
+                event_metadata["handoff_credit"] = handoff_credit
             _add_position_event(
                 db,
                 db_position,
@@ -462,10 +477,7 @@ def update_position(
                 old_value=str(db_position.hiring_manager_id) if db_position.hiring_manager_id else None,
                 new_value=str(owner_id),
                 reason=effective_owner_reason,
-                event_metadata={
-                    "old_owner_name": (old_owner.full_name or old_owner.email) if old_owner else None,
-                    "new_owner_name": new_owner.full_name or new_owner.email,
-                },
+                event_metadata=event_metadata,
             )
     for key, value in update_data.items():
         setattr(db_position, key, value)

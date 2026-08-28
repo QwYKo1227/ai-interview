@@ -13,9 +13,12 @@ from app.models.models import (
     OfferStatus,
     Position,
     PositionCategory,
+    PositionEvent,
+    PositionEventType,
     PositionStatus,
     Resume,
     ResumeStatus,
+    ResumeStatusEvent,
     User,
     UserRole,
 )
@@ -195,8 +198,18 @@ def test_hr_creation_forces_self_and_admin_must_choose_valid_owner(
 
 
 def test_admin_reassignment_is_audited_and_revokes_old_owner(
-    client, db, auth_headers, admin_auth_headers, test_position, test_user
+    client, db, auth_headers, admin_auth_headers, test_position, test_resume, test_user
 ):
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    db.add(ResumeStatusEvent(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
+        new_status=ResumeStatus.INTERVIEW_PASSED.value,
+        source="test",
+        occurred_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
     new_owner = _other_hr(db, test_user.tenant_id)
     changed = client.put(
         f"/api/positions/{test_position.id}?owner_change_reason=handoff",
@@ -210,6 +223,18 @@ def test_admin_reassignment_is_audited_and_revokes_old_owner(
     assert test_position.hiring_manager_history[-1]["old_owner_id"] == str(test_user.id)
     assert test_position.hiring_manager_history[-1]["new_owner_id"] == str(new_owner.id)
     assert test_position.hiring_manager_history[-1]["reason"] == "handoff"
+    owner_event = (
+        db.query(PositionEvent)
+        .filter(
+            PositionEvent.position_id == test_position.id,
+            PositionEvent.event_type == PositionEventType.OWNER_CHANGED,
+        )
+        .one()
+    )
+    credit = owner_event.event_metadata["handoff_credit"]
+    assert credit["status"] == "awarded"
+    assert credit["recipient_user_id"] == str(test_user.id)
+    assert credit["detail"]["slots"][0]["result_stage"] == "面试通过，进入录用决策"
     assert client.get(
         f"/api/positions/{test_position.id}", headers=auth_headers
     ).status_code == status.HTTP_404_NOT_FOUND

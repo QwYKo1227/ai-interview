@@ -183,6 +183,14 @@
   background: #f8fafc;
 }
 
+.performance-handoff-credits {
+  width: 100%;
+}
+
+.performance-handoff-credits h5.ant-typography {
+  margin: 0 0 12px;
+}
+
 .rule-sheet > .ant-alert {
   margin-bottom: 16px;
 }

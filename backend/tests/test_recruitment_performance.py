@@ -1,11 +1,14 @@
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from app.models.models import (
     Offer,
     OfferStatus,
     PositionEvent,
     PositionEventType,
     RecruitmentHcSlot,
+    ResumeStatusEvent,
     ResumeStatus,
 )
 from app.services.recruitment_performance_service import available_periods, calculate_overview, sync_position_slots
@@ -78,7 +81,7 @@ def test_result_coefficient_applies_to_complete_quarter_holding_days(
     assert slot.score == slot.task_points * slot.time_coefficient * 0.6
 
 
-def test_reassigned_position_belongs_only_to_current_owner_for_full_cycle(
+def test_reassigned_position_resets_effective_holding_but_keeps_full_cycle_days(
     db, test_position, test_user, test_admin
 ):
     round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -117,14 +120,18 @@ def test_reassigned_position_belongs_only_to_current_owner_for_full_cycle(
     assert len(overview.people[0].positions) == 1
     slots = overview.people[0].positions[0].slots
     assert {slot.actual_days for slot in slots} == {20}
-    assert {slot.effective_held_days for slot in slots} == {20}
+    assert {slot.effective_held_days for slot in slots} == {10}
 
 
-def test_position_reassigned_back_to_same_owner_is_not_duplicated(
-    db, test_position, test_user, test_admin
+def test_first_decision_stage_owner_keeps_handoff_credit(
+    db, test_position, test_resume, test_user, test_admin
 ):
     round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    milestone_at = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    owner_changed_at = datetime(2026, 7, 10, 12, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
     test_position.created_at = round_started_at
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
     sync_position_slots(db, test_position, assigned_at=round_started_at)
     db.add_all([
         PositionEvent(
@@ -133,6 +140,75 @@ def test_position_reassigned_back_to_same_owner_is_not_duplicated(
             event_type=PositionEventType.INITIAL_OWNER,
             new_value=str(test_user.id),
             occurred_at=round_started_at,
+        ),
+        ResumeStatusEvent(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
+            new_status=ResumeStatus.INTERVIEW_PASSED.value,
+            source="test",
+            occurred_at=milestone_at,
+        ),
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.OWNER_CHANGED,
+            old_value=str(test_user.id),
+            new_value=str(test_admin.id),
+            occurred_at=owner_changed_at,
+        ),
+    ])
+    test_position.hiring_manager_id = test_admin.id
+    test_user.is_active = False
+    db.commit()
+
+    overview = calculate_overview(
+        db,
+        "2026-Q3",
+        now=cutoff,
+        use_settlement=False,
+    )
+
+    people = {person.user_id: person for person in overview.people}
+    assert set(people) == {test_user.id, test_admin.id}
+    current_slot = people[test_admin.id].positions[0].slots[0]
+    assert current_slot.actual_days == 20
+    assert current_slot.effective_held_days == 10
+    assert len(people[test_user.id].handoff_credits) == 1
+    assert people[test_user.id].is_active is False
+    credit = people[test_user.id].handoff_credits[0]
+    assert credit.position_id == test_position.id
+    assert credit.transferred_at == owner_changed_at
+    assert credit.task_points == 40
+    assert credit.score == pytest.approx(28.8)
+    assert len(credit.slots) == 1
+    assert credit.slots[0].candidate_name == test_resume.candidate_name
+    assert people[test_user.id].task_points == credit.task_points
+    assert people[test_user.id].score == credit.score
+
+
+def test_position_reassigned_back_to_same_owner_is_not_duplicated(
+    db, test_position, test_resume, test_user, test_admin
+):
+    round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    test_position.created_at = round_started_at
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    sync_position_slots(db, test_position, assigned_at=round_started_at)
+    db.add_all([
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.INITIAL_OWNER,
+            new_value=str(test_user.id),
+            occurred_at=round_started_at,
+        ),
+        ResumeStatusEvent(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
+            new_status=ResumeStatus.INTERVIEW_PASSED.value,
+            source="test",
+            occurred_at=datetime(2026, 7, 8, tzinfo=timezone.utc),
         ),
         PositionEvent(
             tenant_id=test_position.tenant_id,
@@ -163,6 +239,80 @@ def test_position_reassigned_back_to_same_owner_is_not_duplicated(
     assert [person.user_id for person in overview.people] == [test_user.id]
     assert len(overview.people[0].positions) == 1
     assert {slot.actual_days for slot in overview.people[0].positions[0].slots} == {20}
+    assert {slot.effective_held_days for slot in overview.people[0].positions[0].slots} == {5}
+    assert len(overview.people[0].handoff_credits) == 1
+    assert overview.people[0].handoff_credits[0].transferred_at == datetime(
+        2026, 7, 10, tzinfo=timezone.utc
+    )
+
+
+def test_zero_credit_at_first_handoff_expires_the_opportunity(
+    db, test_position, test_resume, test_user, test_admin
+):
+    round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    test_position.created_at = round_started_at
+    test_position.hiring_manager_id = test_user.id
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    sync_position_slots(db, test_position, assigned_at=round_started_at)
+    db.add_all([
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.INITIAL_OWNER,
+            new_value=str(test_user.id),
+            occurred_at=round_started_at,
+        ),
+        ResumeStatusEvent(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
+            new_status=ResumeStatus.INTERVIEW_PASSED.value,
+            source="test",
+            occurred_at=datetime(2026, 7, 8, tzinfo=timezone.utc),
+        ),
+        ResumeStatusEvent(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.INTERVIEW_PASSED.value,
+            new_status=ResumeStatus.INTERVIEW_FAILED.value,
+            source="test",
+            occurred_at=datetime(2026, 7, 9, tzinfo=timezone.utc),
+        ),
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.OWNER_CHANGED,
+            old_value=str(test_user.id),
+            new_value=str(test_admin.id),
+            occurred_at=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        ),
+        ResumeStatusEvent(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.INTERVIEW_FAILED.value,
+            new_status=ResumeStatus.INTERVIEW_PASSED.value,
+            source="test",
+            occurred_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
+        ),
+        PositionEvent(
+            tenant_id=test_position.tenant_id,
+            position_id=test_position.id,
+            event_type=PositionEventType.OWNER_CHANGED,
+            old_value=str(test_admin.id),
+            new_value=str(test_user.id),
+            occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        ),
+    ])
+    db.commit()
+
+    overview = calculate_overview(
+        db,
+        "2026-Q3",
+        now=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        use_settlement=False,
+    )
+
+    assert all(not person.handoff_credits for person in overview.people)
 
 
 def test_admin_can_publish_next_quarter_config(client, admin_auth_headers):

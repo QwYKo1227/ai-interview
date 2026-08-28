@@ -335,21 +335,43 @@ def _historical_result_stage(
     resume: Resume,
     cutoff: datetime,
 ) -> Optional[tuple[str, datetime]]:
-    event = (
-        db.query(ResumeStatusEvent)
+    latest_occurred_at = (
+        db.query(func.max(ResumeStatusEvent.occurred_at))
         .filter(
             ResumeStatusEvent.resume_id == resume.id,
             ResumeStatusEvent.occurred_at <= cutoff,
         )
-        .order_by(ResumeStatusEvent.occurred_at.desc(), ResumeStatusEvent.id.desc())
-        .first()
+        .scalar()
     )
-    if event is None:
+    events = (
+        db.query(ResumeStatusEvent)
+        .filter(
+            ResumeStatusEvent.resume_id == resume.id,
+            ResumeStatusEvent.occurred_at == latest_occurred_at,
+        )
+        .all()
+        if latest_occurred_at is not None
+        else []
+    )
+    if not events:
         if _aware(resume.created_at) > cutoff:
             return None
         status = resume.status
         achieved_at = _aware(resume.created_at)
     else:
+        # One lifecycle operation can persist several transitions with the same
+        # timestamp. UUID ordering does not describe their causal order. The
+        # terminal transition is the one whose new status is not consumed as
+        # another transition's old status (for example in_progress -> pending
+        # result -> passed).
+        intermediate_statuses = {
+            event.old_status for event in events if event.old_status
+        }
+        terminal_events = [
+            event for event in events
+            if event.new_status not in intermediate_statuses
+        ]
+        event = min(terminal_events or events, key=lambda item: str(item.id))
         try:
             status = ResumeStatus(event.new_status)
         except ValueError:
@@ -731,7 +753,20 @@ def _handoff_credits_for_period(
                 )
                 if computed is not None:
                     recipient_id, detail = computed
-        if recipient_id is not None and detail is not None and detail.slots:
+        # A handoff is only frozen while the milestone owner no longer owns the
+        # position at the reporting cutoff. If the position is handed back,
+        # their live position ledger resumes and the temporary handoff credit
+        # must disappear instead of being counted twice.
+        returned_to_recipient = (
+            recipient_id is not None
+            and _owner_at(db, positions_by_id[event.position_id], cutoff) == recipient_id
+        )
+        if (
+            recipient_id is not None
+            and detail is not None
+            and detail.slots
+            and not returned_to_recipient
+        ):
             result[recipient_id].append(detail)
     return result
 

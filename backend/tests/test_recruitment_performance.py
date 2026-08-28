@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
@@ -142,10 +143,20 @@ def test_first_decision_stage_owner_keeps_handoff_credit(
             occurred_at=round_started_at,
         ),
         ResumeStatusEvent(
+            id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
             tenant_id=test_position.tenant_id,
             resume_id=test_resume.id,
             old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
             new_status=ResumeStatus.INTERVIEW_PASSED.value,
+            source="test",
+            occurred_at=milestone_at,
+        ),
+        ResumeStatusEvent(
+            id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.INTERVIEW_IN_PROGRESS.value,
+            new_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
             source="test",
             occurred_at=milestone_at,
         ),
@@ -187,7 +198,7 @@ def test_first_decision_stage_owner_keeps_handoff_credit(
     assert people[test_user.id].score == credit.score
 
 
-def test_position_reassigned_back_to_same_owner_is_not_duplicated(
+def test_position_reassigned_back_to_same_owner_has_no_frozen_handoff_credit(
     db, test_position, test_resume, test_user, test_admin
 ):
     round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -240,10 +251,7 @@ def test_position_reassigned_back_to_same_owner_is_not_duplicated(
     assert len(overview.people[0].positions) == 1
     assert {slot.actual_days for slot in overview.people[0].positions[0].slots} == {20}
     assert {slot.effective_held_days for slot in overview.people[0].positions[0].slots} == {5}
-    assert len(overview.people[0].handoff_credits) == 1
-    assert overview.people[0].handoff_credits[0].transferred_at == datetime(
-        2026, 7, 10, tzinfo=timezone.utc
-    )
+    assert overview.people[0].handoff_credits == []
 
 
 def test_zero_credit_at_first_handoff_expires_the_opportunity(

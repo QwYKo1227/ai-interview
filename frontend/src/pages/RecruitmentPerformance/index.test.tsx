@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import request from '../../utils/request';
@@ -148,5 +148,45 @@ describe('RecruitmentPerformance', () => {
     const averageRate = screen.getByText('平均达成率').closest('.ant-statistic');
     expect(averageScore).toHaveTextContent('40.00');
     expect(averageRate).toHaveTextContent('40.00');
+  });
+
+  it('does not display excluded markers or excluded HC rows', async () => {
+    authState.role = 'hr';
+    mockRequests({
+      ...overview,
+      people: [{
+        ...overview.people[0],
+        excluded_count: 1,
+        positions: [{
+          ...overview.people[0].positions[0],
+          excluded_count: 1,
+          slots: [
+            {
+              slot_id: 'slot-active', slot_number: 1, candidate_name: '正常候选人',
+              result_stage: '岗位Open', result_coefficient: 0, target_days: 75,
+              actual_days: 10, deducted_days: 0, effective_held_days: 10,
+              time_coefficient: 1.2, task_points: 40, score: 0, status: 'active',
+            },
+            {
+              slot_id: 'slot-cancelled', slot_number: 2, candidate_name: '被取消候选人',
+              result_stage: '已剔除', result_coefficient: 0, target_days: 75,
+              actual_days: 0, deducted_days: 0, effective_held_days: 0,
+              time_coefficient: 0, task_points: 0, score: 0, status: 'cancelled',
+            },
+          ],
+        }],
+      }],
+    });
+
+    render(<RecruitmentPerformance />);
+
+    await screen.findByText('后端工程师');
+    expect(screen.queryByText(/剔除/)).not.toBeInTheDocument();
+    const expandButton = document.querySelector<HTMLButtonElement>('.ant-table-row-expand-icon');
+    expect(expandButton).not.toBeNull();
+    fireEvent.click(expandButton!);
+    expect(await screen.findByText('正常候选人')).toBeInTheDocument();
+    expect(screen.queryByText('被取消候选人')).not.toBeInTheDocument();
+    expect(screen.queryByText('已剔除')).not.toBeInTheDocument();
   });
 });

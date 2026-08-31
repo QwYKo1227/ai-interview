@@ -243,7 +243,7 @@ const SlotLedger = ({ slots }: { slots: HcScore[] }) => (
       size="small"
       pagination={false}
       scroll={{ x: 980 }}
-      dataSource={slots}
+      dataSource={slots.filter(slot => !['cancelled', 'frozen'].includes(slot.status))}
       columns={[
         { title: 'HC', dataIndex: 'slot_number', width: 66, render: value => `#${value}` },
         { title: '候选人', dataIndex: 'candidate_name', render: value => value || <Text type="secondary">未占位</Text> },
@@ -353,7 +353,7 @@ const ScoreWorkspace = ({ overview, admin }: { overview?: Overview; admin: boole
             expandable={{ expandedRowRender: person => <PersonDetails person={person} /> }}
             columns={[
               { title: 'Recruiter', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name), render: (value, row) => <div><Space><Text strong>{value}</Text>{!row.is_active && <Tag>已停用</Tag>}</Space><div><Text type="secondary">{row.email}</Text></div></div> },
-              { title: 'HC任务', dataIndex: 'hc_count', render: (value, row) => `${value}${row.excluded_count ? `（剔除 ${row.excluded_count}）` : ''}` },
+              { title: 'HC任务', dataIndex: 'hc_count' },
               { title: '已入职', dataIndex: 'onboarded_count', sorter: (a, b) => a.onboarded_count - b.onboarded_count },
               { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, render: formatScore },
               { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, render: (value) => <Text strong>{formatScore(value)}</Text> },

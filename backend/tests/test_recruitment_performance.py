@@ -4,6 +4,8 @@ from uuid import UUID
 import pytest
 
 from app.models.models import (
+    Interview,
+    InterviewStatus,
     Offer,
     OfferStatus,
     PositionEvent,
@@ -80,6 +82,52 @@ def test_result_coefficient_applies_to_complete_quarter_holding_days(
     assert slot.effective_held_days == 10
     assert slot.result_coefficient == 0.6
     assert slot.score == slot.task_points * slot.time_coefficient * 0.6
+
+
+def test_scheduling_next_round_preserves_completed_interview_stage(
+    db, test_position, test_resume, test_user
+):
+    round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    first_interview_ended_at = datetime(2026, 7, 5, 12, tzinfo=timezone.utc)
+    test_position.created_at = round_started_at
+    test_resume.status = ResumeStatus.INTERVIEW_SCHEDULED
+    sync_position_slots(db, test_position, assigned_at=round_started_at)
+    db.add_all([
+        Interview(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            position_id=test_position.id,
+            round=1,
+            interview_category="hr",
+            interview_time=datetime(2026, 7, 5, 10, tzinfo=timezone.utc),
+            status=InterviewStatus.COMPLETED,
+            ended_at=first_interview_ended_at,
+        ),
+        Interview(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            position_id=test_position.id,
+            round=2,
+            interview_category="manager",
+            interview_time=datetime(2026, 7, 12, 10, tzinfo=timezone.utc),
+            status=InterviewStatus.SCHEDULED,
+        ),
+    ])
+    db.commit()
+
+    overview = calculate_overview(
+        db,
+        "2026-Q3",
+        user=test_user,
+        now=datetime(2026, 7, 10, 12, tzinfo=timezone.utc),
+        use_settlement=False,
+    )
+
+    slot = overview.people[0].positions[0].slots[0]
+    assert slot.candidate_name == test_resume.candidate_name
+    assert slot.result_stage == "HR面完成"
+    assert slot.result_coefficient == 0.2
+    assert slot.score > 0
 
 
 def test_reassigned_position_resets_effective_holding_but_keeps_full_cycle_days(

@@ -294,15 +294,23 @@ def _result_stage(db: Session, resume: Resume) -> tuple[str, datetime]:
         return "offer_pending", _aware(offer.sent_at if offer else None) or now
     if status == ResumeStatus.INTERVIEW_PASSED:
         return "interview_passed", now
-    if status in {ResumeStatus.PENDING_INTERVIEW_RESULT, ResumeStatus.PENDING_NEXT_INTERVIEW}:
+    if status in {
+        ResumeStatus.PENDING_INTERVIEW,
+        ResumeStatus.INTERVIEW_SCHEDULED,
+        ResumeStatus.INTERVIEW_IN_PROGRESS,
+        ResumeStatus.PENDING_INTERVIEW_RESULT,
+        ResumeStatus.PENDING_NEXT_INTERVIEW,
+    }:
         interview = (
             db.query(Interview)
             .filter(Interview.resume_id == resume.id, Interview.status == InterviewStatus.COMPLETED)
             .order_by(Interview.ended_at.desc(), Interview.created_at.desc())
             .first()
         )
+        if interview is None:
+            return "open", _aware(resume.created_at) or now
         stage = "hr_interview_completed" if interview and interview.interview_category == "hr" else "business_interview_completed"
-        return stage, _aware(interview.ended_at if interview else None) or now
+        return stage, _aware(interview.ended_at) or now
     return "open", _aware(resume.created_at) or now
 
 

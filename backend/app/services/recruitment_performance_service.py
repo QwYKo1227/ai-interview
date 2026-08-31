@@ -70,6 +70,15 @@ HANDOFF_CREDIT_STAGES = {
     "offer_accepted",
     "onboarded",
 }
+PLACEHOLDER_CANDIDATE_EMAILS = {
+    "-",
+    "n/a",
+    "na",
+    "unknown",
+    "暂无",
+    "无",
+    "未知",
+}
 
 
 def _aware(value: Optional[datetime]) -> Optional[datetime]:
@@ -293,25 +302,46 @@ def _result_stage(db: Session, resume: Resume) -> tuple[str, datetime]:
         offer = db.query(Offer).filter(Offer.resume_id == resume.id, Offer.status == OfferStatus.SENT).order_by(Offer.sent_at.desc()).first()
         return "offer_pending", _aware(offer.sent_at if offer else None) or now
     if status == ResumeStatus.INTERVIEW_PASSED:
-        return "interview_passed", now
-    if status in {
+        passed_at = (
+            db.query(ResumeStatusEvent.occurred_at)
+            .filter(
+                ResumeStatusEvent.resume_id == resume.id,
+                ResumeStatusEvent.new_status == ResumeStatus.INTERVIEW_PASSED.value,
+            )
+            .order_by(ResumeStatusEvent.occurred_at.desc())
+            .limit(1)
+            .scalar()
+        )
+        return "interview_passed", _aware(passed_at) or _aware(resume.created_at) or now
+    active_interview_statuses = {
         ResumeStatus.PENDING_INTERVIEW,
         ResumeStatus.INTERVIEW_SCHEDULED,
         ResumeStatus.INTERVIEW_IN_PROGRESS,
         ResumeStatus.PENDING_INTERVIEW_RESULT,
         ResumeStatus.PENDING_NEXT_INTERVIEW,
-    }:
-        interview = (
-            db.query(Interview)
-            .filter(Interview.resume_id == resume.id, Interview.status == InterviewStatus.COMPLETED)
-            .order_by(Interview.ended_at.desc(), Interview.created_at.desc())
-            .first()
-        )
-        if interview is None:
-            return "open", _aware(resume.created_at) or now
+    }
+    interview = (
+        db.query(Interview)
+        .filter(Interview.resume_id == resume.id, Interview.status == InterviewStatus.COMPLETED)
+        .order_by(Interview.ended_at.desc(), Interview.created_at.desc())
+        .first()
+    )
+    # A completed interview is an achieved milestone. Legacy records can have
+    # their current resume status reset to review after the interview, so use
+    # the persisted interview lifecycle as the authoritative floor.
+    if interview is not None:
         stage = "hr_interview_completed" if interview and interview.interview_category == "hr" else "business_interview_completed"
-        return stage, _aware(interview.ended_at) or now
+        return stage, _aware(interview.ended_at) or _aware(interview.created_at) or now
+    if status in active_interview_statuses:
+        return "open", _aware(resume.created_at) or now
     return "open", _aware(resume.created_at) or now
+
+
+def _candidate_identity_key(resume: Resume) -> str:
+    normalized_email = (resume.email or "").strip().lower()
+    if not normalized_email or normalized_email in PLACEHOLDER_CANDIDATE_EMAILS:
+        return f"resume:{resume.id}"
+    return normalized_email
 
 
 def _candidate_allocations(db: Session, positions: Iterable[Position], result_coefficients: dict) -> dict[UUID, list[tuple[Resume, str, datetime]]]:
@@ -325,7 +355,7 @@ def _candidate_allocations(db: Session, positions: Iterable[Position], result_co
             continue
         stage, achieved_at = _result_stage(db, resume)
         rank = float(result_coefficients.get(stage, 0))
-        key = (resume.email or f"resume:{resume.id}").strip().lower()
+        key = _candidate_identity_key(resume)
         candidates.append((key, rank, achieved_at, resume, stage))
     chosen = {}
     for item in sorted(candidates, key=lambda row: (-row[1], row[2], str(row[3].id))):
@@ -399,6 +429,25 @@ def _historical_result_stage(
         return None
     else:
         stage = "open"
+    if stage == "open":
+        completed_at = func.coalesce(Interview.ended_at, Interview.created_at)
+        interview = (
+            db.query(Interview)
+            .filter(
+                Interview.resume_id == resume.id,
+                Interview.status == InterviewStatus.COMPLETED,
+                completed_at <= cutoff,
+            )
+            .order_by(completed_at.desc())
+            .first()
+        )
+        if interview is not None:
+            stage = (
+                "hr_interview_completed"
+                if interview.interview_category == "hr"
+                else "business_interview_completed"
+            )
+            achieved_at = _aware(interview.ended_at) or _aware(interview.created_at)
     return stage, achieved_at
 
 
@@ -418,7 +467,7 @@ def _candidate_allocations_at(
             continue
         stage, achieved_at = result
         rank = float(result_coefficients.get(stage, 0))
-        key = (resume.email or f"resume:{resume.id}").strip().lower()
+        key = _candidate_identity_key(resume)
         candidates.append((key, rank, achieved_at, resume, stage))
     chosen = {}
     for item in sorted(candidates, key=lambda row: (-row[1], row[2], str(row[3].id))):

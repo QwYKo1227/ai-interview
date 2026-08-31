@@ -11,10 +11,19 @@ from app.models.models import (
     PositionEvent,
     PositionEventType,
     RecruitmentHcSlot,
+    Resume,
+    ScreeningResult,
     ResumeStatusEvent,
     ResumeStatus,
 )
-from app.services.recruitment_performance_service import available_periods, calculate_overview, sync_position_slots
+from app.services.recruitment_performance_service import (
+    _candidate_allocations,
+    _result_stage,
+    available_periods,
+    calculate_overview,
+    get_config,
+    sync_position_slots,
+)
 
 
 def test_available_periods_span_position_history_through_current_quarter(db, test_position):
@@ -128,6 +137,94 @@ def test_scheduling_next_round_preserves_completed_interview_stage(
     assert slot.result_stage == "HR面完成"
     assert slot.result_coefficient == 0.2
     assert slot.score > 0
+
+
+def test_review_status_after_completed_interview_preserves_completed_stage(
+    db, test_position, test_resume, test_user
+):
+    round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    interview_ended_at = datetime(2026, 7, 5, 12, tzinfo=timezone.utc)
+    test_position.created_at = round_started_at
+    test_resume.status = ResumeStatus.PENDING_REVIEW
+    sync_position_slots(db, test_position, assigned_at=round_started_at)
+    db.add(
+        Interview(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            position_id=test_position.id,
+            round=1,
+            interview_category="manager",
+            interview_time=datetime(2026, 7, 5, 10, tzinfo=timezone.utc),
+            status=InterviewStatus.COMPLETED,
+            ended_at=interview_ended_at,
+        )
+    )
+    db.commit()
+
+    overview = calculate_overview(
+        db,
+        "2026-Q3",
+        user=test_user,
+        now=datetime(2026, 7, 10, 12, tzinfo=timezone.utc),
+        use_settlement=False,
+    )
+
+    slot = overview.people[0].positions[0].slots[0]
+    assert slot.candidate_name == test_resume.candidate_name
+    assert slot.result_stage == "业务面完成"
+    assert slot.result_coefficient == 0.4
+    assert slot.score > 0
+
+
+def test_placeholder_emails_do_not_merge_distinct_candidates(
+    db, test_position, test_resume
+):
+    test_resume.email = "未知"
+    another_resume = Resume(
+        tenant_id=test_position.tenant_id,
+        candidate_name="李四",
+        contact="13800138001",
+        email="未知",
+        position_id=test_position.id,
+        file_path="/uploads/another_resume.pdf",
+        raw_text="李四的简历内容...",
+        status=ResumeStatus.PENDING_REVIEW,
+        screening_result=ScreeningResult.PASSED,
+    )
+    db.add(another_resume)
+    db.commit()
+
+    allocations = _candidate_allocations(
+        db,
+        [test_position],
+        get_config(db, "2026-Q3").result_coefficients,
+    )
+
+    assert {resume.candidate_name for resume, _, _ in allocations[test_position.id]} == {
+        test_resume.candidate_name,
+        another_resume.candidate_name,
+    }
+
+
+def test_interview_passed_uses_status_event_time(db, test_resume):
+    passed_at = datetime(2026, 7, 8, 9, tzinfo=timezone.utc)
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    db.add(
+        ResumeStatusEvent(
+            tenant_id=test_resume.tenant_id,
+            resume_id=test_resume.id,
+            old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
+            new_status=ResumeStatus.INTERVIEW_PASSED.value,
+            source="test",
+            occurred_at=passed_at,
+        )
+    )
+    db.commit()
+
+    stage, achieved_at = _result_stage(db, test_resume)
+
+    assert stage == "interview_passed"
+    assert achieved_at == passed_at
 
 
 def test_reassigned_position_resets_effective_holding_but_keeps_full_cycle_days(

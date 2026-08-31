@@ -514,6 +514,55 @@ def _owner_holding_start(
     return occurred_at
 
 
+def _owner_holding_intervals(
+    db: Session,
+    position: Position,
+    owner_id: UUID,
+    cutoff: datetime,
+) -> list[tuple[datetime, datetime]]:
+    """Return every non-overlapping interval held by one owner through cutoff.
+
+    The outgoing owner keeps the transfer calendar day. A new owner's interval
+    begins on the next company day, matching the existing no-double-counting
+    rule. When a position later returns to an earlier owner, their prior and
+    resumed intervals are both retained instead of discarding the earlier work.
+    """
+    events = _owner_events(db, position.id, cutoff)
+    if not events:
+        if position.hiring_manager_id != owner_id:
+            return []
+        return [(_aware(position.created_at), cutoff)]
+
+    intervals = []
+    active_owner = None
+    active_start = None
+    first_event = events[0]
+    if first_event.event_type == PositionEventType.OWNER_CHANGED:
+        try:
+            active_owner = UUID(first_event.old_value) if first_event.old_value else None
+        except (TypeError, ValueError):
+            active_owner = None
+        active_start = _aware(position.created_at)
+
+    for event in events:
+        occurred_at = _aware(event.occurred_at)
+        if active_owner == owner_id and active_start is not None and active_start <= occurred_at:
+            intervals.append((active_start, occurred_at))
+        try:
+            active_owner = UUID(event.new_value) if event.new_value else None
+        except (TypeError, ValueError):
+            active_owner = None
+        active_start = (
+            occurred_at
+            if event.event_type == PositionEventType.INITIAL_OWNER
+            else _next_company_day_start(occurred_at)
+        )
+
+    if active_owner == owner_id and active_start is not None and active_start <= cutoff:
+        intervals.append((active_start, cutoff))
+    return intervals
+
+
 def _score_position(
     db: Session,
     position: Position,
@@ -522,7 +571,7 @@ def _score_position(
     *,
     period_start: datetime,
     cutoff: datetime,
-    holding_start: Optional[datetime],
+    holding_intervals: Optional[list[tuple[datetime, datetime]]],
     eligible_only: bool = False,
 ) -> PositionScore:
     category = getattr(position.category, "value", position.category)
@@ -551,10 +600,7 @@ def _score_position(
                 time_coefficient=0, task_points=0, score=0, status=status,
             ))
             continue
-        slot_start = max(
-            value for value in [_aware(slot.assigned_at), period_start, holding_start]
-            if value is not None
-        )
+        slot_start = max(_aware(slot.assigned_at), period_start)
         offer = None
         if resume is not None:
             offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
@@ -564,8 +610,22 @@ def _score_position(
         onboarded_at = onboarded_at if onboarded_at is None or onboarded_at <= cutoff else None
         weight_end = min(value for value in [cutoff, accepted_at, onboarded_at] if value is not None)
         pauses = _approved_pauses(db, slot.id)
-        deducted = _deducted_days(pauses, slot_start, weight_end) if slot_start <= weight_end else 0
-        effective_days = max(0, _day_count(slot_start, weight_end) - deducted)
+        score_intervals = holding_intervals
+        if score_intervals is None:
+            score_intervals = [(slot_start, weight_end)]
+        deducted = 0
+        effective_days = 0
+        for held_start, held_end in score_intervals:
+            interval_start = max(slot_start, held_start)
+            interval_end = min(weight_end, held_end)
+            if interval_start > interval_end:
+                continue
+            interval_deducted = _deducted_days(pauses, interval_start, interval_end)
+            deducted += interval_deducted
+            effective_days += max(
+                0,
+                _day_count(interval_start, interval_end) - interval_deducted,
+            )
         cycle_start = max(_aware(slot.round_started_at), period_start)
         cycle_end = min(accepted_at or cutoff, cutoff)
         cycle_deducted = _deducted_days(pauses, cycle_start, cycle_end)
@@ -657,7 +717,12 @@ def _credit_detail_for_transfer(
     category = getattr(position.category, "value", position.category)
     if category not in config.target_days:
         return None
-    holding_start = _owner_holding_start(db, position, recipient_id, transfer_at)
+    holding_intervals = _owner_holding_intervals(
+        db,
+        position,
+        recipient_id,
+        transfer_at,
+    )
     allocations = _candidate_allocations_at(db, [position], config.result_coefficients, transfer_at)
     scored = _score_position(
         db,
@@ -666,7 +731,7 @@ def _credit_detail_for_transfer(
         config,
         period_start=period_start,
         cutoff=transfer_at,
-        holding_start=holding_start,
+        holding_intervals=holding_intervals,
         eligible_only=True,
     )
     return recipient_id, HandoffCredit(
@@ -813,7 +878,12 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
             config,
             period_start=period_start,
             cutoff=cutoff,
-            holding_start=_owner_holding_start(db, position, owner_id, cutoff),
+            holding_intervals=_owner_holding_intervals(
+                db,
+                position,
+                owner_id,
+                cutoff,
+            ),
         ))
 
     person_credits = _handoff_credits_for_period(

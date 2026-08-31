@@ -203,7 +203,7 @@ def test_position_reassigned_back_to_same_owner_has_no_frozen_handoff_credit(
 ):
     round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
     test_position.created_at = round_started_at
-    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    test_resume.status = ResumeStatus.OFFER_ACCEPTED
     sync_position_slots(db, test_position, assigned_at=round_started_at)
     db.add_all([
         PositionEvent(
@@ -237,6 +237,17 @@ def test_position_reassigned_back_to_same_owner_has_no_frozen_handoff_credit(
             new_value=str(test_user.id),
             occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
         ),
+        Offer(
+            tenant_id=test_position.tenant_id,
+            resume_id=test_resume.id,
+            position_id=test_position.id,
+            candidate_name=test_resume.candidate_name,
+            candidate_email=test_resume.email,
+            position_title=test_position.title,
+            status=OfferStatus.ACCEPTED,
+            accepted_at=datetime(2026, 7, 15, 12, tzinfo=timezone.utc),
+            created_by=test_user.id,
+        ),
     ])
     db.commit()
 
@@ -249,8 +260,13 @@ def test_position_reassigned_back_to_same_owner_has_no_frozen_handoff_credit(
 
     assert [person.user_id for person in overview.people] == [test_user.id]
     assert len(overview.people[0].positions) == 1
-    assert {slot.actual_days for slot in overview.people[0].positions[0].slots} == {20}
-    assert {slot.effective_held_days for slot in overview.people[0].positions[0].slots} == {5}
+    candidate_slot = next(
+        slot for slot in overview.people[0].positions[0].slots
+        if slot.candidate_name == test_resume.candidate_name
+    )
+    assert candidate_slot.actual_days == 15
+    assert candidate_slot.effective_held_days == 10
+    assert overview.people[0].positions[0].task_points > 0
     assert overview.people[0].handoff_credits == []
 
 

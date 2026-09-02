@@ -23,6 +23,7 @@ INTERVIEW_STAGE_STATUSES = {
     ResumeStatus.PENDING_NEXT_INTERVIEW,
     ResumeStatus.INTERVIEW_PASSED,
     ResumeStatus.INTERVIEW_FAILED,
+    ResumeStatus.WAITLIST,
 }
 
 
@@ -31,6 +32,7 @@ FINAL_RESUME_STATUS = {
     InterviewResult.PASSED: ResumeStatus.INTERVIEW_PASSED,
     InterviewResult.HIRED: ResumeStatus.INTERVIEW_PASSED,
     InterviewResult.REJECTED: ResumeStatus.INTERVIEW_FAILED,
+    InterviewResult.WAITLIST: ResumeStatus.WAITLIST,
 }
 
 
@@ -111,6 +113,8 @@ def apply_final_decision(interview: Interview) -> None:
         resume.screening_result = ScreeningResult.PASSED
     elif interview.result == InterviewResult.REJECTED:
         resume.screening_result = ScreeningResult.REJECTED
+    elif interview.result == InterviewResult.WAITLIST:
+        resume.screening_result = ScreeningResult.WAITLIST
 
 
 def restore_after_cancellation(db: Session, interview: Interview) -> None:

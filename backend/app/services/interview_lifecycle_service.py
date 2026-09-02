@@ -75,6 +75,7 @@ SCORE_DIMENSIONS = {
 FINAL_DECISIONS = {
     "next_round": InterviewResult.NEXT_ROUND,
     "passed": InterviewResult.PASSED,
+    "waitlist": InterviewResult.WAITLIST,
     "rejected": InterviewResult.REJECTED,
 }
 

@@ -11,6 +11,7 @@ from app.models.file_models import StoredFile
 from app.models.models import (
     Interview,
     InterviewPanel,
+    InterviewResult,
     InterviewStatus,
     ResumeStatus,
     ScreeningResult,
@@ -487,6 +488,24 @@ def test_final_decision_updates_resume_scheduled_from_pending_review(
     assert decided.resume.screening_result == ScreeningResult.PASSED
 
 
+def test_waitlist_final_decision_updates_interview_and_resume(
+    db: Session,
+    test_interview,
+    test_interview_panel: InterviewPanel,
+    test_user,
+):
+    test_interview.lifecycle_state = "ended"
+    test_interview_panel.human_review_submitted_at = utcnow()
+    db.commit()
+
+    decided = confirm_final_decision(db, test_interview, test_user, "waitlist")
+
+    assert decided.result == InterviewResult.WAITLIST
+    assert decided.resume.status == ResumeStatus.WAITLIST
+    assert decided.resume.screening_result == ScreeningResult.WAITLIST
+    assert decided.decision_history[-1]["result"] == "waitlist"
+
+
 def test_ai_contract_requires_timestamp_evidence_and_enforces_gates():
     transcript_data = {
         "segments": [{"start": 1.0, "end": 2.0, "text": "evidence"}],
@@ -651,6 +670,43 @@ def test_admin_can_correct_locked_final_decision_with_audit(
     assert corrected.decision_history[-1]["from"] == "passed"
     assert corrected.decision_history[-1]["to"] == "rejected"
     assert corrected.decision_history[-1]["reason"] == "Decision entered against the wrong candidate"
+
+
+def test_admin_can_correct_waitlist_final_decision_in_both_directions(
+    db: Session,
+    test_interview,
+    test_interview_panel: InterviewPanel,
+    test_user,
+    test_admin,
+):
+    test_interview.lifecycle_state = "ended"
+    test_interview_panel.human_review_submitted_at = utcnow()
+    db.commit()
+    confirm_final_decision(db, test_interview, test_user, "waitlist")
+
+    corrected = correct_final_decision(
+        db,
+        test_interview,
+        test_admin,
+        "passed",
+        "Candidate should proceed",
+    )
+
+    assert corrected.result == InterviewResult.PASSED
+    assert corrected.resume.status == ResumeStatus.INTERVIEW_PASSED
+    assert corrected.resume.screening_result == ScreeningResult.PASSED
+
+    corrected = correct_final_decision(
+        db,
+        test_interview,
+        test_admin,
+        "waitlist",
+        "Return candidate to the waitlist",
+    )
+
+    assert corrected.result == InterviewResult.WAITLIST
+    assert corrected.resume.status == ResumeStatus.WAITLIST
+    assert corrected.resume.screening_result == ScreeningResult.WAITLIST
 
 
 def test_async_asr_job_is_persisted_completed_and_deleted(

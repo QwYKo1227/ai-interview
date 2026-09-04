@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import appStyles from '../../index.css?inline'
+import request from '../../utils/request'
 import AppLayout from './index'
 
 const screenState = vi.hoisted(() => ({ xxl: false }))
@@ -23,6 +24,10 @@ vi.mock('../../contexts/AuthContext', () => ({
   }),
 }))
 
+vi.mock('../../utils/request', () => ({
+  default: { get: vi.fn() },
+}))
+
 describe('AppLayout responsiveness', () => {
   let stylesheet: HTMLStyleElement
 
@@ -32,11 +37,18 @@ describe('AppLayout responsiveness', () => {
     stylesheet = document.createElement('style')
     stylesheet.textContent = appStyles
     document.head.append(stylesheet)
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/my-pending-review-count') return { count: 0 }
+      if (url === '/resumes/pending-hr-decision-count') return { count: 0 }
+      if (url === '/offers/my-pending-count') return { count: 0 }
+      return {}
+    })
   })
 
   afterEach(() => {
     cleanup()
     stylesheet.remove()
+    vi.clearAllMocks()
   })
 
   it('collapses the sidebar and synchronizes the content offset on laptop screens', () => {
@@ -68,12 +80,43 @@ describe('AppLayout responsiveness', () => {
     expect(screen.queryByRole('menuitem', { name: '简历管理' })).not.toBeInTheDocument()
   })
 
-  it.each(['admin', 'hr'])('shows %s users only the resume management entry', (role) => {
-    authState.role = role
+  it('shows administrators both resume entries', () => {
+    authState.role = 'admin'
+    render(<MemoryRouter initialEntries={['/resumes']}><AppLayout /></MemoryRouter>)
+
+    expect(screen.getByRole('menuitem', { name: '简历管理' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '我的评审' })).toBeInTheDocument()
+  })
+
+  it('does not show HR users the personal review entry', () => {
+    authState.role = 'hr'
     render(<MemoryRouter initialEntries={['/resumes']}><AppLayout /></MemoryRouter>)
 
     expect(screen.getByRole('menuitem', { name: '简历管理' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '我的评审' })).not.toBeInTheDocument()
+  })
+
+  it('shows pending counts beside expanded menu labels and caps them at 99+', async () => {
+    screenState.xxl = true
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/my-pending-review-count') return { count: 4 }
+      if (url === '/resumes/pending-hr-decision-count') return { count: 120 }
+      return { count: 0 }
+    })
+
+    render(<MemoryRouter initialEntries={['/resumes']}><AppLayout /></MemoryRouter>)
+
+    expect(await screen.findByText('4')).toBeInTheDocument()
+    expect(screen.getAllByText('99+').length).toBeGreaterThan(0)
+  })
+
+  it('keeps the pending review badge visible in collapsed mode', async () => {
+    authState.role = 'interviewer'
+    vi.mocked(request.get).mockResolvedValue({ count: 7 })
+
+    render(<MemoryRouter initialEntries={['/resumes/my-reviews']}><AppLayout /></MemoryRouter>)
+
+    expect(await screen.findByText('7')).toBeVisible()
   })
 
   it('hides the complete title beside a direct menu icon in collapsed mode', () => {

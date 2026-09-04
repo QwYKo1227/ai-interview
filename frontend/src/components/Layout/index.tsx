@@ -30,6 +30,8 @@ const AppLayout: React.FC = () => {
   const siderWidth = isLaptop ? 80 : 240;
   const role = (user as any)?.role?.value ?? (user as any)?.role;
   const [pendingOfferCount, setPendingOfferCount] = useState(0);
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+  const [pendingHrDecisionCount, setPendingHrDecisionCount] = useState(0);
 
   useEffect(() => {
     if (!user || !['admin', 'hr'].includes(role)) {
@@ -45,6 +47,51 @@ const AppLayout: React.FC = () => {
     window.addEventListener('offer-pending-updated', loadPendingCount);
     return () => window.removeEventListener('offer-pending-updated', loadPendingCount);
   }, [user, role, location.pathname]);
+
+  useEffect(() => {
+    const canReview = role === 'admin' || role === 'interviewer';
+    const canMakeHrDecision = role === 'admin' || role === 'hr';
+
+    const loadPendingCounts = () => {
+      if (canReview) {
+        request.get('/resumes/my-pending-review-count')
+          .then((response) => setPendingReviewCount(response?.count || 0))
+          .catch(() => setPendingReviewCount(0));
+      } else {
+        setPendingReviewCount(0);
+      }
+
+      if (canMakeHrDecision) {
+        request.get('/resumes/pending-hr-decision-count')
+          .then((response) => setPendingHrDecisionCount(response?.count || 0))
+          .catch(() => setPendingHrDecisionCount(0));
+      } else {
+        setPendingHrDecisionCount(0);
+      }
+    };
+
+    if (!user) {
+      setPendingReviewCount(0);
+      setPendingHrDecisionCount(0);
+      return;
+    }
+
+    loadPendingCounts();
+    window.addEventListener('resume-pending-counts-updated', loadPendingCounts);
+    return () => window.removeEventListener('resume-pending-counts-updated', loadPendingCounts);
+  }, [user, role, location.pathname]);
+
+  const badgeIcon = (icon: React.ReactNode, count: number) => (
+    isLaptop
+      ? <Badge count={count} overflowCount={99} size="small" offset={[2, 0]}>{icon}</Badge>
+      : icon
+  );
+
+  const badgeLabel = (label: string, count: number) => (
+    isLaptop
+      ? label
+      : <Badge count={count} overflowCount={99} size="small" offset={[10, 0]}>{label}</Badge>
+  );
 
   const handleLogout = () => {
     logout();
@@ -77,15 +124,15 @@ const AppLayout: React.FC = () => {
     },
     {
       key: '/resumes',
-      icon: <FileTextOutlined aria-hidden="true" />,
-      label: '简历管理',
+      icon: badgeIcon(<FileTextOutlined aria-hidden="true" />, pendingHrDecisionCount),
+      label: badgeLabel('简历管理', pendingHrDecisionCount),
       roles: ['admin', 'hr'],
     },
     {
       key: '/resumes/my-reviews',
-      icon: <AuditOutlined aria-hidden="true" />,
-      label: '我的评审',
-      roles: ['interviewer'],
+      icon: badgeIcon(<AuditOutlined aria-hidden="true" />, pendingReviewCount),
+      label: badgeLabel('我的评审', pendingReviewCount),
+      roles: ['admin', 'interviewer'],
     },
     {
       key: '/interviews',
@@ -130,6 +177,11 @@ const AppLayout: React.FC = () => {
     return item.roles.includes(role);
   });
 
+  const plainPageTitles: Record<string, string> = {
+    '/resumes': '简历管理',
+    '/resumes/my-reviews': '我的评审',
+  };
+
   const pageTitle =
     location.pathname.startsWith('/settings/profile')
       ? '个人设置'
@@ -137,7 +189,9 @@ const AppLayout: React.FC = () => {
         ? '系统设置'
         : location.pathname.startsWith('/workflows/')
           ? '工作流编辑'
-          : menuItems.find(item => item.key === location.pathname)?.label || 'AI 面试助手';
+          : plainPageTitles[location.pathname]
+            || menuItems.find(item => item.key === location.pathname)?.label
+            || 'AI 面试助手';
 
   const userMenuItems: any[] = [
     {

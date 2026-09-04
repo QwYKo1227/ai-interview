@@ -1,7 +1,8 @@
 """Opaque public links backed by one-way token digests."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import base64
 import hashlib
 import hmac
 import re
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.config.tenant_session import get_tenant_id, set_tenant_context
 from app.models.tenant_models import PublicAccessToken, Tenant, TenantDomain, TenantStatus
 from app.core.host_policy import resolve_host
+from app.core.security import SECRET_KEY
 
 
 PUBLIC_NOT_FOUND = "Public resource not found"
@@ -32,6 +34,18 @@ class TenantContextAndResource:
 
 def hash_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _recoverable_token(record: PublicAccessToken) -> str:
+    """Derive an opaque token that can be reconstructed without storing plaintext."""
+    payload = (
+        f"{record.id}:{record.tenant_id}:{record.resource_type}:"
+        f"{record.resource_id}:{_aware_utc(record.expires_at).isoformat()}"
+    )
+    digest = hmac.new(
+        SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def _resource_model(resource_type: str):
@@ -97,6 +111,71 @@ def issue_public_token(
         resource_id=resource_id,
         expires_at=expires_at,
     )
+    db.add(record)
+    db.commit()
+    return raw_token
+
+
+def get_or_issue_reusable_public_token(
+    db: Session,
+    tenant_id: UUID,
+    resource_type: str,
+    resource_id: UUID,
+    *,
+    lifetime: timedelta,
+    force_rotate: bool = False,
+) -> str:
+    """Return the current recoverable token, rotating legacy or expired tokens once."""
+    if resource_type not in SUPPORTED_RESOURCE_TYPES:
+        raise ValueError("unsupported public resource type")
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.id == tenant_id, Tenant.status == TenantStatus.ACTIVE)
+        .first()
+    )
+    if tenant is None:
+        raise _not_found()
+    model = _resource_model(resource_type)
+    resource = (
+        db.query(model)
+        .filter(model.id == resource_id, model.tenant_id == tenant_id)
+        .first()
+    )
+    if resource is None:
+        raise _not_found()
+
+    now = datetime.now(timezone.utc)
+    records = (
+        db.query(PublicAccessToken)
+        .filter(
+            PublicAccessToken.tenant_id == tenant_id,
+            PublicAccessToken.resource_type == resource_type,
+            PublicAccessToken.resource_id == resource_id,
+            PublicAccessToken.revoked_at.is_(None),
+        )
+        .order_by(PublicAccessToken.created_at.desc())
+        .all()
+    )
+    if not force_rotate:
+        for record in records:
+            if _aware_utc(record.expires_at) <= now:
+                continue
+            raw_token = _recoverable_token(record)
+            if hmac.compare_digest(record.token_hash, hash_token(raw_token)):
+                return raw_token
+
+    revoke_public_tokens(db, tenant_id, resource_type, resource_id)
+    expires_at = now + lifetime
+    record = PublicAccessToken(
+        id=UUID(bytes=secrets.token_bytes(16)),
+        token_hash="0" * 64,
+        tenant_id=tenant_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        expires_at=expires_at,
+    )
+    raw_token = _recoverable_token(record)
+    record.token_hash = hash_token(raw_token)
     db.add(record)
     db.commit()
     return raw_token

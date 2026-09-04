@@ -32,7 +32,7 @@ import re
 from app.core.observability import background_task_context
 
 from app.config.tenant_session import get_tenant_id, tenant_session
-from app.services.public_token_service import issue_public_token
+from app.services.public_token_service import get_or_issue_reusable_public_token
 
 logger = logging.getLogger(__name__)
 
@@ -923,6 +923,7 @@ def submit_public_department_review(
             comment=comment,
             is_completed=True,
             updated_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
         )
     )
     if transition.rowcount != 1:
@@ -958,7 +959,11 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
     # 检查是否已经指派过该评审人
     existing = db.query(DepartmentReview).filter(
         DepartmentReview.resume_id == resume_id,
-        DepartmentReview.reviewer_id == reviewer_id
+        DepartmentReview.reviewer_id == reviewer_id,
+        or_(
+            DepartmentReview.reviewed_position_id == resume.position_id,
+            DepartmentReview.reviewed_position_id.is_(None),
+        ),
     ).first()
 
     if existing:
@@ -966,20 +971,23 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
 
     # 创建评审记录
     review = DepartmentReview(
+        tenant_id=resume.tenant_id,
         resume_id=resume_id,
         reviewer_id=reviewer_id,
+        reviewed_position_id=resume.position_id,
+        reviewed_position_title=resume.position.title if resume.position else None,
         is_completed=False
         # 不设置 recommendation 默认值，让它为 None
     )
     db.add(review)
     db.commit()
     db.refresh(review)
-    review.public_token = issue_public_token(
+    review.public_token = get_or_issue_reusable_public_token(
         db,
         review.tenant_id,
         "department_review",
         review.id,
-        datetime.now(timezone.utc) + timedelta(days=14),
+        lifetime=timedelta(days=14),
     )
 
     # 更新简历状态为待部门评审
@@ -1014,15 +1022,19 @@ def reassign_department_reviewer(
         DepartmentReview.resume_id == resume_id,
         DepartmentReview.reviewer_id == reviewer_id,
         DepartmentReview.id != review_id,
+        DepartmentReview.reviewed_position_id == review.reviewed_position_id,
     ).first()
     if duplicate is not None:
         raise HTTPException(status_code=400, detail="该评审人已被指派")
 
     review.reviewer_id = reviewer_id
+    review.last_reminded_at = None
     review.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(review)
-    review.public_token = reissue_department_review_link(db, resume_id, review_id)
+    review.public_token = reissue_department_review_link(
+        db, resume_id, review_id, force_rotate=True
+    )
     return review
 
 
@@ -1030,6 +1042,8 @@ def reissue_department_review_link(
     db: Session,
     resume_id: UUID,
     review_id: UUID,
+    *,
+    force_rotate: bool = False,
 ) -> str:
     review = db.query(DepartmentReview).filter(
         DepartmentReview.id == review_id,
@@ -1038,12 +1052,13 @@ def reissue_department_review_link(
     if review is None:
         raise HTTPException(status_code=404, detail="评审记录不存在")
 
-    return issue_public_token(
+    return get_or_issue_reusable_public_token(
         db,
         review.tenant_id,
         "department_review",
         review.id,
-        datetime.now(timezone.utc) + timedelta(days=14),
+        lifetime=timedelta(days=14),
+        force_rotate=force_rotate,
     )
 
 
@@ -1058,37 +1073,88 @@ def get_department_reviews(db: Session, resume_id: UUID) -> List[DepartmentRevie
 
 
 def get_assigned_department_reviews(
-    db: Session, reviewer_id: UUID
-) -> List[Dict[str, Any]]:
-    reviews = (
+    db: Session,
+    reviewer_id: UUID,
+    *,
+    completed: bool = False,
+    page: int = 1,
+    page_size: int = 10,
+    search: Optional[str] = None,
+) -> Dict[str, Any]:
+    base_query = (
         db.query(DepartmentReview)
+        .join(Resume, DepartmentReview.resume_id == Resume.id)
+        .outerjoin(Position, Resume.position_id == Position.id)
         .options(
             joinedload(DepartmentReview.resume).joinedload(Resume.position)
         )
-        .filter(
-            DepartmentReview.reviewer_id == reviewer_id,
-            DepartmentReview.is_completed.is_(False),
+        .filter(DepartmentReview.reviewer_id == reviewer_id)
+    )
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        base_query = base_query.filter(
+            or_(
+                Resume.candidate_name.ilike(pattern),
+                DepartmentReview.reviewed_position_title.ilike(pattern),
+                Position.title.ilike(pattern),
+            )
         )
-        .order_by(DepartmentReview.created_at.desc())
+
+    pending_total = base_query.filter(
+        DepartmentReview.is_completed.is_(False)
+    ).count()
+    completed_total = base_query.filter(
+        DepartmentReview.is_completed.is_(True)
+    ).count()
+    total = completed_total if completed else pending_total
+    total_pages = (total + page_size - 1) // page_size
+
+    order_column = (
+        func.coalesce(
+            DepartmentReview.completed_at,
+            DepartmentReview.updated_at,
+            DepartmentReview.created_at,
+        ).desc()
+        if completed
+        else DepartmentReview.created_at.desc()
+    )
+    reviews = (
+        base_query.filter(DepartmentReview.is_completed.is_(completed))
+        .order_by(order_column, DepartmentReview.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
-    return [
+    items = [
         {
             "review_id": review.id,
             "resume_id": review.resume_id,
             "candidate_name": review.resume.candidate_name,
-            "position_title": (
-                review.resume.position.title
-                if review.resume.position is not None
-                else None
+            "position_title": review.reviewed_position_title or (
+                review.resume.position.title if review.resume.position is not None else None
             ),
             "match_score": review.resume.match_score,
             "status": review.resume.status,
+            "is_completed": review.is_completed,
+            "overall_score": review.overall_score,
+            "recommendation": review.recommendation,
             "created_at": review.created_at,
+            "completed_at": review.completed_at or (
+                review.updated_at if review.is_completed else None
+            ),
         }
         for review in reviews
         if review.resume is not None
     ]
+    return {
+        "items": items,
+        "total": total,
+        "pending_total": pending_total,
+        "completed_total": completed_total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 def complete_department_review(db: Session, resume_id: UUID, review_id: UUID, reviewer_id: UUID, review_data: DepartmentReviewUpdate) -> DepartmentReview:
@@ -1114,6 +1180,7 @@ def complete_department_review(db: Session, resume_id: UUID, review_id: UUID, re
 
     review.is_completed = True
     review.updated_at = datetime.utcnow()
+    review.completed_at = review.updated_at
 
     db.commit()
     db.refresh(review)
@@ -1286,6 +1353,7 @@ def aggregate_department_reviews(db: Session, resume_id: UUID) -> Dict[str, Any]
             "is_completed": r.is_completed,
             "created_at": r.created_at,
             "updated_at": r.updated_at,
+            "last_reminded_at": r.last_reminded_at,
             "reviewer_name": reviewer_name
         })
 
@@ -1454,6 +1522,7 @@ def transfer_resume_position(
 
     # 更新岗位
     old_position_id = resume.position_id
+    old_position_title = resume.position.title if resume.position else None
     resume.position_id = new_position_id
 
     # 清除之前的解析结果
@@ -1467,10 +1536,16 @@ def transfer_resume_position(
     resume.other_position_matches = None
     resume.status = ResumeStatus.PENDING_SCREENING
 
-    # 清除部门评审记录
+    # 保留已完成评审作为历史记录，只清除尚未完成的指派。
     department_reviews = db.query(DepartmentReview).filter(DepartmentReview.resume_id == resume_id).all()
     for review in department_reviews:
-        db.delete(review)
+        if review.is_completed:
+            if review.reviewed_position_id is None:
+                review.reviewed_position_id = old_position_id
+            if not review.reviewed_position_title:
+                review.reviewed_position_title = old_position_title
+        else:
+            db.delete(review)
 
     # 清除HR评审
     resume.hr_review = None

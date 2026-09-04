@@ -30,6 +30,7 @@ import dayjs from 'dayjs';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
 import './performance.css';
+import { useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 
 const { Text, Title } = Typography;
 
@@ -260,7 +261,19 @@ const SlotLedger = ({ slots }: { slots: HcScore[] }) => (
   </div>
 );
 
-const PositionTable = ({ positions }: { positions: PositionScore[] }) => (
+type RememberedSortOrder = 'ascend' | 'descend' | null;
+
+const PositionTable = ({
+  positions,
+  sortField,
+  sortOrder,
+  onSort,
+}: {
+  positions: PositionScore[];
+  sortField?: string;
+  sortOrder?: RememberedSortOrder;
+  onSort?: (field?: string, order?: RememberedSortOrder) => void;
+}) => (
   <Table
     rowKey="position_id"
     pagination={false}
@@ -271,10 +284,17 @@ const PositionTable = ({ positions }: { positions: PositionScore[] }) => (
       { title: '岗位', dataIndex: 'title', render: (value, row) => <div><Text strong>{value}</Text><div><Text type="secondary">{categoryLabels[row.category] || row.category} · P{row.priority}</Text></div></div> },
       { title: 'HC', dataIndex: 'hc_count', render: (value, row) => `${value}（入职 ${row.onboarded_count}）` },
       { title: '最高阶段', dataIndex: 'highest_result_stage', render: value => <Tag>{value}</Tag> },
-      { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, render: formatScore },
-      { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, render: (value) => <Text strong>{formatScore(value)}</Text> },
-      { title: '达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), render: value => formatRate(value) },
+      { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, sortOrder: sortField === 'task_points' ? sortOrder : null, render: formatScore },
+      { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, sortOrder: sortField === 'score' ? sortOrder : null, render: (value) => <Text strong>{formatScore(value)}</Text> },
+      { title: '达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), sortOrder: sortField === 'achievement_rate' ? sortOrder : null, render: value => formatRate(value) },
     ]}
+    onChange={(_pagination, _filters, sorter) => {
+      const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+      onSort?.(
+        activeSorter?.order ? String(activeSorter.field || activeSorter.columnKey || '') : undefined,
+        activeSorter?.order || undefined,
+      );
+    }}
   />
 );
 
@@ -303,14 +323,14 @@ const HandoffCreditTable = ({ credits }: { credits: HandoffCredit[] }) => {
   );
 };
 
-const PersonDetails = ({ person }: { person: PersonScore }) => (
+const PersonDetails = ({ person, ...sortProps }: { person: PersonScore; sortField?: string; sortOrder?: RememberedSortOrder; onSort?: (field?: string, order?: RememberedSortOrder) => void }) => (
   <Space direction="vertical" size="large" style={{ width: '100%' }}>
-    <PositionTable positions={person.positions} />
+    <PositionTable positions={person.positions} {...sortProps} />
     <HandoffCreditTable credits={person.handoff_credits || []} />
   </Space>
 );
 
-const ScoreWorkspace = ({ overview, admin }: { overview?: Overview; admin: boolean }) => {
+const ScoreWorkspace = ({ overview, admin, sortField, sortOrder, onSort }: { overview?: Overview; admin: boolean; sortField?: string; sortOrder?: RememberedSortOrder; onSort?: (field?: string, order?: RememberedSortOrder) => void }) => {
   const people = overview?.people || [];
   const totals = useMemo(() => ({
     hc: people.reduce((sum, person) => sum + person.hc_count, 0),
@@ -352,15 +372,22 @@ const ScoreWorkspace = ({ overview, admin }: { overview?: Overview; admin: boole
             scroll={{ x: 760 }}
             expandable={{ expandedRowRender: person => <PersonDetails person={person} /> }}
             columns={[
-              { title: 'Recruiter', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name), render: (value, row) => <div><Space><Text strong>{value}</Text>{!row.is_active && <Tag>已停用</Tag>}</Space><div><Text type="secondary">{row.email}</Text></div></div> },
+              { title: 'Recruiter', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name), sortOrder: sortField === 'name' ? sortOrder : null, render: (value, row) => <div><Space><Text strong>{value}</Text>{!row.is_active && <Tag>已停用</Tag>}</Space><div><Text type="secondary">{row.email}</Text></div></div> },
               { title: 'HC任务', dataIndex: 'hc_count' },
-              { title: '已入职', dataIndex: 'onboarded_count', sorter: (a, b) => a.onboarded_count - b.onboarded_count },
-              { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, render: formatScore },
-              { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, render: (value) => <Text strong>{formatScore(value)}</Text> },
-              { title: '总达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), render: value => formatRate(value) },
+              { title: '已入职', dataIndex: 'onboarded_count', sorter: (a, b) => a.onboarded_count - b.onboarded_count, sortOrder: sortField === 'onboarded_count' ? sortOrder : null },
+              { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, sortOrder: sortField === 'task_points' ? sortOrder : null, render: formatScore },
+              { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, sortOrder: sortField === 'score' ? sortOrder : null, render: (value) => <Text strong>{formatScore(value)}</Text> },
+              { title: '总达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), sortOrder: sortField === 'achievement_rate' ? sortOrder : null, render: value => formatRate(value) },
             ]}
+            onChange={(_pagination, _filters, sorter) => {
+              const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+              onSort?.(
+                activeSorter?.order ? String(activeSorter.field || activeSorter.columnKey || '') : undefined,
+                activeSorter?.order || undefined,
+              );
+            }}
           />
-        ) : people[0] ? <PersonDetails person={people[0]} /> : null}
+        ) : people[0] ? <PersonDetails person={people[0]} sortField={sortField} sortOrder={sortOrder} onSort={onSort} /> : null}
       </Card>
     </>
   );
@@ -411,6 +438,15 @@ const RuleSettings = ({ period }: { period: string }) => {
 
 const RecruitmentPerformance: React.FC = () => {
   const { user } = useAuth();
+  const { searchParams, setQuery } = useListPageState();
+  useListScrollRestoration();
+  const sortField = searchParams.get('sort') || undefined;
+  const sortOrder = (searchParams.get('order') || undefined) as RememberedSortOrder | undefined;
+  const requestedPeriod = searchParams.get('period');
+  const rememberSort = (field?: string, order?: RememberedSortOrder) => setQuery({
+    sort: field,
+    order,
+  });
   const role = (user as any)?.role?.value ?? (user as any)?.role;
   const admin = role === 'admin';
   const [period, setPeriod] = useState<string>();
@@ -426,12 +462,14 @@ const RecruitmentPerformance: React.FC = () => {
       .then((data: { periods: string[]; default_period: string }) => {
         if (!active) return;
         setPeriods(data.periods);
-        setPeriod(current => current && data.periods.includes(current) ? current : data.default_period);
+        setPeriod(current => requestedPeriod && data.periods.includes(requestedPeriod)
+          ? requestedPeriod
+          : current && data.periods.includes(current) ? current : data.default_period);
       })
       .catch(() => message.error('获取绩效季度失败'))
       .finally(() => { if (active) setPeriodsLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [requestedPeriod]);
   const load = async () => {
     if (!period) return;
     setLoading(true);
@@ -477,7 +515,10 @@ const RecruitmentPerformance: React.FC = () => {
             aria-label="绩效季度"
             value={period}
             options={periods.map(value => ({ value, label: value }))}
-            onChange={setPeriod}
+            onChange={(value) => {
+              setPeriod(value);
+              setQuery({ period: value });
+            }}
             loading={periodsLoading}
             disabled={periodsLoading || periods.length === 0}
             style={{ width: 128 }}
@@ -487,12 +528,14 @@ const RecruitmentPerformance: React.FC = () => {
       </header>
       {admin ? (
         <Tabs
+          activeKey={searchParams.get('tab') === 'rules' ? 'rules' : 'overview'}
+          onChange={(tab) => setQuery({ tab: tab === 'overview' ? undefined : tab })}
           items={[
-            { key: 'overview', label: '人员概览', children: <div className={loading ? 'is-loading' : ''}><ScoreWorkspace overview={overview} admin /></div> },
+            { key: 'overview', label: '人员概览', children: <div className={loading ? 'is-loading' : ''}><ScoreWorkspace overview={overview} admin sortField={sortField} sortOrder={sortOrder} onSort={rememberSort} /></div> },
             { key: 'rules', label: <Space><SettingOutlined />规则设置</Space>, children: <RuleSettings period={futureQuarter} /> },
           ]}
         />
-      ) : <div className={loading ? 'is-loading' : ''}><ScoreWorkspace overview={overview} admin={false} /></div>}
+      ) : <div className={loading ? 'is-loading' : ''}><ScoreWorkspace overview={overview} admin={false} sortField={sortField} sortOrder={sortOrder} onSort={rememberSort} /></div>}
     </div>
   );
 };

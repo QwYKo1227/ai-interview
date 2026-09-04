@@ -207,7 +207,7 @@ describe('InterviewResultPage', () => {
     expect(screen.queryByText('我的人工评价')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('请输入评价说明')).toBeInTheDocument()
-    expect(screen.getAllByText('面试官王老师')).toHaveLength(2)
+    await waitFor(() => expect(screen.getAllByText('面试官王老师')).toHaveLength(2))
     expect(screen.getByText('评价结论：通过')).toBeInTheDocument()
     expect(screen.getByText('评价说明：技术基础扎实，沟通清晰。')).toBeInTheDocument()
   })

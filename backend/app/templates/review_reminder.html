@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简历评审提醒</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Microsoft YaHei', Arial, sans-serif; background-color: #f3f4f6; color: #333333;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#f3f4f6" style="width: 100%; background-color: #f3f4f6; border-collapse: collapse;">
+        <tr><td align="center" style="padding: 32px 12px;">
+            <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#ffffff" style="width: 100%; max-width: 600px; background-color: #ffffff; border-collapse: collapse;">
+                <tr><td align="center" bgcolor="#1677ff" style="padding: 28px 32px; background-color: #1677ff; color: #ffffff; font-size: 24px; line-height: 32px; font-weight: 700;">简历评审提醒</td></tr>
+                <tr><td style="padding: 32px; color: #333333; font-size: 16px; line-height: 26px;">
+                    <p style="margin: 0 0 18px;">尊敬的 <strong>{{ reviewer_name }}</strong>，</p>
+                    <p style="margin: 0 0 24px;">您有一份尚未完成的简历评审，请尽快处理：</p>
+                    <table role="presentation" data-section="review-details-table" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#f8f9fa" style="width: 100%; background-color: #f8f9fa; border-collapse: collapse; border-left: 4px solid #1677ff;">
+                        <tr><td style="padding: 20px 24px;">
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width: 100%; border-collapse: collapse;">
+                                <tr><td width="104" style="padding: 7px 0; color: #667085; font-size: 14px;">候选人</td><td style="padding: 7px 0; font-size: 14px; font-weight: 700;">{{ candidate_name }}</td></tr>
+                                <tr><td width="104" style="padding: 7px 0; color: #667085; font-size: 14px;">应聘岗位</td><td style="padding: 7px 0; font-size: 14px; font-weight: 700;">{{ position_title }}</td></tr>
+                            </table>
+                        </td></tr>
+                    </table>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse;"><tr><td align="center" style="padding: 28px 0 8px;">
+                        <a href="{{ review_url }}" target="_blank" style="display: inline-block; padding: 12px 32px; color: #ffffff; background-color: #1677ff; font-size: 16px; font-weight: 700; text-decoration: none;">前往评审</a>
+                    </td></tr></table>
+                </td></tr>
+                <tr><td align="center" bgcolor="#f8f9fa" style="padding: 20px 32px; background-color: #f8f9fa; border-top: 1px solid #e5e7eb; color: #8c8c8c; font-size: 12px; line-height: 20px;">此邮件由系统自动发送，请勿直接回复。<br>如有疑问，请联系 HR 部门。<br>© {{ current_year }} AI 智能招聘管理系统</td></tr>
+            </table>
+        </td></tr>
+    </table>
+</body>
+</html>

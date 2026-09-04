@@ -3,6 +3,7 @@ import { Table, Button, Space, message, Tag, Modal, Form, Input, Select, Typogra
 import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined, StopOutlined, CheckCircleOutlined, LockOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
+import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 
 const { Title, Text } = Typography;
 
@@ -26,6 +27,8 @@ const isFormValidationError = (error: unknown) => (
 );
 
 const UsersList: React.FC = () => {
+  const { page, pageSize, setPagination } = useListPageState();
+  useListScrollRestoration();
   const { user: currentUser } = useAuth();
   const [data, setData] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
@@ -275,7 +278,14 @@ const UsersList: React.FC = () => {
         dataSource={data}
         loading={loading}
         rowKey="id"
-        pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+        pagination={{
+          current: page,
+          pageSize,
+          pageSizeOptions: PAGE_SIZE_OPTIONS,
+          showSizeChanger: true,
+          showTotal: (total) => `共 ${total} 条`,
+          onChange: setPagination,
+        }}
         rowSelection={{
           selectedRowKeys,
           onChange: (keys) => setSelectedRowKeys(keys),

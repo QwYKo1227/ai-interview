@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
 
 if (typeof window !== 'undefined') {
   Object.defineProperty(window, 'matchMedia', {
@@ -25,3 +25,10 @@ class ResizeObserverMock {
 
 vi.stubGlobal('ResizeObserver', ResizeObserverMock)
 vi.stubGlobal('scrollTo', vi.fn())
+
+afterEach(() => {
+  if (typeof window !== 'undefined') {
+    window.history.replaceState(null, '', '/')
+    window.sessionStorage.clear()
+  }
+})

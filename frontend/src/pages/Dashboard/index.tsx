@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import request from '../../utils/request';
 import dayjs from 'dayjs';
+import { PAGE_SIZE_OPTIONS, readPageSize, useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/zh-cn';
 import { useAuth } from '../../contexts/AuthContext';
@@ -120,6 +121,8 @@ interface OverviewMetrics {
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
 
 const RecruitmentDashboard: React.FC = () => {
+  const { searchParams, setQuery } = useListPageState();
+  useListScrollRestoration();
   const [statsData, setStatsData] = useState<DashboardStats | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,7 +131,15 @@ const RecruitmentDashboard: React.FC = () => {
   const [interviewers, setInterviewers] = useState<InterviewerStats[]>([]);
   const [timeline, setTimeline] = useState<TimelineDataPoint[]>([]);
   const [overview, setOverview] = useState<OverviewMetrics | null>(null);
-  const [timelineDays, setTimelineDays] = useState(30);
+  const timelineParam = Number(searchParams.get('days'));
+  const timelineDays = [7, 14, 30, 60].includes(timelineParam) ? timelineParam : 30;
+  const activeTab = ['positions', 'interviewers', 'activities'].includes(searchParams.get('tab') || '')
+    ? searchParams.get('tab')!
+    : 'positions';
+  const positionPage = Math.max(1, Number(searchParams.get('position_page')) || 1);
+  const positionPageSize = readPageSize(searchParams.get('position_page_size'));
+  const interviewerPage = Math.max(1, Number(searchParams.get('interviewer_page')) || 1);
+  const interviewerPageSize = readPageSize(searchParams.get('interviewer_page_size'));
 
   useEffect(() => {
     fetchAllData();
@@ -243,6 +254,9 @@ const RecruitmentDashboard: React.FC = () => {
       title: '简历数',
       dataIndex: 'total_resumes',
       key: 'total_resumes',
+      sortOrder: searchParams.get('position_sort') === 'total_resumes'
+        ? searchParams.get('position_order') as 'ascend' | 'descend' | null
+        : null,
       sorter: (a: PositionAnalytics, b: PositionAnalytics) => a.total_resumes - b.total_resumes
     },
     {
@@ -300,6 +314,9 @@ const RecruitmentDashboard: React.FC = () => {
       title: '总面试数',
       dataIndex: 'total_interviews',
       key: 'total_interviews',
+      sortOrder: searchParams.get('interviewer_sort') === 'total_interviews'
+        ? searchParams.get('interviewer_order') as 'ascend' | 'descend' | null
+        : null,
       sorter: (a: InterviewerStats, b: InterviewerStats) => a.total_interviews - b.total_interviews
     },
     {
@@ -482,7 +499,7 @@ const RecruitmentDashboard: React.FC = () => {
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 16, fontWeight: 600 }}>时间趋势分析</span>
-            <Select value={timelineDays} onChange={setTimelineDays} style={{ width: 120 }}>
+            <Select value={timelineDays} onChange={(days) => setQuery({ days: days === 30 ? undefined : days })} style={{ width: 120 }}>
               <Option value={7}>近7天</Option>
               <Option value={14}>近14天</Option>
               <Option value={30}>近30天</Option>
@@ -525,14 +542,32 @@ const RecruitmentDashboard: React.FC = () => {
         </div>
       </Card>
 
-      <Tabs defaultActiveKey="positions" style={{ marginTop: 24 }}>
+      <Tabs activeKey={activeTab} onChange={(tab) => setQuery({ tab: tab === 'positions' ? undefined : tab })} style={{ marginTop: 24 }}>
         <TabPane tab="岗位分析" key="positions">
           <Card bordered={false} style={{ borderRadius: '12px', border: '1px solid #E2E8F0' }}>
             <Table 
               dataSource={positions} 
               columns={positionColumns} 
               rowKey="id"
-              pagination={{ pageSize: 10 }}
+              pagination={{
+                current: positionPage,
+                pageSize: positionPageSize,
+                pageSizeOptions: PAGE_SIZE_OPTIONS,
+                showSizeChanger: true,
+                onChange: (page, size) => setQuery({
+                  position_page: size === positionPageSize ? page : undefined,
+                  position_page_size: size === 10 ? undefined : size,
+                }),
+              }}
+              onChange={(_pagination, _filters, sorter, extra) => {
+                if (extra.action !== 'sort') return;
+                const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+                setQuery({
+                  position_sort: activeSorter?.order ? String(activeSorter.field || activeSorter.columnKey || '') : undefined,
+                  position_order: activeSorter?.order || undefined,
+                  position_page: undefined,
+                });
+              }}
               locale={{ emptyText: '暂无岗位数据' }}
             />
           </Card>
@@ -543,7 +578,25 @@ const RecruitmentDashboard: React.FC = () => {
               dataSource={interviewers} 
               columns={interviewerColumns} 
               rowKey="id"
-              pagination={{ pageSize: 10 }}
+              pagination={{
+                current: interviewerPage,
+                pageSize: interviewerPageSize,
+                pageSizeOptions: PAGE_SIZE_OPTIONS,
+                showSizeChanger: true,
+                onChange: (page, size) => setQuery({
+                  interviewer_page: size === interviewerPageSize ? page : undefined,
+                  interviewer_page_size: size === 10 ? undefined : size,
+                }),
+              }}
+              onChange={(_pagination, _filters, sorter, extra) => {
+                if (extra.action !== 'sort') return;
+                const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+                setQuery({
+                  interviewer_sort: activeSorter?.order ? String(activeSorter.field || activeSorter.columnKey || '') : undefined,
+                  interviewer_order: activeSorter?.order || undefined,
+                  interviewer_page: undefined,
+                });
+              }}
               locale={{ emptyText: '暂无面试官数据' }}
             />
           </Card>

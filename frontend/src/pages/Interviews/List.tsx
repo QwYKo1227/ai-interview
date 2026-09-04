@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography, Card, Segmented } from 'antd';
 import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined, SendOutlined, EditOutlined, UnorderedListOutlined, CalendarOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import dayjs from 'dayjs';
 import InterviewCalendar from './InterviewCalendar';
@@ -15,6 +14,7 @@ import {
   toBeijingTime,
   validateInterviewTimeRange,
 } from './interviewSchedule';
+import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration, useNavigateFromList } from '../../hooks/useListPageState';
 
 export const SCHEDULABLE_RESUME_STATUSES = ['pending_interview', 'pending_next_interview'] as const;
 
@@ -82,16 +82,23 @@ export const buildInterviewSchedulePayload = (values: any) => ({
 });
 
 const InterviewsList: React.FC = () => {
+  const { page, pageSize, searchParams, setPagination, setQuery } = useListPageState();
+  const navigateFromList = useNavigateFromList();
+  useListScrollRestoration();
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [calendarData, setCalendarData] = useState<any[]>([]);
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [calendarRange, setCalendarRange] = useState<{ start: Date; end: Date } | null>(null);
   const [calendarDraft, setCalendarDraft] = useState<{ date: dayjs.Dayjs; start: dayjs.Dayjs | null } | null>(null);
-  const [viewMode, setViewMode] = useState<'list' | 'calendar'>(() => (
-    localStorage.getItem('interview-management-view') === 'calendar' ? 'calendar' : 'list'
-  ));
-  const [filters, setFilters] = useState<InterviewListFilters>(createEmptyInterviewListFilters);
+  const viewMode = searchParams.get('view') === 'calendar' ? 'calendar' : 'list';
+  const filters = useMemo<InterviewListFilters>(() => ({
+    candidateId: searchParams.get('candidate') || undefined,
+    positionId: searchParams.get('position') || undefined,
+    interviewerId: searchParams.get('interviewer') || undefined,
+    status: searchParams.get('status') || undefined,
+    result: searchParams.get('result') || undefined,
+  }), [searchParams]);
   const [interviewerNameMap, setInterviewerNameMap] = useState<Record<string, string>>({});
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -127,7 +134,6 @@ const InterviewsList: React.FC = () => {
   const [scheduleForm] = Form.useForm();
   const [scheduleEmailForm] = Form.useForm();
   
-  const navigate = useNavigate();
   const { user } = useAuth();
 
   // 判断是否可以取消面试（仅 HR/Admin 可见）
@@ -545,7 +551,7 @@ const InterviewsList: React.FC = () => {
         message.success('面试安排成功');
         setInterviewModalVisible(false);
         refreshInterviews();
-        navigate(`/interviews/${res.id}/score`);
+        navigateFromList(`/interviews/${res.id}/score`);
       }
     } catch (error) {
       message.error(getScheduleErrorMessage(error, '安排面试失败'));
@@ -580,7 +586,7 @@ const InterviewsList: React.FC = () => {
 
       setEmailPreviewVisible(false);
       refreshInterviews();
-      navigate(`/interviews/${res.id}/score`);
+      navigateFromList(`/interviews/${res.id}/score`);
     } catch (error) {
       message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
@@ -626,7 +632,7 @@ const InterviewsList: React.FC = () => {
       <Space size="small">
         {(record.lifecycle_state || record.status) === 'scheduled' && (
           <Tooltip title="进入面试">
-            <Button type="text" icon={<PlayCircleOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
+            <Button type="text" icon={<PlayCircleOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigateFromList(`/interviews/${record.id}/score`)} />
           </Tooltip>
         )}
         {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
@@ -636,12 +642,12 @@ const InterviewsList: React.FC = () => {
         )}
         {(record.lifecycle_state || record.status) === 'in_progress' && (
           <Tooltip title="继续面试">
-            <Button type="text" icon={<PlayCircleOutlined style={{ color: '#F97316' }} />} onClick={() => navigate(`/interviews/${record.id}/score`)} />
+            <Button type="text" icon={<PlayCircleOutlined style={{ color: '#F97316' }} />} onClick={() => navigateFromList(`/interviews/${record.id}/score`)} />
           </Tooltip>
         )}
         {(record.lifecycle_state === 'ended' || record.status === 'completed' || isPendingConfirmation) && (
           <Tooltip title={isPendingConfirmation ? '确认结果' : '查看结果'}>
-            <Button type="text" icon={<EyeOutlined style={{ color: isPendingConfirmation ? '#F59E0B' : '#10B981' }} />} onClick={() => navigate(`/interviews/${record.id}/result`)} />
+            <Button type="text" icon={<EyeOutlined style={{ color: isPendingConfirmation ? '#F59E0B' : '#10B981' }} />} onClick={() => navigateFromList(`/interviews/${record.id}/result`)} />
           </Tooltip>
         )}
         {canCancelInterview && (record.lifecycle_state || record.status) === 'scheduled' && (
@@ -714,6 +720,9 @@ const InterviewsList: React.FC = () => {
       title: '面试时间',
       dataIndex: 'interview_time',
       key: 'interview_time',
+      sortOrder: searchParams.get('sort') === 'interview_time'
+        ? searchParams.get('order') as 'ascend' | 'descend' | null
+        : null,
       sorter: (a: any, b: any) => {
         const at = a?.interview_time ? new Date(a.interview_time).getTime() : 0;
         const bt = b?.interview_time ? new Date(b.interview_time).getTime() : 0;
@@ -795,8 +804,7 @@ const InterviewsList: React.FC = () => {
           ]}
           onChange={(value) => {
             const nextMode = value as 'list' | 'calendar';
-            localStorage.setItem('interview-management-view', nextMode);
-            setViewMode(nextMode);
+            setQuery({ view: nextMode === 'calendar' ? nextMode : undefined, page: undefined });
           }}
         />
         {(user?.role === 'admin' || user?.role === 'hr') && (
@@ -817,7 +825,7 @@ const InterviewsList: React.FC = () => {
               optionFilterProp="label"
               value={filters.candidateId}
               options={candidateOptions}
-              onChange={(candidateId) => setFilters((current) => ({ ...current, candidateId }))}
+              onChange={(candidateId) => setQuery({ candidate: candidateId, page: undefined })}
               style={{ width: 180 }}
             />
           </Form.Item>
@@ -829,7 +837,7 @@ const InterviewsList: React.FC = () => {
               optionFilterProp="label"
               value={filters.positionId}
               options={positionOptions}
-              onChange={(positionId) => setFilters((current) => ({ ...current, positionId }))}
+              onChange={(positionId) => setQuery({ position: positionId, page: undefined })}
               style={{ width: 180 }}
             />
           </Form.Item>
@@ -841,7 +849,7 @@ const InterviewsList: React.FC = () => {
               optionFilterProp="label"
               value={filters.interviewerId}
               options={interviewerOptions}
-              onChange={(interviewerId) => setFilters((current) => ({ ...current, interviewerId }))}
+              onChange={(interviewerId) => setQuery({ interviewer: interviewerId, page: undefined })}
               style={{ width: 180 }}
             />
           </Form.Item>
@@ -850,7 +858,7 @@ const InterviewsList: React.FC = () => {
             placeholder="筛选面试进度"
             allowClear
             value={filters.status}
-            onChange={(status) => setFilters((current) => ({ ...current, status }))}
+            onChange={(status) => setQuery({ status, page: undefined })}
             style={{ width: 160 }}
             options={[
               { value: 'scheduled', label: '待面试' },
@@ -867,7 +875,7 @@ const InterviewsList: React.FC = () => {
             placeholder="筛选面试结果"
             allowClear
             value={filters.result}
-            onChange={(result) => setFilters((current) => ({ ...current, result }))}
+            onChange={(result) => setQuery({ result, page: undefined })}
             style={{ width: 160 }}
             options={[
               { value: 'pending', label: '未出结果' },
@@ -885,7 +893,7 @@ const InterviewsList: React.FC = () => {
             </>
           )}
           <Form.Item>
-            <Button onClick={() => setFilters(createEmptyInterviewListFilters())}>重置</Button>
+            <Button onClick={() => setQuery({ candidate: undefined, position: undefined, interviewer: undefined, status: undefined, result: undefined, page: undefined })}>重置</Button>
           </Form.Item>
         </Form>
       </Card>
@@ -895,7 +903,22 @@ const InterviewsList: React.FC = () => {
           dataSource={filteredData}
           loading={loading}
           rowKey="id"
-          pagination={{ pageSize: 10, showSizeChanger: true }}
+          pagination={{
+            current: page,
+            pageSize,
+            pageSizeOptions: PAGE_SIZE_OPTIONS,
+            showSizeChanger: true,
+            onChange: setPagination,
+          }}
+          onChange={(_pagination, _tableFilters, sorter, extra) => {
+            if (extra.action !== 'sort') return;
+            const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+            setQuery({
+              sort: activeSorter?.order ? String(activeSorter.field || activeSorter.columnKey || '') : undefined,
+              order: activeSorter?.order || undefined,
+              page: undefined,
+            });
+          }}
           rowSelection={{
             selectedRowKeys,
             onChange: (keys) => setSelectedRowKeys(keys),
@@ -1160,7 +1183,7 @@ const InterviewsList: React.FC = () => {
           dataSource={pendingInterviewResumes}
           loading={loadingResumes}
           rowKey="id"
-          pagination={{ pageSize: 5 }}
+          pagination={{ pageSize: 5, showSizeChanger: false }}
           locale={{ emptyText: '暂无待面试的候选人' }}
         />
       </Modal>

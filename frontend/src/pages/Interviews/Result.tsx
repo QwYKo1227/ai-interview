@@ -8,6 +8,7 @@ import { useOptionalAuth } from '../../contexts/AuthContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import html2pdf from 'html2pdf.js';
+import { useReturnToList } from '../../hooks/useListPageState';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
@@ -188,6 +189,7 @@ const TranscriptPane: React.FC<TranscriptPaneProps> = ({
 const InterviewResultPage: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const returnToList = useReturnToList('/interviews');
   const user = useOptionalAuth()?.user;
   const [interview, setInterview] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -551,7 +553,7 @@ const InterviewResultPage: React.FC = () => {
           <Title level={4} style={{ marginTop: 16 }}>正在生成面试评估意见</Title>
           <Text type="secondary">AI 正在分析评分与评语，请稍候…</Text>
           <div style={{ marginTop: 16 }}>
-            <Button onClick={() => navigate('/interviews')}>返回列表</Button>
+            <Button onClick={returnToList}>返回列表</Button>
           </div>
         </div>
       </Card>
@@ -756,7 +758,7 @@ const InterviewResultPage: React.FC = () => {
             <Space>
               <Tag color={aiStatusColor}>{aiStatusText}</Tag>
               {interview.final_decision_at && <Tag color="success">最终结果：{decisionLabels[interview.result] || interview.result}</Tag>}
-              <Button onClick={() => navigate('/interviews')}>返回列表</Button>
+              <Button onClick={returnToList}>返回列表</Button>
             </Space>
           </Space>
         </Card>
@@ -1147,7 +1149,7 @@ const InterviewResultPage: React.FC = () => {
                 subTitle="AI 评估意见已生成，请确认最终结果"
                 extra={
                     <div id="result-extra-buttons">
-                        <Button type="primary" key="console" onClick={() => navigate('/interviews')} style={{ marginRight: 8 }}>
+                        <Button type="primary" key="console" onClick={returnToList} style={{ marginRight: 8 }}>
                         返回列表
                         </Button>
                         <Dropdown key="export" menu={{ items: exportItems }}>
@@ -1171,7 +1173,7 @@ const InterviewResultPage: React.FC = () => {
                 subTitle={`总分: ${calculateAverage()} / 10`}
                 extra={
                 <div id="result-extra-buttons">
-                    <Button type="primary" key="console" onClick={() => navigate('/interviews')} style={{ marginRight: 8 }}>
+                    <Button type="primary" key="console" onClick={returnToList} style={{ marginRight: 8 }}>
                     返回列表
                     </Button>
                     <Dropdown key="export" menu={{ items: exportItems }}>

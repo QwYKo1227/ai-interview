@@ -313,6 +313,8 @@ class DepartmentReview(TenantScopedMixin, Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     resume_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     reviewer_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    reviewed_position_id = Column(UUID(as_uuid=True), nullable=True)
+    reviewed_position_title = Column(String, nullable=True)
     technical_score = Column(Integer)  # 技术评分 1-10
     experience_score = Column(Integer)  # 经验评分 1-10
     overall_score = Column(Integer)  # 综合评分 1-10
@@ -329,6 +331,8 @@ class DepartmentReview(TenantScopedMixin, Base):
     )  # 是否已完成评审
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    last_reminded_at = Column(DateTime, nullable=True)
 
     resume = relationship(
         "Resume", back_populates="department_reviews", foreign_keys=[resume_id]

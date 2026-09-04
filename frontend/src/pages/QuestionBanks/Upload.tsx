@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { Form, Input, Button, Card, Upload, Select, message } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
+import { useReturnToList } from '../../hooks/useListPageState';
 
 const QuestionBankUpload: React.FC = () => {
   const [form] = Form.useForm();
-  const navigate = useNavigate();
+  const returnToList = useReturnToList('/question-banks');
   const [loading, setLoading] = useState(false);
   const [fileList, setFileList] = useState<any[]>([]);
 
@@ -33,7 +33,7 @@ const QuestionBankUpload: React.FC = () => {
         },
       });
       message.success('上传成功');
-      navigate('/question-banks');
+      returnToList();
     } catch (error) {
       message.error('上传失败');
     } finally {
@@ -114,7 +114,7 @@ const QuestionBankUpload: React.FC = () => {
           <Button type="primary" htmlType="submit" loading={loading}>
             上传
           </Button>
-          <Button style={{ marginLeft: 8 }} onClick={() => navigate('/question-banks')}>
+          <Button style={{ marginLeft: 8 }} onClick={returnToList}>
             取消
           </Button>
         </Form.Item>

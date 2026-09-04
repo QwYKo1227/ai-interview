@@ -13,6 +13,7 @@ import {
 import request from '../../utils/request';
 import dayjs from 'dayjs';
 import { useAuth } from '../../contexts/AuthContext';
+import { PAGE_SIZE_OPTIONS, useDebouncedQueryValue, useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 import { formatOfferDateTime } from './offerTime';
 import { serializeOfferDate } from './offerDate';
 
@@ -119,13 +120,16 @@ const statusConfig: Record<string, { color: string; text: string }> = {
 
 const OffersList: React.FC = () => {
   const { user } = useAuth();
+  const { page, pageSize, searchParams, setPagination, setQuery } = useListPageState();
+  useListScrollRestoration();
   const canManageOffer = user?.role === 'admin' || user?.role === 'hr';
   const [offers, setOffers] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(false);
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
+  const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<OfferStats | null>(null);
-  const [searchText, setSearchText] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const searchText = searchParams.get('search') || '';
+  const statusFilter = searchParams.get('status');
+  const [searchDraft, setSearchDraft] = useDebouncedQueryValue('search', searchText, setQuery);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   
   const [createModalVisible, setCreateModalVisible] = useState(false);
@@ -171,20 +175,20 @@ const OffersList: React.FC = () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      params.append('page', pagination.current.toString());
-      params.append('page_size', pagination.pageSize.toString());
+      params.append('page', page.toString());
+      params.append('page_size', pageSize.toString());
       if (statusFilter) params.append('status', statusFilter);
       if (searchText) params.append('search', searchText);
 
       const response = await request.get(`/offers?${params.toString()}`);
       setOffers(response.items);
-      setPagination(prev => ({ ...prev, total: response.total }));
+      setTotal(response.total);
     } catch (error) {
       message.error('获取Offer列表失败');
     } finally {
       setLoading(false);
     }
-  }, [pagination.current, pagination.pageSize, statusFilter, searchText]);
+  }, [page, pageSize, statusFilter, searchText]);
 
   const fetchStats = async () => {
     try {
@@ -658,14 +662,16 @@ const OffersList: React.FC = () => {
               placeholder="搜索候选人/岗位"
               allowClear
               style={{ width: 200 }}
-              onSearch={setSearchText}
-              onChange={(e) => !e.target.value && setSearchText('')}
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
+              onSearch={(value) => setQuery({ search: value.trim() || undefined, page: undefined })}
             />
             <Select
               placeholder="状态筛选"
               allowClear
               style={{ width: 120 }}
-              onChange={setStatusFilter}
+              value={statusFilter || undefined}
+              onChange={(status) => setQuery({ status, page: undefined })}
             >
               {Object.entries(statusConfig).map(([key, value]) => (
                 <Option key={key} value={key}>{value.text}</Option>
@@ -697,11 +703,14 @@ const OffersList: React.FC = () => {
             onChange: setSelectedRowKeys,
           } : undefined}
           pagination={{
-            ...pagination,
+            current: page,
+            pageSize,
+            total,
+            pageSizeOptions: PAGE_SIZE_OPTIONS,
             showSizeChanger: true,
             showQuickJumper: true,
             showTotal: (total) => `共 ${total} 条`,
-            onChange: (page, pageSize) => setPagination(prev => ({ ...prev, current: page, pageSize })),
+            onChange: setPagination,
           }}
         />
       </Card>

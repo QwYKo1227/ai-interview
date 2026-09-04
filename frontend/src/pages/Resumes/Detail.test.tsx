@@ -42,6 +42,7 @@ describe('ResumeDetail laptop layout', () => {
     cleanup()
     document.querySelectorAll('.ant-modal-root').forEach((element) => element.remove())
     stylesheet?.remove()
+    vi.clearAllMocks()
   })
 
   it('keeps two shrinkable panes and wraps actions inside the analysis pane', async () => {
@@ -113,6 +114,37 @@ describe('ResumeDetail laptop layout', () => {
     await waitFor(() => {
       expect(request.put).toHaveBeenCalledWith('/resumes/resume-1', { status: 'pending_review' })
     })
+  })
+
+  it('uses the personal review view when an administrator enters with a review id', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1?review_id=review-1') {
+        return {
+          ...resume,
+          status: 'pending_dept_review',
+          department_reviews: [{
+            id: 'review-1',
+            reviewer_id: 'admin-1',
+            reviewed_position_title: '测试工程师',
+            is_completed: false,
+          }],
+        }
+      }
+      return {}
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1?review_id=review-1']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('我的部门评审')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /提交评审/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /指派部门评审人/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /HR直接决策/ })).not.toBeInTheDocument()
+    expect(request.get).not.toHaveBeenCalledWith('/auth/interviewers')
+    expect(request.get).not.toHaveBeenCalledWith('/resumes/resume-1/department-reviews')
   })
 
   it('saves one trimmed HR review and preloads it in the decision dialog', async () => {
@@ -232,7 +264,7 @@ describe('ResumeDetail laptop layout', () => {
     expect(await screen.findByDisplayValue(
       `${window.location.origin}/public/review/review-token`,
     )).toBeInTheDocument()
-  })
+  }, 15000)
 
   it('previews and sends email after changing a department reviewer', async () => {
     const user = userEvent.setup()
@@ -407,5 +439,98 @@ describe('ResumeDetail laptop layout', () => {
         },
       )
     })
+  }, 15000)
+
+  it('previews and sends a reminder for a pending department review', async () => {
+    const user = userEvent.setup()
+    const review = {
+      id: 'review-1',
+      reviewer_id: 'interviewer-1',
+      reviewer_name: '王评审',
+      is_completed: false,
+      last_reminded_at: null,
+    }
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1') {
+        return { ...resume, status: 'pending_dept_review', department_reviews: [review] }
+      }
+      if (url === '/resumes/resume-1/department-reviews') {
+        return {
+          resume_id: 'resume-1', total_reviewers: 1, completed_reviewers: 0,
+          recommend_ratio: 0, reviews: [review],
+        }
+      }
+      if (url === '/auth/interviewers') return []
+      return {}
+    })
+    vi.mocked(request.post).mockImplementation(async (url: string) => {
+      if (url.endsWith('/review-link')) return { public_token: 'stable-review-token' }
+      if (url.endsWith('/reminder-email-preview')) {
+        return {
+          to_email: 'wang@example.com', reviewer_name: '王评审',
+          subject: '评审提醒｜测试工程师｜冬云龙', content: '<p>请完成评审</p>',
+        }
+      }
+      if (url.endsWith('/send-email')) return { message: '邮件发送成功' }
+      return {}
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: /邮件提醒/ }))
+    expect(request.post).toHaveBeenCalledWith(
+      '/resumes/resume-1/department-reviews/review-1/reminder-email-preview',
+      {
+        public_token: 'stable-review-token',
+        review_url: `${window.location.origin}/public/review/stable-review-token`,
+      },
+    )
+    const dialog = await screen.findByRole('dialog', { name: '邮件提醒预览' })
+    expect(within(dialog).getByText('wang@example.com')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: /确\s*认/ }))
+
+    await waitFor(() => {
+      expect(request.post).toHaveBeenCalledWith(
+        '/resumes/resume-1/department-reviews/review-1/send-email',
+        { subject: '评审提醒｜测试工程师｜冬云龙', content: '<p>请完成评审</p>' },
+      )
+    })
+  }, 15000)
+
+  it('disables reminder during cooldown and shows remaining time on hover', async () => {
+    const user = userEvent.setup()
+    const review = {
+      id: 'review-1', reviewer_id: 'interviewer-1', reviewer_name: '王评审',
+      is_completed: false, last_reminded_at: new Date().toISOString(),
+    }
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1') {
+        return { ...resume, status: 'pending_dept_review', department_reviews: [review] }
+      }
+      if (url === '/resumes/resume-1/department-reviews') {
+        return {
+          resume_id: 'resume-1', total_reviewers: 1, completed_reviewers: 0,
+          recommend_ratio: 0, reviews: [review],
+        }
+      }
+      if (url === '/auth/interviewers') return []
+      return {}
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    const button = await screen.findByRole('button', { name: /邮件提醒/ })
+    expect(button).toBeDisabled()
+    await user.hover(button.parentElement!)
+    expect(await screen.findByText(/还需 7 小时.*可再次提醒|还需 8 小时.*可再次提醒/)).toBeInTheDocument()
   }, 15000)
 })

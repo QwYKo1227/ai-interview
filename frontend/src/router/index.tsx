@@ -152,7 +152,7 @@ const router = createBrowserRouter([
       {
         path: 'resumes/my-reviews',
         element: (
-          <RoleProtectedRoute roles={['interviewer']} redirectTo="/resumes">
+          <RoleProtectedRoute roles={['admin', 'interviewer']} redirectTo="/resumes">
             <MyReviews />
           </RoleProtectedRoute>
         ),

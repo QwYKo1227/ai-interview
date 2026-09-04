@@ -174,7 +174,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
         }) as { id: string };
         message.success('面试安排成功');
         onClose();
-        navigate(`/interviews/${result.id}/score`);
+        navigate(`/interviews/${result.id}/score`, { state: window.history.state?.usr });
       }
     } catch (error) {
       if (error && typeof error === 'object' && 'errorFields' in error) return;
@@ -209,7 +209,7 @@ const ScheduleInterviewModal: React.FC<ScheduleInterviewModalProps> = ({
 
       setEmailPreviewVisible(false);
       onClose();
-      navigate(`/interviews/${result.id}/score`);
+      navigate(`/interviews/${result.id}/score`, { state: window.history.state?.usr });
     } catch (error) {
       if (error && typeof error === 'object' && 'errorFields' in error) return;
       message.error(getScheduleErrorMessage(error, '安排面试失败'));

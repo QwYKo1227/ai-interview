@@ -7,9 +7,9 @@ import {
   PlusOutlined, PlayCircleOutlined, DeleteOutlined, EditOutlined,
   CopyOutlined, CheckCircleOutlined, SettingOutlined
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
+import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration, useNavigateFromList } from '../../hooks/useListPageState';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -33,7 +33,9 @@ const statusMap = {
 
 const WorkflowsList: React.FC = () => {
   const { user } = useAuth();
-  const navigate = useNavigate();
+  const navigateFromList = useNavigateFromList();
+  const { page, pageSize, setPagination } = useListPageState();
+  useListScrollRestoration();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -73,7 +75,7 @@ const WorkflowsList: React.FC = () => {
       });
       message.success('创建成功');
       setModalVisible(false);
-      navigate(`/workflows/${res.id}`);
+      navigateFromList(`/workflows/${res.id}`);
     } catch (e: any) {
       if (e?.errorFields) return;
       message.error(e?.response?.data?.detail || '创建失败');
@@ -128,7 +130,7 @@ const WorkflowsList: React.FC = () => {
         trigger_type: workflow.trigger_type,
       });
       message.success('复制成功');
-      navigate(`/workflows/${res.id}`);
+      navigateFromList(`/workflows/${res.id}`);
     } catch (e) {
       message.error('复制失败');
     }
@@ -140,7 +142,7 @@ const WorkflowsList: React.FC = () => {
       dataIndex: 'name',
       key: 'name',
       render: (text: string, record: Workflow) => (
-        <a onClick={() => navigate(`/workflows/${record.id}`)}>{text}</a>
+        <a onClick={() => navigateFromList(`/workflows/${record.id}`)}>{text}</a>
       ),
     },
     {
@@ -190,7 +192,7 @@ const WorkflowsList: React.FC = () => {
             <Button
               type="text"
               icon={<EditOutlined />}
-              onClick={() => navigate(`/workflows/${record.id}`)}
+              onClick={() => navigateFromList(`/workflows/${record.id}`)}
             />
           </Tooltip>
           {record.status === 'published' && (
@@ -260,7 +262,13 @@ const WorkflowsList: React.FC = () => {
           dataSource={workflows}
           rowKey="id"
           loading={loading}
-          pagination={{ pageSize: 10 }}
+          pagination={{
+            current: page,
+            pageSize,
+            pageSizeOptions: PAGE_SIZE_OPTIONS,
+            showSizeChanger: true,
+            onChange: setPagination,
+          }}
         />
       </Card>
 

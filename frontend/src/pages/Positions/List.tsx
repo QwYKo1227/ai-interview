@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Card, Timeline } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, CopyOutlined, RobotOutlined, UndoOutlined, SearchOutlined, FilterOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
@@ -7,15 +7,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   buildCurrentPositionListParams,
-  createEmptyPositionListFilters,
-  loadPositionListFilters,
-  savePositionListFilters,
   type PositionListFilters,
   reconcileDepartmentSelection,
   reconcileHiringManagerSelection,
 } from './filters';
 import { createLatestRequestCoordinator } from '../../utils/latestRequest';
 import { useAuth } from '../../contexts/AuthContext';
+import { useDebouncedQueryValue, useListPageState, useListScrollRestoration, PAGE_SIZE_OPTIONS } from '../../hooks/useListPageState';
 import {
   getCategoryLabel,
   normalizePositionClassification,
@@ -127,6 +125,8 @@ const displayEventValue = (event: PositionEvent, side: 'old' | 'new') => {
 const PositionsList: React.FC = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  const { page, pageSize, searchParams, setPagination, setQuery } = useListPageState();
+  useListScrollRestoration();
   const [data, setData] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -147,13 +147,16 @@ const PositionsList: React.FC = () => {
     editingId && editingRecord?.status === 'published' && !isAdmin
   );
 
-  const [filters, setFilters] = useState<PositionListFilters>(() => {
-    if (!user) return createEmptyPositionListFilters();
-    const rememberedFilters = loadPositionListFilters(localStorage, user.id);
-    return isAdmin
-      ? rememberedFilters
-      : { ...rememberedFilters, hiringManagerId: undefined };
-  });
+  const filters = useMemo<PositionListFilters>(() => ({
+    title: searchParams.get('title') || '',
+    department: searchParams.get('department') || undefined,
+    hiringManagerId: isAdmin ? searchParams.get('hiring_manager') || undefined : undefined,
+    priority: searchParams.get('priority') ? Number(searchParams.get('priority')) : undefined,
+    category: searchParams.get('category') || undefined,
+    status: searchParams.get('status') || undefined,
+    deletedOnly: searchParams.get('deleted') === '1',
+  }), [isAdmin, searchParams]);
+  const [titleDraft, setTitleDraft] = useDebouncedQueryValue('title', filters.title, setQuery);
   const normalFiltersRef = useRef(filters);
   const positionListFiltersRef = useRef(filters);
   positionListFiltersRef.current = filters;
@@ -198,18 +201,13 @@ const PositionsList: React.FC = () => {
       {
         onSuccess: (res) => {
           setHiringManagers(res);
-          setFilters((current) => ({
-            ...current,
-            hiringManagerId: reconcileHiringManagerSelection(
-              current.hiringManagerId,
-              res,
-            ),
-          }));
+          const reconciled = reconcileHiringManagerSelection(filters.hiringManagerId, res);
+          if (reconciled !== filters.hiringManagerId) setQuery({ hiring_manager: reconciled, page: undefined });
         },
         onError: () => message.error('获取招聘负责人列表失败'),
       },
     );
-  }, [hiringManagerRequestCoordinator, isAdmin]);
+  }, [filters.hiringManagerId, hiringManagerRequestCoordinator, isAdmin, setQuery]);
 
   const fetchDepartments = useCallback(async () => {
     await departmentRequestCoordinator.run<string[]>(
@@ -217,15 +215,13 @@ const PositionsList: React.FC = () => {
       {
         onSuccess: (res) => {
           setDepartments(res);
-          setFilters((current) => ({
-            ...current,
-            department: reconcileDepartmentSelection(current.department, res),
-          }));
+          const reconciled = reconcileDepartmentSelection(filters.department, res);
+          if (reconciled !== filters.department) setQuery({ department: reconciled, page: undefined });
         },
         onError: () => message.error('获取部门列表失败'),
       },
     );
-  }, [departmentRequestCoordinator]);
+  }, [departmentRequestCoordinator, filters.department, setQuery]);
 
   useEffect(() => {
     void fetchUsers();
@@ -247,10 +243,8 @@ const PositionsList: React.FC = () => {
   ]);
 
   useEffect(() => {
-    if (!user || filters.deletedOnly) return;
-    normalFiltersRef.current = filters;
-    savePositionListFilters(localStorage, user.id, filters);
-  }, [filters, user]);
+    if (!filters.deletedOnly) normalFiltersRef.current = filters;
+  }, [filters]);
 
   const handleAdd = () => {
     setEditingId(null);
@@ -468,17 +462,44 @@ const PositionsList: React.FC = () => {
   ].filter(Boolean).length;
 
   const resetFilters = () => {
-    setFilters({
-      ...createEmptyPositionListFilters(),
-      deletedOnly: isRecycleBin,
+    setQuery({
+      title: undefined,
+      department: undefined,
+      hiring_manager: undefined,
+      priority: undefined,
+      category: undefined,
+      status: undefined,
+      page: undefined,
     });
   };
 
   const toggleRecycleBin = () => {
     setSelectedRowKeys([]);
-    setFilters(isRecycleBin
-      ? { ...normalFiltersRef.current, deletedOnly: false }
-      : { ...createEmptyPositionListFilters(), deletedOnly: true });
+    if (isRecycleBin) {
+      const remembered = normalFiltersRef.current;
+      setQuery({
+        title: remembered.title,
+        department: remembered.department,
+        hiring_manager: remembered.hiringManagerId,
+        priority: remembered.priority,
+        category: remembered.category,
+        status: remembered.status,
+        deleted: undefined,
+        page: undefined,
+      });
+    } else {
+      normalFiltersRef.current = filters;
+      setQuery({
+        title: undefined,
+        department: undefined,
+        hiring_manager: undefined,
+        priority: undefined,
+        category: undefined,
+        status: undefined,
+        deleted: 1,
+        page: undefined,
+      });
+    }
   };
 
   const columns = [
@@ -614,11 +635,8 @@ const PositionsList: React.FC = () => {
               placeholder="搜索岗位名称"
               prefix={<SearchOutlined />}
               allowClear
-              value={filters.title}
-              onChange={(event) => setFilters((current) => ({
-                ...current,
-                title: event.target.value,
-              }))}
+              value={titleDraft}
+              onChange={(event) => setTitleDraft(event.target.value)}
             />
           </label>
           <label className="positions-filter-field">
@@ -632,10 +650,7 @@ const PositionsList: React.FC = () => {
                 value: department,
                 label: department,
               }))}
-              onChange={(department) => setFilters((current) => ({
-                ...current,
-                department,
-              }))}
+              onChange={(department) => setQuery({ department, page: undefined })}
             />
           </label>
           {isAdmin && <label className="positions-filter-field positions-filter-owner">
@@ -652,10 +667,7 @@ const PositionsList: React.FC = () => {
                   : manager.email,
               }))}
               value={filters.hiringManagerId}
-              onChange={(hiringManagerId) => setFilters((current) => ({
-                ...current,
-                hiringManagerId,
-              }))}
+              onChange={(hiringManagerId) => setQuery({ hiring_manager: hiringManagerId, page: undefined })}
             />
           </label>}
           <label className="positions-filter-field">
@@ -665,10 +677,7 @@ const PositionsList: React.FC = () => {
               allowClear
               options={PRIORITY_OPTIONS}
               value={filters.priority}
-              onChange={(priority) => setFilters((current) => ({
-                ...current,
-                priority,
-              }))}
+              onChange={(priority) => setQuery({ priority, page: undefined })}
             />
           </label>
           <label className="positions-filter-field">
@@ -678,10 +687,7 @@ const PositionsList: React.FC = () => {
               allowClear
               options={POSITION_CATEGORY_OPTIONS}
               value={filters.category}
-              onChange={(category) => setFilters((current) => ({
-                ...current,
-                category,
-              }))}
+              onChange={(category) => setQuery({ category, page: undefined })}
             />
           </label>
           <label className="positions-filter-field">
@@ -690,10 +696,7 @@ const PositionsList: React.FC = () => {
               placeholder="全部状态"
               allowClear
               value={filters.status}
-              onChange={(status) => setFilters((current) => ({
-                ...current,
-                status,
-              }))}
+              onChange={(status) => setQuery({ status, page: undefined })}
             >
               {POSITION_STATUS_OPTIONS.map((option) => <Select.Option key={option.value} value={option.value}>{option.label}</Select.Option>)}
             </Select>
@@ -722,7 +725,13 @@ const PositionsList: React.FC = () => {
         scroll={{ x: 1360 }}
         loading={loading} 
         rowKey="id" 
-        pagination={{ pageSize: 10, showSizeChanger: true }}
+        pagination={{
+          current: page,
+          pageSize,
+          pageSizeOptions: PAGE_SIZE_OPTIONS,
+          showSizeChanger: true,
+          onChange: setPagination,
+        }}
         rowSelection={isRecycleBin ? undefined : {
           columnWidth: 64,
           selectedRowKeys,

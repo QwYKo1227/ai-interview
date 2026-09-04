@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks, Request, Query
 from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
 from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.resume import (
     ResumeResponse, ResumeCreate, ResumeUpdate,
     DepartmentReviewCreate, DepartmentReviewUpdate, DepartmentReviewResponse,
-    AssignedDepartmentReviewResponse, DepartmentReviewLinkResponse,
+    AssignedDepartmentReviewListResponse, DepartmentReviewLinkResponse,
     DepartmentReviewEmailPreviewRequest, DepartmentReviewEmailPreviewResponse,
     DepartmentReviewEmailSendRequest,
     HRDecisionCreate, HRDecisionResponse,
@@ -29,7 +29,7 @@ from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List, Dict, Any, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.services.public_token_service import resolve_public_tenant, resolve_public_token
 from app.core.rate_limit import enforce_rate_limit
 from app.core.proxy import resolve_request_host
@@ -46,6 +46,8 @@ router = APIRouter(
     prefix="/resumes",
     tags=["resumes"]
 )
+
+DEPARTMENT_REVIEW_EMAIL_COOLDOWN = timedelta(hours=8)
 
 # ==================== 简历列表 ====================
 
@@ -185,13 +187,47 @@ def batch_upload_resumes_route(
 
 @router.get(
     "/my-reviews",
-    response_model=List[AssignedDepartmentReviewResponse],
+    response_model=AssignedDepartmentReviewListResponse,
 )
 def get_my_reviews_route(
+    completed: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    search: Optional[str] = Query(default=None, max_length=200),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    return get_assigned_department_reviews(db, current_user.id)
+    return get_assigned_department_reviews(
+        db,
+        current_user.id,
+        completed=completed,
+        page=page,
+        page_size=page_size,
+        search=search,
+    )
+
+
+@router.get("/my-pending-review-count")
+def get_my_pending_review_count_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    count = db.query(DepartmentReview).filter(
+        DepartmentReview.reviewer_id == current_user.id,
+        DepartmentReview.is_completed.is_(False),
+    ).count()
+    return {"count": count}
+
+
+@router.get("/pending-hr-decision-count")
+def get_pending_hr_decision_count_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    count = db.query(Resume).filter(
+        Resume.status == ResumeStatus.PENDING_HR_DECISION,
+    ).count()
+    return {"count": count}
 
 
 # ==================== 简历详情与更新 ====================
@@ -212,6 +248,7 @@ def get_duplicate_resumes_route(
 @router.get("/{resume_id}", response_model=ResumeResponse)
 def get_resume_route(
     resume_id: UUID,
+    review_id: Optional[UUID] = Query(default=None),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -219,7 +256,30 @@ def get_resume_route(
     resume = get_resume_with_reviews(db, resume_id)
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
-    return resume
+    payload = ResumeResponse.model_validate(resume)
+    role = getattr(current_user.role, "value", current_user.role)
+    if review_id is not None:
+        payload.department_reviews = [
+            review
+            for review in (payload.department_reviews or [])
+            if review.id == review_id and review.reviewer_id == current_user.id
+        ]
+        if not payload.department_reviews:
+            raise HTTPException(status_code=404, detail="Resume not found")
+    elif role == UserRole.INTERVIEWER.value:
+        payload.department_reviews = [
+            review
+            for review in (payload.department_reviews or [])
+            if review.reviewer_id == current_user.id
+        ]
+
+    if role == UserRole.INTERVIEWER.value:
+        payload.hr_review = None
+        payload.reject_reason_category = None
+        payload.reject_reason_detail = None
+        payload.rejected_at = None
+        payload.rejected_by = None
+    return payload
 
 @router.put("/{resume_id}", response_model=ResumeResponse)
 def update_resume_route(
@@ -268,6 +328,9 @@ def get_department_reviews_route(
     current_user: User = Depends(get_current_user)
 ):
     require_resume_access(db, resume_id, current_user)
+    role = getattr(current_user.role, "value", current_user.role)
+    if role not in {UserRole.ADMIN.value, UserRole.HR.value}:
+        raise HTTPException(status_code=404, detail="Resume not found")
     """
     获取部门评审汇总报告
     """
@@ -346,6 +409,49 @@ def preview_department_review_email(
     }
 
 
+@router.post(
+    "/{resume_id}/department-reviews/{review_id}/reminder-email-preview",
+    response_model=DepartmentReviewEmailPreviewResponse,
+)
+def preview_department_review_reminder_email(
+    resume_id: UUID,
+    review_id: UUID,
+    payload: DepartmentReviewEmailPreviewRequest,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    """Preview a manually triggered reminder for a pending department review."""
+    resume = require_resume_access(db, resume_id, current_user, manage=True)
+    review = _require_department_review(db, resume_id, review_id)
+    if review.is_completed:
+        raise HTTPException(status_code=400, detail="评审已完成，无需提醒")
+    resolved = resolve_public_token(db, payload.public_token, "department_review")
+    if resolved.resource_id != review.id:
+        raise HTTPException(status_code=404, detail="Public resource not found")
+
+    reviewer = db.query(User).filter(User.id == review.reviewer_id).first()
+    if reviewer is None or not reviewer.email:
+        raise HTTPException(status_code=400, detail="评审人邮箱为空")
+
+    from app.services.mail_service import get_mail_service
+    position_title = resume.position.title if resume.position else "未知岗位"
+    content = get_mail_service(db)._render_template("review_reminder.html", {
+        "reviewer_name": reviewer.full_name or reviewer.email,
+        "candidate_name": resume.candidate_name or "候选人",
+        "position_title": position_title,
+        "review_url": str(payload.review_url),
+        "current_year": datetime.utcnow().year,
+    })
+    return {
+        "review_id": review.id,
+        "to_email": reviewer.email,
+        "reviewer_name": reviewer.full_name or reviewer.email,
+        "candidate_name": resume.candidate_name,
+        "subject": f"评审提醒｜{position_title}｜{resume.candidate_name or '候选人'}",
+        "content": content,
+    }
+
+
 @router.post("/{resume_id}/department-reviews/{review_id}/send-email")
 def send_department_review_email(
     resume_id: UUID,
@@ -356,7 +462,34 @@ def send_department_review_email(
 ):
     """发送可编辑的部门评审指派邮件。"""
     require_resume_access(db, resume_id, current_user, manage=True)
-    review = _require_department_review(db, resume_id, review_id)
+    review = (
+        db.query(DepartmentReview)
+        .filter(
+            DepartmentReview.id == review_id,
+            DepartmentReview.resume_id == resume_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if review is None:
+        raise HTTPException(status_code=404, detail="评审记录不存在")
+    if review.is_completed:
+        raise HTTPException(status_code=400, detail="评审已完成，无需发送邮件")
+    now = datetime.utcnow()
+    if (
+        review.last_reminded_at is not None
+        and now - review.last_reminded_at < DEPARTMENT_REVIEW_EMAIL_COOLDOWN
+    ):
+        retry_at = review.last_reminded_at + DEPARTMENT_REVIEW_EMAIL_COOLDOWN
+        retry_after_seconds = max(1, int((retry_at - now).total_seconds()))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "message": "该评审刚刚已被提醒，请稍后重试",
+                "retry_after_seconds": retry_after_seconds,
+            },
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
     reviewer = db.query(User).filter(User.id == review.reviewer_id).first()
     if reviewer is None or not reviewer.email:
         raise HTTPException(status_code=400, detail="评审人邮箱为空")
@@ -369,7 +502,9 @@ def send_department_review_email(
         html_content=payload.content,
     ):
         raise HTTPException(status_code=500, detail="邮件发送失败")
-    return {"message": "邮件发送成功"}
+    review.last_reminded_at = now
+    db.commit()
+    return {"message": "邮件发送成功", "last_reminded_at": now}
 
 
 @router.put("/{resume_id}/department-reviews/{review_id}", response_model=DepartmentReviewResponse)

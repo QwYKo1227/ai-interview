@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Card, Descriptions, Button, InputNumber, Form, Input, Row, Col, Typography, message, Divider, Tag, Space, Spin, Modal, Popconfirm, Select, Collapse, Tooltip, List, Progress } from 'antd';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { EditOutlined, DeleteOutlined, PlusOutlined, SaveOutlined, CloseOutlined, DownloadOutlined, FilePdfOutlined, FileWordOutlined, LeftOutlined, RightOutlined, CheckCircleOutlined, CheckCircleFilled, CaretRightOutlined, AudioOutlined, LoadingOutlined, ExpandOutlined, CompressOutlined, PlayCircleOutlined, StopOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
@@ -14,6 +14,7 @@ import {
   type RealtimeSegment,
   type RealtimeStatus,
 } from './realtimeTranscription';
+import { useReturnToList } from '../../hooks/useListPageState';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -21,6 +22,8 @@ const { TextArea } = Input;
 const InterviewScore: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnToList = useReturnToList('/interviews');
   const { user } = useAuth();
   const [interview, setInterview] = useState<any>(null);
   const protectedResumeFile = useAuthenticatedFileUrl(interview?.resume?.file_path);
@@ -168,7 +171,7 @@ const InterviewScore: React.FC = () => {
     if (!id || !interview) return;
     
     if (interview.lifecycle_state === 'ended' || interview.status === 'completed') {
-      navigate(`/interviews/${id}/result`);
+      navigate(`/interviews/${id}/result`, { state: location.state });
       return;
     }
     
@@ -194,7 +197,7 @@ const InterviewScore: React.FC = () => {
           
           if (res.status === 'completed') {
             clearInterval(interval);
-            navigate(`/interviews/${id}/result`);
+            navigate(`/interviews/${id}/result`, { state: location.state });
           }
         } catch (error) {
           console.error('面试状态轮询失败');
@@ -225,7 +228,7 @@ const InterviewScore: React.FC = () => {
       const res = await request.get(`/interviews/${interviewId}`) as any;
 
       if (res.lifecycle_state === 'ended' || res.status === 'completed') {
-         navigate(`/interviews/${interviewId}/result`);
+         navigate(`/interviews/${interviewId}/result`, { state: location.state });
          return;
       }
 
@@ -569,7 +572,7 @@ const InterviewScore: React.FC = () => {
       await request.post(`/interviews/${id}/end`, { session_id: recordingSessionId });
       await request.post(`/interviews/${id}/recording/seal`, { session_id: recordingSessionId });
       message.success('面试已结束，AI 正在分析录音');
-      navigate(`/interviews/${id}/result`);
+      navigate(`/interviews/${id}/result`, { state: location.state });
     } catch (error: any) {
       message.error(error?.response?.data?.detail || '录音尚未完整封存，请稍后重试结束面试');
     } finally {
@@ -606,7 +609,7 @@ const InterviewScore: React.FC = () => {
         try {
           await request.post(`/interviews/${id}/force-end`, { reason: reason.trim() });
           message.success('面试已强制结束，可继续填写人工评价');
-          navigate(`/interviews/${id}/result`);
+          navigate(`/interviews/${id}/result`, { state: location.state });
         } catch (error: any) {
           message.error(error?.response?.data?.detail || '强制结束面试失败');
           return Promise.reject();
@@ -904,7 +907,7 @@ const InterviewScore: React.FC = () => {
               </Space>
             </div>
             <div style={{ marginTop: 24 }}>
-              <Button onClick={() => navigate('/interviews')}>返回列表</Button>
+              <Button onClick={returnToList}>返回列表</Button>
             </div>
         </div>
       );
@@ -918,7 +921,7 @@ const InterviewScore: React.FC = () => {
             <Title level={4} style={{ marginTop: 24, color: '#64748B' }}>AI 正在分析面试结果，请稍候...</Title>
             <Text type="secondary">正在根据评分生成综合评价报告</Text>
             <div style={{ marginTop: 24 }}>
-              <Button onClick={() => navigate('/interviews')}>返回列表</Button>
+              <Button onClick={returnToList}>返回列表</Button>
             </div>
         </div>
       );
@@ -975,7 +978,7 @@ const InterviewScore: React.FC = () => {
   const headerExtra = (
       <Space>
          <Tooltip title="返回面试列表">
-           <Button icon={<LeftOutlined />} onClick={() => navigate('/interviews')} />
+           <Button icon={<LeftOutlined />} onClick={returnToList} />
          </Tooltip>
 
          {/* 面试计时器 */}

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Form, Button, Card, Upload, Select, message } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
+import { useReturnToList } from '../../hooks/useListPageState';
 import {
   getResumeFileValidationError,
   MAX_RESUME_FILE_SIZE_MB,
@@ -10,7 +10,7 @@ import {
 
 const ResumeUpload: React.FC = () => {
   const [form] = Form.useForm();
-  const navigate = useNavigate();
+  const returnToList = useReturnToList('/resumes');
   const [loading, setLoading] = useState(false);
   const [fileList, setFileList] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
@@ -46,7 +46,7 @@ const ResumeUpload: React.FC = () => {
         },
       });
       message.success('上传成功');
-      navigate('/resumes');
+      returnToList();
     } catch (error) {
       message.error('上传失败');
     } finally {
@@ -107,7 +107,7 @@ const ResumeUpload: React.FC = () => {
           <Button type="primary" htmlType="submit" loading={loading}>
             上传
           </Button>
-          <Button style={{ marginLeft: 8 }} onClick={() => navigate('/resumes')}>
+          <Button style={{ marginLeft: 8 }} onClick={returnToList}>
             取消
           </Button>
         </Form.Item>

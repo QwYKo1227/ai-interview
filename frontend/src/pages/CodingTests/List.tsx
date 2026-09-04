@@ -5,6 +5,7 @@ import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeEditor from '../../components/CodeEditor';
+import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -37,6 +38,8 @@ const testTypeLabels: Record<string, { label: string; color: string }> = {
 };
 
 const CodingTestsList: React.FC = () => {
+  const { page, pageSize, setPagination } = useListPageState();
+  useListScrollRestoration();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -648,7 +651,13 @@ const CodingTestsList: React.FC = () => {
         dataSource={data}
         loading={loading}
         rowKey="id"
-        pagination={{ pageSize: 10, showSizeChanger: true }}
+        pagination={{
+          current: page,
+          pageSize,
+          pageSizeOptions: PAGE_SIZE_OPTIONS,
+          showSizeChanger: true,
+          onChange: setPagination,
+        }}
         rowSelection={{
           selectedRowKeys,
           onChange: (keys) => setSelectedRowKeys(keys),
@@ -839,7 +848,7 @@ const CodingTestsList: React.FC = () => {
             loading={submissionsLoading}
             dataSource={submissions}
             rowKey="id"
-            pagination={{ pageSize: 10, showSizeChanger: true }}
+            pagination={{ pageSize: 10, showSizeChanger: false }}
             size="middle"
             scroll={{ x: 800 }}
             columns={[

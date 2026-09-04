@@ -157,9 +157,13 @@ class DepartmentReviewResponse(DepartmentReviewBase):
     id: UUID
     resume_id: UUID
     reviewer_id: UUID
+    reviewed_position_id: Optional[UUID] = None
+    reviewed_position_title: Optional[str] = None
     is_completed: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    last_reminded_at: Optional[datetime] = None
     reviewer_name: Optional[str] = None  # 评审人姓名
 
     public_token: Optional[str] = None
@@ -174,7 +178,21 @@ class AssignedDepartmentReviewResponse(BaseModel):
     position_title: Optional[str] = None
     match_score: Optional[int] = None
     status: ResumeStatus
+    is_completed: bool
+    overall_score: Optional[int] = None
+    recommendation: Optional[ReviewRecommendation] = None
     created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class AssignedDepartmentReviewListResponse(BaseModel):
+    items: List[AssignedDepartmentReviewResponse]
+    total: int
+    pending_total: int
+    completed_total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class DepartmentReviewLinkResponse(BaseModel):

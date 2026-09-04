@@ -1,15 +1,14 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Typography, Form, Select, Upload, Input, DatePicker, InputNumber, Card, Row, Col, Checkbox, Popover, Spin } from 'antd';
 import { PlusOutlined, EyeOutlined, TeamOutlined, DeleteOutlined, UploadOutlined, ReloadOutlined, CloseCircleOutlined, UndoOutlined, SolutionOutlined, SyncOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
-import { useNavigate } from 'react-router-dom';
 import type { RcFile } from 'antd/es/upload/interface';
 import { createLatestRequestCoordinator, startSerialPolling } from '../../utils/latestRequest';
 import {
   buildCurrentResumeListParams,
-  createEmptyResumeListFilters,
   type ResumeListFilters,
 } from './filters';
+import { PAGE_SIZE_OPTIONS, useDebouncedQueryValue, useListPageState, useListScrollRestoration, useNavigateFromList } from '../../hooks/useListPageState';
 import {
   buildAuthenticatedResumeUpload,
   getResumeFileValidationError,
@@ -229,9 +228,17 @@ const ResumesList: React.FC = () => {
   const [form] = Form.useForm();
   const [interviewForm] = Form.useForm();
   
-  const navigate = useNavigate();
-
-  const [filters, setFilters] = useState<ResumeListFilters>(createEmptyResumeListFilters);
+  const navigateFromList = useNavigateFromList();
+  const { page, pageSize, searchParams, setPagination, setQuery } = useListPageState();
+  useListScrollRestoration();
+  const filters = useMemo<ResumeListFilters>(() => ({
+    candidateName: searchParams.get('candidate') || '',
+    positionId: searchParams.get('position') || undefined,
+    status: searchParams.get('status') || undefined,
+  }), [searchParams]);
+  const [candidateDraft, setCandidateDraft] = useDebouncedQueryValue(
+    'candidate', filters.candidateName, setQuery,
+  );
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
   const userRef = useRef(user);
@@ -435,7 +442,7 @@ const ResumesList: React.FC = () => {
           skip_email: true
         });
         message.success('面试安排成功');
-        navigate(`/interviews/${res.id}/score`);
+        navigateFromList(`/interviews/${res.id}/score`);
       }
     } catch (error) {
       message.error(getScheduleErrorMessage(error, '安排面试失败'));
@@ -471,7 +478,7 @@ const ResumesList: React.FC = () => {
       }
 
       setEmailPreviewVisible(false);
-      navigate(`/interviews/${res.id}/score`);
+      navigateFromList(`/interviews/${res.id}/score`);
     } catch (error) {
       message.error(getScheduleErrorMessage(error, '安排面试失败'));
     } finally {
@@ -685,7 +692,7 @@ const ResumesList: React.FC = () => {
           {(record.duplicate_resume_count || 1) > 1 && (
             <DuplicateResumePopover
               resume={record}
-              onNavigate={(resumeId) => navigate(`/resumes/${resumeId}`)}
+              onNavigate={(resumeId) => navigateFromList(`/resumes/${resumeId}`)}
             />
           )}
         </Space>
@@ -698,6 +705,9 @@ const ResumesList: React.FC = () => {
       dataIndex: 'match_score', 
       key: 'match_score', 
       sorter: (a: ResumeRecord, b: ResumeRecord) => a.match_score - b.match_score,
+      sortOrder: searchParams.get('sort') === 'match_score'
+        ? searchParams.get('order') as 'ascend' | 'descend' | null
+        : null,
       render: (score: number) => (
         <span style={{ 
           color: score >= 80 ? '#10B981' : score >= 60 ? '#F59E0B' : '#EF4444',
@@ -753,7 +763,7 @@ const ResumesList: React.FC = () => {
         if (user?.role === 'interviewer') {
           return (
             <Space size="small">
-              <Button type="primary" icon={<EyeOutlined />} onClick={() => navigate(`/resumes/${record.id}`)}>
+              <Button type="primary" icon={<EyeOutlined />} onClick={() => navigateFromList(`/resumes/${record.id}`)}>
                 查看并评审
               </Button>
             </Space>
@@ -769,7 +779,7 @@ const ResumesList: React.FC = () => {
         return (
           <Space size="small">
             <Tooltip title="查看详情">
-              <Button type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigate(`/resumes/${record.id}`)} />
+              <Button type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => navigateFromList(`/resumes/${record.id}`)} />
             </Tooltip>
             {/* Only Admin and HR can schedule interviews for eligible interview-stage candidates */}
             {(user?.role === 'admin' || user?.role === 'hr') && canScheduleInterview && (
@@ -785,7 +795,7 @@ const ResumesList: React.FC = () => {
             {/* 如果可以评审，显示评审入口提示 */}
             {(user?.role === 'admin' || user?.role === 'hr') && canReview && (
               <Tooltip title="进入评审">
-                <Button type="text" icon={<SolutionOutlined style={{ color: '#8B5CF6' }} />} onClick={() => navigate(`/resumes/${record.id}`)} />
+                <Button type="text" icon={<SolutionOutlined style={{ color: '#8B5CF6' }} />} onClick={() => navigateFromList(`/resumes/${record.id}`)} />
               </Tooltip>
             )}
             {['rejected', 'waitlist'].includes(record.status) && (
@@ -851,11 +861,8 @@ const ResumesList: React.FC = () => {
             <Form.Item label="候选人">
               <Input
                 placeholder="请输入姓名"
-                value={filters.candidateName}
-                onChange={(event) => setFilters((current) => ({
-                  ...current,
-                  candidateName: event.target.value,
-                }))}
+                value={candidateDraft}
+                onChange={(event) => setCandidateDraft(event.target.value)}
                 style={{ width: 200 }}
                 allowClear
               />
@@ -864,10 +871,7 @@ const ResumesList: React.FC = () => {
               <Select
                 placeholder="请选择应聘岗位"
                 value={filters.positionId}
-                onChange={(positionId) => setFilters((current) => ({
-                  ...current,
-                  positionId,
-                }))}
+                onChange={(positionId) => setQuery({ position: positionId, page: undefined })}
                 style={{ width: 220 }}
                 allowClear
                 showSearch
@@ -884,10 +888,7 @@ const ResumesList: React.FC = () => {
               <Select
                 placeholder="请选择状态"
                 value={filters.status}
-                onChange={(status) => setFilters((current) => ({
-                  ...current,
-                  status,
-                }))}
+                onChange={(status) => setQuery({ status, page: undefined })}
                 style={{ width: 240 }}
                 allowClear
               >
@@ -928,7 +929,7 @@ const ResumesList: React.FC = () => {
               </>
             )}
             <Form.Item>
-              <Button onClick={() => setFilters(createEmptyResumeListFilters())}>重置</Button>
+              <Button onClick={() => setQuery({ candidate: undefined, position: undefined, status: undefined, page: undefined })}>重置</Button>
             </Form.Item>
           </Form>
         </Card>
@@ -939,7 +940,22 @@ const ResumesList: React.FC = () => {
         dataSource={data} 
         loading={loading} 
         rowKey="id" 
-        pagination={{ defaultPageSize: 10, showSizeChanger: true }}
+        pagination={{
+          current: page,
+          pageSize,
+          pageSizeOptions: PAGE_SIZE_OPTIONS,
+          showSizeChanger: true,
+          onChange: setPagination,
+        }}
+        onChange={(_pagination, _filters, sorter, extra) => {
+          if (extra.action !== 'sort') return;
+          const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+          setQuery({
+            sort: activeSorter?.order ? String(activeSorter.field || activeSorter.columnKey || '') : undefined,
+            order: activeSorter?.order || undefined,
+            page: undefined,
+          });
+        }}
         rowSelection={{
           selectedRowKeys,
           onChange: setSelectedRowKeys,

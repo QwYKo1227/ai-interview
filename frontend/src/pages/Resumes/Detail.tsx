@@ -1,16 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Checkbox, Descriptions, Tag, Button, Row, Col, Typography, message, Divider, Spin, Progress, Modal, Form, Input, Space, Select, Rate, List, Avatar, Statistic, Empty, Tabs } from 'antd';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Card, Checkbox, Descriptions, Tag, Button, Row, Col, Typography, message, Divider, Spin, Progress, Modal, Form, Input, Space, Select, Rate, List, Avatar, Statistic, Empty, Tabs, Tooltip } from 'antd';
+import { useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import dayjs from 'dayjs';
-import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined, LinkOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined, LinkOutlined, MailOutlined } from '@ant-design/icons';
 import RejectReasonSelector, { REJECT_REASONS } from '../../components/RejectReasonSelector';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
 import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
 import ScheduleInterviewModal from '../../components/ScheduleInterviewModal';
+import { useReturnToList } from '../../hooks/useListPageState';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
@@ -27,6 +28,16 @@ type ReviewEmailDraft = ReviewLink & {
   toEmail: string;
   subject: string;
   content: string;
+  purpose: 'notification' | 'reminder';
+};
+
+const REVIEW_EMAIL_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+
+const parseUtcTimestamp = (value?: string) => {
+  if (!value) return null;
+  const timestamp = /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`;
+  const parsed = new Date(timestamp).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
 };
 
 // 状态映射
@@ -53,7 +64,8 @@ const STATUS_MAP: Record<string, { text: string; color: string }> = {
 
 const ResumeDetail: React.FC = () => {
   const { id } = useParams();
-  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const selectedReviewId = searchParams.get('review_id');
   const { user } = useAuth();
   const [resume, setResume] = useState<any>(null);
   const [hrReview, setHrReview] = useState('');
@@ -68,6 +80,9 @@ const ResumeDetail: React.FC = () => {
 
   // 获取用户角色
   const userRole = (user as any)?.role?.value ?? (user as any)?.role;
+  const isPersonalReviewMode = userRole === 'interviewer' || (userRole === 'admin' && Boolean(selectedReviewId));
+  const isManagementMode = !isPersonalReviewMode && (userRole === 'admin' || userRole === 'hr');
+  const returnToList = useReturnToList(isPersonalReviewMode ? '/resumes/my-reviews' : '/resumes');
 
   // 部门评审相关状态
   const [deptReviewSummary, setDeptReviewSummary] = useState<any>(null);
@@ -87,18 +102,27 @@ const ResumeDetail: React.FC = () => {
   const [reviewEmailFallbackLinks, setReviewEmailFallbackLinks] = useState<ReviewLink[]>([]);
   const [sendReviewEmails, setSendReviewEmails] = useState(true);
   const [sendingReviewEmails, setSendingReviewEmails] = useState(false);
+  const [reminderClock, setReminderClock] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setReminderClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (id) {
       fetchResume(id);
-      fetchReviewers();
+      if (isManagementMode) {
+        fetchReviewers();
+      }
     }
-  }, [id]);
+  }, [id, selectedReviewId, isManagementMode]);
 
   const fetchResume = async (resumeId: string, showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      const res = await request.get(`/resumes/${resumeId}`) as any;
+      const reviewQuery = selectedReviewId ? `?review_id=${encodeURIComponent(selectedReviewId)}` : '';
+      const res = await request.get(`/resumes/${resumeId}${reviewQuery}`) as any;
       setResume(res);
       setHrReview(res.hr_review || '');
       form.setFieldsValue({
@@ -113,11 +137,12 @@ const ResumeDetail: React.FC = () => {
       });
 
       // 获取部门评审汇总
-      if (res.status === 'pending_dept_review' || res.status === 'pending_hr_decision' || res.department_reviews) {
+      if (isManagementMode && (res.status === 'pending_dept_review' || res.status === 'pending_hr_decision' || res.department_reviews)) {
         fetchDeptReviewSummary(resumeId);
       }
 
       // 检查当前用户是否是被指派的评审人
+      setMyReview(null);
       if (res.department_reviews && user?.id) {
         const myReviewRecord = res.department_reviews.find((r: any) => r.reviewer_id === user.id);
         if (myReviewRecord) {
@@ -385,6 +410,7 @@ const ResumeDetail: React.FC = () => {
           toEmail: preview.to_email,
           subject: preview.subject,
           content: preview.content,
+          purpose: 'notification',
         },
       };
     } catch {
@@ -520,6 +546,37 @@ const ResumeDetail: React.FC = () => {
     }
   };
 
+  const handleReviewReminder = async (review: any) => {
+    try {
+      const result = await request.post(
+        `/resumes/${id}/department-reviews/${review.id}/review-link`,
+      );
+      if (!result?.public_token) throw new Error('missing public token');
+      const link: ReviewLink = {
+        reviewId: review.id,
+        reviewerId: review.reviewer_id,
+        reviewerName: review.reviewer_name || '评审人',
+        token: result.public_token,
+        link: `${window.location.origin}/public/review/${result.public_token}`,
+      };
+      const preview = await request.post(
+        `/resumes/${id}/department-reviews/${review.id}/reminder-email-preview`,
+        { public_token: link.token, review_url: link.link },
+      ) as any;
+      setReviewEmailDrafts([{
+        ...link,
+        toEmail: preview.to_email,
+        subject: preview.subject,
+        content: preview.content,
+        purpose: 'reminder',
+      }]);
+      setReviewEmailFallbackLinks([]);
+      setSendReviewEmails(true);
+    } catch {
+      message.error('邮件提醒预览生成失败');
+    }
+  };
+
   const updateReviewEmailDraft = (
     reviewId: string,
     field: 'subject' | 'content',
@@ -531,11 +588,12 @@ const ResumeDetail: React.FC = () => {
   };
 
   const closeReviewEmailModal = () => {
+    const isReminder = reviewEmailDrafts.some(draft => draft.purpose === 'reminder');
     setIsAssignReviewerModalVisible(false);
     setIsChangeReviewerModalVisible(false);
     setReviewEmailDrafts([]);
     setReviewEmailFallbackLinks([]);
-    message.success('部门评审任务已保存，未发送邮件');
+    if (!isReminder) message.success('部门评审任务已保存，未发送邮件');
   };
 
   const handleSendReviewEmails = async () => {
@@ -558,8 +616,23 @@ const ResumeDetail: React.FC = () => {
       )));
       const sentCount = results.filter(result => result.status === 'fulfilled').length;
       const failedCount = results.length - sentCount;
+      const isReminder = reviewEmailDrafts.every(draft => draft.purpose === 'reminder');
+      if (isReminder && failedCount > 0) {
+        const failure = results.find(result => result.status === 'rejected') as PromiseRejectedResult | undefined;
+        if (failure?.reason?.response?.status === 429) {
+          message.warning('该评审刚刚已被提醒，请 8 小时后重试');
+          setReviewEmailDrafts([]);
+          setReviewEmailFallbackLinks([]);
+          fetchDeptReviewSummary(id!);
+        } else {
+          message.error('邮件提醒发送失败，请重试');
+        }
+        return;
+      }
       if (failedCount > 0) {
         message.warning(`部门评审任务已保存，邮件发送成功 ${sentCount} 封，失败 ${failedCount} 封`);
+      } else if (isReminder) {
+        message.success('邮件提醒已发送');
       } else {
         message.success(`${sentCount} 封评审通知邮件已发送`);
       }
@@ -567,6 +640,7 @@ const ResumeDetail: React.FC = () => {
       setIsChangeReviewerModalVisible(false);
       setReviewEmailDrafts([]);
       setReviewEmailFallbackLinks([]);
+      fetchDeptReviewSummary(id!);
     } finally {
       setSendingReviewEmails(false);
     }
@@ -596,6 +670,7 @@ const ResumeDetail: React.FC = () => {
       await request.post(`/resumes/${id}/hr-decision`, payload);
 
       message.success('决策已提交');
+      window.dispatchEvent(new Event('resume-pending-counts-updated'));
       setIsHRDecisionModalVisible(false);
       hrDecisionForm.resetFields();
       fetchResume(id!);
@@ -622,6 +697,7 @@ const ResumeDetail: React.FC = () => {
       );
 
       message.success('评审已提交');
+      window.dispatchEvent(new Event('resume-pending-counts-updated'));
       setIsSubmitReviewModalVisible(false);
       submitReviewForm.resetFields();
       fetchResume(id!);
@@ -742,11 +818,50 @@ const ResumeDetail: React.FC = () => {
       return null;
     }
 
+    if (isPersonalReviewMode) {
+      if (!myReview) return null;
+      const recommendationText = myReview.recommendation === 'recommend'
+        ? '推荐'
+        : myReview.recommendation === 'not_recommend' ? '不推荐' : '待定';
+      const transferred = Boolean(
+        myReview.reviewed_position_id
+        && resume.position?.id
+        && myReview.reviewed_position_id !== resume.position.id
+      );
+      return (
+        <Card
+          title={<span><TeamOutlined style={{ marginRight: 8 }} />我的部门评审</span>}
+          style={{ marginTop: 24, borderRadius: '16px' }}
+          extra={transferred ? <Tag color="orange">候选人已转岗</Tag> : undefined}
+        >
+          {myReview.reviewed_position_title && (
+            <Paragraph type="secondary">评审时岗位：{myReview.reviewed_position_title}</Paragraph>
+          )}
+          {myReview.is_completed ? (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap>
+                <Tag color={myReview.recommendation === 'recommend' ? 'green' : myReview.recommendation === 'not_recommend' ? 'red' : 'gold'}>
+                  {recommendationText}
+                </Tag>
+                <Text>技术评分：{myReview.technical_score ?? '-'}/10</Text>
+                <Text>经验评分：{myReview.experience_score ?? '-'}/10</Text>
+                <Text>综合评分：{myReview.overall_score ?? '-'}/10</Text>
+              </Space>
+              <Text style={{ whiteSpace: 'pre-wrap' }}>{myReview.comment || '未填写评语'}</Text>
+              <Text type="secondary">该评审已提交，仅支持查看</Text>
+            </Space>
+          ) : (
+            <Text type="secondary">评审尚未提交</Text>
+          )}
+        </Card>
+      );
+    }
+
     return (
       <Card
         title={<span><TeamOutlined style={{ marginRight: 8 }} />部门评审</span>}
         style={{ marginTop: 24, borderRadius: '16px' }}
-        extra={['pending_review', 'pending_dept_review'].includes(resume.status) && (userRole === 'admin' || userRole === 'hr') && (
+        extra={['pending_review', 'pending_dept_review'].includes(resume.status) && isManagementMode && (
           <Button type="primary" size="small" onClick={() => setIsAssignReviewerModalVisible(true)}>指派部门评审人</Button>
         )}
       >
@@ -794,12 +909,12 @@ const ResumeDetail: React.FC = () => {
                               {review.recommendation === 'recommend' ? '推荐' : review.recommendation === 'not_recommend' ? '不推荐' : '待定'}
                             </Tag>
                           )}
-                          {(userRole === 'admin' || userRole === 'hr') && !review.is_completed && (
+                          {isManagementMode && !review.is_completed && (
                             <Button size="small" onClick={() => openChangeReviewer(review)}>
                               修改评审人
                             </Button>
                           )}
-                          {(userRole === 'admin' || userRole === 'hr') && (
+                          {isManagementMode && (
                             <Button
                               size="small"
                               icon={<LinkOutlined />}
@@ -808,6 +923,31 @@ const ResumeDetail: React.FC = () => {
                               评审链接
                             </Button>
                           )}
+                          {isManagementMode && !review.is_completed && (() => {
+                            const sentAt = parseUtcTimestamp(review.last_reminded_at);
+                            const remainingMs = sentAt === null
+                              ? 0
+                              : Math.max(0, sentAt + REVIEW_EMAIL_COOLDOWN_MS - reminderClock);
+                            const totalMinutes = Math.ceil(remainingMs / 60_000);
+                            const hours = Math.floor(totalMinutes / 60);
+                            const minutes = totalMinutes % 60;
+                            const cooldownText = hours > 0
+                              ? `还需 ${hours} 小时${minutes > 0 ? ` ${minutes} 分钟` : ''}可再次提醒`
+                              : `还需 ${minutes} 分钟可再次提醒`;
+                            const button = (
+                              <Button
+                                size="small"
+                                icon={<MailOutlined />}
+                                disabled={remainingMs > 0}
+                                onClick={() => void handleReviewReminder(review)}
+                              >
+                                邮件提醒
+                              </Button>
+                            );
+                            return remainingMs > 0
+                              ? <Tooltip title={cooldownText}><span>{button}</span></Tooltip>
+                              : button;
+                          })()}
                         </Space>
                       }
                       description={
@@ -840,7 +980,7 @@ const ResumeDetail: React.FC = () => {
   return (
     <div style={{ height: 'calc(100vh - 100px)', display: 'flex', flexDirection: 'column' }}>
       <div style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/resumes')}>返回列表</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={returnToList}>返回列表</Button>
       </div>
       <div className="resume-detail-split" style={{ flex: 1, display: 'flex', flexDirection: 'row', gap: 24, overflow: 'hidden' }}>
       {/* Left: File Preview */}
@@ -1002,10 +1142,10 @@ const ResumeDetail: React.FC = () => {
             </ReactMarkdown>
           </div>
 
-          {((userRole === 'admin' || userRole === 'hr') || resume.hr_review) && (
+          {(isManagementMode || resume.hr_review) && (
             <>
               <Divider style={{ borderColor: '#E2E8F0' }}>HR 评语</Divider>
-              {(userRole === 'admin' || userRole === 'hr') ? (
+              {isManagementMode ? (
                 <div>
                   <TextArea
                     aria-label="HR 评语"
@@ -1079,7 +1219,7 @@ const ResumeDetail: React.FC = () => {
                               format={percent => <span style={{ fontSize: 12, fontWeight: 600 }}>{percent}%</span>}
                               strokeColor={match.match_score >= 80 ? '#10B981' : match.match_score >= 60 ? '#F59E0B' : '#EF4444'}
                             />
-                            {(userRole === 'admin' || userRole === 'hr') && match.position_id && (
+                            {isManagementMode && match.position_id && (
                               <Button
                                 type="primary"
                                 size="small"
@@ -1152,7 +1292,7 @@ const ResumeDetail: React.FC = () => {
       </Modal>
 
       <Modal
-        title="邮件预览"
+        title={reviewEmailDrafts.every(draft => draft.purpose === 'reminder') ? '邮件提醒预览' : '邮件预览'}
         open={reviewEmailDrafts.length > 0}
         onCancel={closeReviewEmailModal}
         width={800}
@@ -1228,9 +1368,11 @@ const ResumeDetail: React.FC = () => {
             ),
           }))}
         />
-        <Checkbox checked={sendReviewEmails} onChange={event => setSendReviewEmails(event.target.checked)}>
-          发送邮件通知评审人
-        </Checkbox>
+        {!reviewEmailDrafts.every(draft => draft.purpose === 'reminder') && (
+          <Checkbox checked={sendReviewEmails} onChange={event => setSendReviewEmails(event.target.checked)}>
+            发送邮件通知评审人
+          </Checkbox>
+        )}
       </Modal>
 
       {/* 修改评审人弹窗 */}

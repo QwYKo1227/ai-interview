@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import {
   Button, Space, Typography, message, Modal, Form, Input, Select,
   Drawer, Spin, Tooltip, Popconfirm, Tag, Divider, InputNumber, Collapse, Timeline, Empty
@@ -19,6 +19,7 @@ import ReactFlow, {
 import type { Node, Edge, Connection, NodeProps } from 'reactflow';
 import 'reactflow/dist/style.css';
 import request from '../../utils/request';
+import { useReturnToList } from '../../hooks/useListPageState';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -121,7 +122,7 @@ const nodeTypes = {
 
 const WorkflowEditor: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const returnToList = useReturnToList('/workflows');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [executing, setExecuting] = useState(false);
@@ -181,7 +182,7 @@ const WorkflowEditor: React.FC = () => {
       setEdges(flowEdges);
     } catch (e) {
       message.error('获取工作流失败');
-      navigate('/workflows');
+      returnToList();
     } finally {
       setLoading(false);
     }
@@ -748,7 +749,7 @@ const WorkflowEditor: React.FC = () => {
           alignItems: 'center',
         }}>
           <Space>
-            <Button onClick={() => navigate('/workflows')}>返回</Button>
+            <Button onClick={returnToList}>返回</Button>
             <Title level={4} style={{ margin: 0 }}>{workflow?.name}</Title>
             <Tag color={statusMap[workflow?.status]?.color || 'default'}>
               {statusMap[workflow?.status]?.text || workflow?.status}

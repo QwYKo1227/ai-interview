@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Form, Input, Button, Card, message, Select, Typography } from 'antd';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { RobotOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
 import { useAuth } from '../../contexts/AuthContext';
+import { useReturnToList } from '../../hooks/useListPageState';
 import {
   getAllowedStatusOptions,
   normalizePositionClassification,
@@ -20,7 +21,7 @@ const PositionForm: React.FC = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const [form] = Form.useForm();
-  const navigate = useNavigate();
+  const returnToList = useReturnToList('/positions');
   const { id } = useParams();
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
@@ -89,7 +90,7 @@ const PositionForm: React.FC = () => {
         await request.post('/positions', normalizePositionClassification(values));
         message.success('创建成功');
       }
-      navigate('/positions');
+      returnToList();
     } catch (error) {
       message.error('提交失败');
     } finally {
@@ -100,7 +101,7 @@ const PositionForm: React.FC = () => {
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/positions')}>
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={returnToList}>
           返回列表
         </Button>
       </div>
@@ -247,7 +248,7 @@ const PositionForm: React.FC = () => {
             <Button type="primary" htmlType="submit" loading={loading} size="large">
               提交
             </Button>
-            <Button style={{ marginLeft: 12 }} onClick={() => navigate('/positions')} size="large">
+            <Button style={{ marginLeft: 12 }} onClick={returnToList} size="large">
               取消
             </Button>
           </Form.Item>

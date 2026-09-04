@@ -6,10 +6,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import mammoth from 'mammoth';
 import { authenticatedApiPath } from '../../hooks/useAuthenticatedFileUrl';
+import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 
 const { Title, Text } = Typography;
 
 const QuestionBanksList: React.FC = () => {
+  const { page, pageSize, setPagination } = useListPageState();
+  useListScrollRestoration();
   const [data, setData] = useState([]);
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -487,7 +490,13 @@ const QuestionBanksList: React.FC = () => {
         dataSource={data} 
         loading={loading} 
         rowKey="id" 
-        pagination={{ pageSize: 10, showSizeChanger: true }}
+        pagination={{
+          current: page,
+          pageSize,
+          pageSizeOptions: PAGE_SIZE_OPTIONS,
+          showSizeChanger: true,
+          onChange: setPagination,
+        }}
         rowSelection={{
           selectedRowKeys,
           onChange: setSelectedRowKeys,

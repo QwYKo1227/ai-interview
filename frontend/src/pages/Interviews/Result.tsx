@@ -343,6 +343,7 @@ const InterviewResultPage: React.FC = () => {
         recommendation: humanRecommendation,
       });
       message.success('人工评价已保存，最终确认前仍可修改');
+      window.dispatchEvent(new Event('interview-pending-reviews-updated'));
       await fetchInterview(id!, true);
     } catch (error: any) {
       message.error(error?.response?.data?.detail || '保存人工评价失败');

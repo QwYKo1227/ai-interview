@@ -987,6 +987,31 @@ def panel_for_user(db: Session, interview: Interview, user: User) -> InterviewPa
     return panel
 
 
+def get_my_pending_human_review_count(db: Session, user: User) -> int:
+    """Count ended interviews the current assigned interviewer has not reviewed."""
+
+    submitted_review_exists = (
+        db.query(InterviewPanel.id)
+        .filter(
+            InterviewPanel.interview_id == Interview.id,
+            InterviewPanel.tenant_id == Interview.tenant_id,
+            InterviewPanel.interviewer_id == user.id,
+            InterviewPanel.human_review_submitted_at.is_not(None),
+        )
+        .exists()
+    )
+    rows = (
+        db.query(Interview.id, Interview.panel_members)
+        .filter(
+            Interview.lifecycle_state == "ended",
+            ~submitted_review_exists,
+        )
+        .all()
+    )
+    user_id = str(user.id)
+    return len({interview_id for interview_id, member_ids in rows if user_id in (member_ids or [])})
+
+
 def save_live_notes(db: Session, interview: Interview, user: User, notes: str) -> InterviewPanel:
     if interview.lifecycle_state != "in_progress":
         raise HTTPException(status_code=409, detail="Live notes can only be edited during the interview")

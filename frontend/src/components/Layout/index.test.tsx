@@ -41,6 +41,7 @@ describe('AppLayout responsiveness', () => {
       if (url === '/resumes/my-pending-review-count') return { count: 0 }
       if (url === '/resumes/pending-hr-decision-count') return { count: 0 }
       if (url === '/offers/my-pending-count') return { count: 0 }
+      if (url === '/interviews/my-pending-review-count') return { count: 0 }
       return {}
     })
   })
@@ -101,6 +102,7 @@ describe('AppLayout responsiveness', () => {
     vi.mocked(request.get).mockImplementation(async (url: string) => {
       if (url === '/resumes/my-pending-review-count') return { count: 4 }
       if (url === '/resumes/pending-hr-decision-count') return { count: 120 }
+      if (url === '/interviews/my-pending-review-count') return { count: 6 }
       return { count: 0 }
     })
 
@@ -108,15 +110,29 @@ describe('AppLayout responsiveness', () => {
 
     expect(await screen.findByText('4')).toBeInTheDocument()
     expect(screen.getAllByText('99+').length).toBeGreaterThan(0)
+    expect(screen.getByText('6')).toBeInTheDocument()
   })
 
   it('keeps the pending review badge visible in collapsed mode', async () => {
     authState.role = 'interviewer'
-    vi.mocked(request.get).mockResolvedValue({ count: 7 })
+    vi.mocked(request.get).mockImplementation(async (url: string) => (
+      { count: url === '/resumes/my-pending-review-count' ? 7 : 0 }
+    ))
 
     render(<MemoryRouter initialEntries={['/resumes/my-reviews']}><AppLayout /></MemoryRouter>)
 
     expect(await screen.findByText('7')).toBeVisible()
+  })
+
+  it('keeps the pending interview review badge visible in collapsed mode', async () => {
+    authState.role = 'interviewer'
+    vi.mocked(request.get).mockImplementation(async (url: string) => (
+      { count: url === '/interviews/my-pending-review-count' ? 8 : 0 }
+    ))
+
+    render(<MemoryRouter initialEntries={['/interviews']}><AppLayout /></MemoryRouter>)
+
+    expect(await screen.findByText('8')).toBeVisible()
   })
 
   it('hides the complete title beside a direct menu icon in collapsed mode', () => {

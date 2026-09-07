@@ -20,6 +20,64 @@ from app.models.models import (
 from app.models.file_models import StoredFile
 
 
+def test_pending_human_review_count_only_includes_ended_current_assignments(
+    client: TestClient,
+    db: Session,
+    interviewer_auth_headers: dict,
+    test_interview: Interview,
+    test_interview_panel: InterviewPanel,
+    test_interviewer: User,
+):
+    test_interview.lifecycle_state = "ended"
+    db.commit()
+
+    response = client.get(
+        "/api/interviews/my-pending-review-count",
+        headers=interviewer_auth_headers,
+    )
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"count": 1}
+
+    db.delete(test_interview_panel)
+    db.commit()
+    assert client.get(
+        "/api/interviews/my-pending-review-count",
+        headers=interviewer_auth_headers,
+    ).json() == {"count": 1}
+
+    test_interview_panel = InterviewPanel(
+        tenant_id=test_interview.tenant_id,
+        interview_id=test_interview.id,
+        interviewer_id=test_interviewer.id,
+        is_submitted=False,
+    )
+    db.add(test_interview_panel)
+    db.commit()
+
+    test_interview.lifecycle_state = "ending"
+    db.commit()
+    assert client.get(
+        "/api/interviews/my-pending-review-count",
+        headers=interviewer_auth_headers,
+    ).json() == {"count": 0}
+
+    test_interview.lifecycle_state = "ended"
+    test_interview.panel_members = []
+    db.commit()
+    assert client.get(
+        "/api/interviews/my-pending-review-count",
+        headers=interviewer_auth_headers,
+    ).json() == {"count": 0}
+
+    test_interview.panel_members = [str(test_interviewer.id)]
+    test_interview_panel.human_review_submitted_at = datetime.now(timezone.utc)
+    db.commit()
+    assert client.get(
+        "/api/interviews/my-pending-review-count",
+        headers=interviewer_auth_headers,
+    ).json() == {"count": 0}
+
+
 def test_interviewer_filter_options_only_include_members_from_visible_interviews(
     client: TestClient,
     db: Session,

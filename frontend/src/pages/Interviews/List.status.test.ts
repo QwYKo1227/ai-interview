@@ -11,6 +11,7 @@ import {
   normalizeInterviewResult,
   SCHEDULABLE_RESUME_STATUSES,
 } from './List';
+import { getMyInterviewReviewStatus } from './interviewReviewStatus';
 
 
 describe('interview list status presentation', () => {
@@ -52,6 +53,34 @@ describe('interview list status presentation', () => {
 
   it('resets every interview filter', () => {
     expect(createEmptyInterviewListFilters()).toEqual({});
+  });
+
+  it('derives the current interviewer review state only after the interview ends', () => {
+    const ended = {
+      lifecycle_state: 'ended',
+      panel_members: ['me'],
+      panels: [{ interviewer_id: 'me', human_review_submitted_at: null }],
+    };
+
+    expect(getMyInterviewReviewStatus(ended, 'me')).toBe('pending');
+    expect(getMyInterviewReviewStatus({
+      ...ended,
+      panels: [{ interviewer_id: 'me', human_review_submitted_at: '2026-09-07T01:00:00Z' }],
+    }, 'me')).toBe('reviewed');
+    expect(getMyInterviewReviewStatus({ ...ended, lifecycle_state: 'in_progress' }, 'me')).toBeNull();
+    expect(getMyInterviewReviewStatus(ended, 'someone-else')).toBeNull();
+  });
+
+  it('filters ended interviews by the current interviewer review state', () => {
+    const interview = {
+      lifecycle_state: 'ended',
+      panel_members: ['me'],
+      panels: [{ interviewer_id: 'me', human_review_submitted_at: null }],
+    };
+
+    expect(matchesInterviewFilters(interview, { myReview: 'pending' }, 'me')).toBe(true);
+    expect(matchesInterviewFilters(interview, { myReview: 'reviewed' }, 'me')).toBe(false);
+    expect(matchesInterviewFilters({ ...interview, lifecycle_state: 'scheduled' }, { myReview: 'pending' }, 'me')).toBe(false);
   });
 
   it('includes both first-round and next-round candidates when scheduling', () => {

@@ -48,6 +48,7 @@ from app.services.interview_lifecycle_service import (
     correct_final_decision,
     confirm_recording,
     heartbeat_recording,
+    get_my_pending_human_review_count,
     panel_for_user,
     persist_realtime_transcript,
     reserve_recording,
@@ -80,6 +81,15 @@ router = APIRouter(
     prefix="/interviews",
     tags=["interviews"]
 )
+
+
+@router.get("/my-pending-review-count")
+def get_my_pending_human_review_count_route(
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    return {"count": get_my_pending_human_review_count(db, current_user)}
+
 
 class ConfirmResult(BaseModel):
     result: str

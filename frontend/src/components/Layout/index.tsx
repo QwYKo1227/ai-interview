@@ -32,6 +32,7 @@ const AppLayout: React.FC = () => {
   const [pendingOfferCount, setPendingOfferCount] = useState(0);
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [pendingHrDecisionCount, setPendingHrDecisionCount] = useState(0);
+  const [pendingInterviewReviewCount, setPendingInterviewReviewCount] = useState(0);
 
   useEffect(() => {
     if (!user || !['admin', 'hr'].includes(role)) {
@@ -47,6 +48,21 @@ const AppLayout: React.FC = () => {
     window.addEventListener('offer-pending-updated', loadPendingCount);
     return () => window.removeEventListener('offer-pending-updated', loadPendingCount);
   }, [user, role, location.pathname]);
+
+  useEffect(() => {
+    if (!user) {
+      setPendingInterviewReviewCount(0);
+      return;
+    }
+    const loadPendingInterviewReviewCount = () => {
+      request.get('/interviews/my-pending-review-count')
+        .then((response) => setPendingInterviewReviewCount(response?.count || 0))
+        .catch(() => setPendingInterviewReviewCount(0));
+    };
+    loadPendingInterviewReviewCount();
+    window.addEventListener('interview-pending-reviews-updated', loadPendingInterviewReviewCount);
+    return () => window.removeEventListener('interview-pending-reviews-updated', loadPendingInterviewReviewCount);
+  }, [user, location.pathname]);
 
   useEffect(() => {
     const canReview = role === 'admin' || role === 'interviewer';
@@ -136,8 +152,8 @@ const AppLayout: React.FC = () => {
     },
     {
       key: '/interviews',
-      icon: <TeamOutlined aria-hidden="true" />,
-      label: '面试管理',
+      icon: badgeIcon(<TeamOutlined aria-hidden="true" />, pendingInterviewReviewCount),
+      label: badgeLabel('面试管理', pendingInterviewReviewCount),
     },
     {
       key: '/coding-tests',
@@ -180,6 +196,7 @@ const AppLayout: React.FC = () => {
   const plainPageTitles: Record<string, string> = {
     '/resumes': '简历管理',
     '/resumes/my-reviews': '我的评审',
+    '/interviews': '面试管理',
   };
 
   const pageTitle =

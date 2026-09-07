@@ -29,6 +29,7 @@ type InterviewCalendarProps = {
   onRangeChange: (start: Date, end: Date) => void;
   onEmptyDoubleClick: (date: Date, allDay: boolean) => void;
   renderActions: (record: any) => React.ReactNode;
+  renderReviewStatus: (record: any) => React.ReactNode;
 };
 
 const PROGRESS_META: Record<string, { label: string }> = {
@@ -99,7 +100,8 @@ const EventDetails: React.FC<{
   record: any;
   interviewerNameMap: Record<string, string>;
   actions: React.ReactNode;
-}> = ({ record, interviewerNameMap, actions }) => {
+  reviewStatus: React.ReactNode;
+}> = ({ record, interviewerNameMap, actions, reviewStatus }) => {
   const progress = getInterviewProgress(record);
   const meta = PROGRESS_META[progress] || { label: progress };
   const start = toBeijingTime(record?.interview_time);
@@ -111,7 +113,10 @@ const EventDetails: React.FC<{
           <Text strong>{record?.resume?.candidate_name || '未知候选人'}</Text>
           <div className="interview-event-popover__position">{record?.position?.title || '未知岗位'}</div>
         </div>
-        <Tag className={`interview-status-tag interview-status-tag--${progress}`}>{meta.label}</Tag>
+        <Space size={6}>
+          <Tag className={`interview-status-tag interview-status-tag--${progress}`}>{meta.label}</Tag>
+          {reviewStatus}
+        </Space>
       </div>
       <Descriptions size="small" column={1} colon={false}>
         <Descriptions.Item label="时间">
@@ -132,6 +137,7 @@ const InterviewCalendar: React.FC<InterviewCalendarProps> = ({
   onRangeChange,
   onEmptyDoubleClick,
   renderActions,
+  renderReviewStatus,
 }) => {
   const savedView = localStorage.getItem('interview-calendar-view');
   const initialView = savedView === 'timeGridWeek' ? 'timeGridWeek' : 'dayGridMonth';
@@ -233,22 +239,26 @@ const InterviewCalendar: React.FC<InterviewCalendarProps> = ({
         eventContent={(info) => {
           const record = info.event.extendedProps.record;
           return (
-            <Popover
-              trigger="click"
-              placement="rightTop"
-              content={(
-                <EventDetails
-                  record={record}
-                  interviewerNameMap={interviewerNameMap}
-                  actions={renderActions(record)}
-                />
-              )}
-            >
-              <button type="button" className="interview-event-content" onDoubleClick={(event) => event.stopPropagation()}>
-                <span className="interview-event-content__time">{info.timeText}</span>
-                <span className="interview-event-content__title">{info.event.title}</span>
-              </button>
-            </Popover>
+            <div className="interview-event-content-shell">
+              <Popover
+                trigger="click"
+                placement="rightTop"
+                content={(
+                  <EventDetails
+                    record={record}
+                    interviewerNameMap={interviewerNameMap}
+                    actions={renderActions(record)}
+                    reviewStatus={renderReviewStatus(record)}
+                  />
+                )}
+              >
+                <button type="button" className="interview-event-content" onDoubleClick={(event) => event.stopPropagation()}>
+                  <span className="interview-event-content__time">{info.timeText}</span>
+                  <span className="interview-event-content__title">{info.event.title}</span>
+                </button>
+              </Popover>
+              <span className="interview-event-content__review">{renderReviewStatus(record)}</span>
+            </div>
           );
         }}
         noEventsContent={() => (
@@ -286,6 +296,7 @@ const InterviewCalendar: React.FC<InterviewCalendarProps> = ({
                   <span>{record?.position?.title || '未知岗位'}</span>
                 </div>
                 <Tag className={`interview-status-tag interview-status-tag--${progress}`}>{meta.label}</Tag>
+                {renderReviewStatus(record)}
                 <div className="interview-overflow-item__actions">{renderActions(record)}</div>
               </div>
             );

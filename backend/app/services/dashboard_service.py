@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import statistics
 from app.services.recruitment_access import is_admin
+from app.services.interview_lifecycle_service import get_my_pending_human_review_count
 
 
 CHINA_TIMEZONE = timezone(timedelta(hours=8))
@@ -68,23 +69,7 @@ def get_interviewer_dashboard(
         )
         .count()
     )
-    pending_feedback = (
-        db.query(InterviewPanel)
-        .join(
-            Interview,
-            and_(
-                Interview.id == InterviewPanel.interview_id,
-                Interview.tenant_id == InterviewPanel.tenant_id,
-            ),
-        )
-        .filter(
-            InterviewPanel.interviewer_id == current_user.id,
-            InterviewPanel.is_submitted.is_(False),
-            Interview.lifecycle_state.in_(["ending", "ended"]),
-            Interview.status != InterviewStatus.CANCELLED,
-        )
-        .count()
-    )
+    pending_feedback = get_my_pending_human_review_count(db, current_user)
     upcoming = (
         _assigned_interview_query(db, current_user.id)
         .options(joinedload(Interview.resume), joinedload(Interview.position))

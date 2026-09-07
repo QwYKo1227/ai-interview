@@ -15,6 +15,7 @@ import {
   validateInterviewTimeRange,
 } from './interviewSchedule';
 import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration, useNavigateFromList } from '../../hooks/useListPageState';
+import { getMyInterviewReviewStatus } from './interviewReviewStatus';
 
 export const SCHEDULABLE_RESUME_STATUSES = ['pending_interview', 'pending_next_interview'] as const;
 
@@ -44,6 +45,7 @@ export type InterviewListFilters = {
   interviewerId?: string;
   status?: string;
   result?: string;
+  myReview?: 'pending' | 'reviewed';
 };
 
 export const createEmptyInterviewListFilters = (): InterviewListFilters => ({});
@@ -62,6 +64,7 @@ export const getInterviewMemberIds = (record: any): string[] => {
 export const matchesInterviewFilters = (
   record: any,
   filters: InterviewListFilters,
+  userId?: string,
 ) => {
   const resumeId = String(record?.resume_id || record?.resume?.id || '');
   const positionId = String(record?.position_id || record?.position?.id || '');
@@ -70,7 +73,8 @@ export const matchesInterviewFilters = (
     && (!filters.positionId || positionId === filters.positionId)
     && (!filters.interviewerId || getInterviewMemberIds(record).includes(filters.interviewerId))
     && (!filters.status || getInterviewProgress(record) === filters.status)
-    && (!filters.result || normalizeInterviewResult(record?.result) === filters.result);
+    && (!filters.result || normalizeInterviewResult(record?.result) === filters.result)
+    && (!filters.myReview || getMyInterviewReviewStatus(record, userId) === filters.myReview);
 };
 
 export const buildInterviewSchedulePayload = (values: any) => ({
@@ -98,6 +102,7 @@ const InterviewsList: React.FC = () => {
     interviewerId: searchParams.get('interviewer') || undefined,
     status: searchParams.get('status') || undefined,
     result: searchParams.get('result') || undefined,
+    myReview: (searchParams.get('my_review') as InterviewListFilters['myReview']) || undefined,
   }), [searchParams]);
   const [interviewerNameMap, setInterviewerNameMap] = useState<Record<string, string>>({});
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
@@ -343,13 +348,13 @@ const InterviewsList: React.FC = () => {
   })), [filterInterviewers]);
 
   const filteredData = useMemo(
-    () => (data as any[]).filter((interview) => matchesInterviewFilters(interview, filters)),
-    [data, filters],
+    () => (data as any[]).filter((interview) => matchesInterviewFilters(interview, filters, user?.id)),
+    [data, filters, user?.id],
   );
 
   const filteredCalendarData = useMemo(
-    () => calendarData.filter((interview) => matchesInterviewFilters(interview, filters)),
-    [calendarData, filters],
+    () => calendarData.filter((interview) => matchesInterviewFilters(interview, filters, user?.id)),
+    [calendarData, filters, user?.id],
   );
 
   const getInterviewerText = (record: any) => {
@@ -669,6 +674,36 @@ const InterviewsList: React.FC = () => {
     );
   };
 
+  const renderMyReviewStatus = (record: any) => {
+    const reviewStatus = getMyInterviewReviewStatus(record, user?.id);
+    if (reviewStatus === 'pending') {
+      const openReview = () => navigateFromList(`/interviews/${record.id}/result`);
+      return (
+        <Tag
+          color="orange"
+          role="button"
+          tabIndex={0}
+          aria-label="待评价，进入评价页面"
+          style={{ border: 'none', cursor: 'pointer', marginInlineEnd: 0 }}
+          onClick={(event) => { event.stopPropagation(); openReview(); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              event.stopPropagation();
+              openReview();
+            }
+          }}
+        >
+          待评价
+        </Tag>
+      );
+    }
+    if (reviewStatus === 'reviewed') {
+      return <Tag color="green" style={{ border: 'none', marginInlineEnd: 0 }}>已评价</Tag>;
+    }
+    return <span aria-label="暂无个人评价状态" style={{ color: '#94A3B8' }}>—</span>;
+  };
+
   const columns = [
     {
       title: '候选人',
@@ -736,18 +771,6 @@ const InterviewsList: React.FC = () => {
       }
     },
     {
-      title: '总分',
-      key: 'total_score',
-      render: (_, record: any) => {
-        if (!record.scores) return '-';
-        const values = Object.values(record.scores) as number[];
-        if (values.length === 0) return '-';
-        const sum = values.reduce((a, b) => a + b, 0);
-        const avg = (sum / values.length).toFixed(1);
-        return <span style={{ fontWeight: 600, color: '#0F172A' }}>{avg}</span>;
-      }
-    },
-    {
       title: '面试进度',
       key: 'progress',
       render: (_: unknown, record: any) => {
@@ -766,9 +789,10 @@ const InterviewsList: React.FC = () => {
           record.cancel_reason ? `取消原因：${record.cancel_reason}` : '',
           record.cancelled_at ? `取消时间：${new Date(record.cancelled_at).toLocaleString()}` : '',
         ].filter(Boolean).join('；');
-        return progress === 'cancelled' && cancellationDetails
+        const progressTag = progress === 'cancelled' && cancellationDetails
           ? <Tooltip title={cancellationDetails}>{tag}</Tooltip>
           : tag;
+        return <Space size={6}>{progressTag}{renderMyReviewStatus(record)}</Space>;
       }
     },
     {
@@ -885,6 +909,19 @@ const InterviewsList: React.FC = () => {
             ]}
           />
           </Form.Item>
+          <Form.Item label="我的评价">
+            <Select
+              placeholder="筛选评价状态"
+              allowClear
+              value={filters.myReview}
+              onChange={(myReview) => setQuery({ my_review: myReview, page: undefined })}
+              style={{ width: 140 }}
+              options={[
+                { value: 'pending', label: '待评价' },
+                { value: 'reviewed', label: '已评价' },
+              ]}
+            />
+          </Form.Item>
           {viewMode === 'list' && selectedRowKeys.length > 0 && canDeleteInterview && (
             <>
               <Form.Item><span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span></Form.Item>
@@ -893,7 +930,7 @@ const InterviewsList: React.FC = () => {
             </>
           )}
           <Form.Item>
-            <Button onClick={() => setQuery({ candidate: undefined, position: undefined, interviewer: undefined, status: undefined, result: undefined, page: undefined })}>重置</Button>
+            <Button onClick={() => setQuery({ candidate: undefined, position: undefined, interviewer: undefined, status: undefined, result: undefined, my_review: undefined, page: undefined })}>重置</Button>
           </Form.Item>
         </Form>
       </Card>
@@ -935,6 +972,7 @@ const InterviewsList: React.FC = () => {
           onRangeChange={handleCalendarRangeChange}
           onEmptyDoubleClick={handleCalendarEmptyDoubleClick}
           renderActions={renderInterviewActions}
+          renderReviewStatus={renderMyReviewStatus}
         />
       )}
 

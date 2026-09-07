@@ -41,6 +41,7 @@ def test_interviewer_dashboard_is_scoped_to_assigned_work(
         tenant_id=test_resume.tenant_id,
         resume_id=test_resume.id,
         position_id=test_position.id,
+        panel_members=[str(test_interviewer.id)],
         interview_time=now - timedelta(hours=2),
         interview_end_time=now - timedelta(hours=1),
         status=InterviewStatus.COMPLETED,
@@ -89,3 +90,35 @@ def test_interviewer_dashboard_is_scoped_to_assigned_work(
     assert [item["id"] for item in result["upcoming_interviews"]] == [str(upcoming.id)]
     assert result["upcoming_interviews"][0]["candidate_name"] == test_resume.candidate_name
     assert result["upcoming_interviews"][0]["position_title"] == test_position.title
+
+
+def test_pending_feedback_uses_human_review_submission_state(
+    db, test_interview, test_interview_panel, test_interviewer
+):
+    now = datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc)
+    test_interview.status = InterviewStatus.COMPLETED
+    test_interview.lifecycle_state = "ended"
+    test_interview_panel.is_submitted = True
+    test_interview_panel.human_review_submitted_at = None
+    db.commit()
+
+    result = get_interviewer_dashboard(db, test_interviewer, now=now)
+
+    assert result["metrics"]["pending_feedback"] == 1
+
+    test_interview.lifecycle_state = "ending"
+    db.commit()
+    result = get_interviewer_dashboard(db, test_interviewer, now=now)
+    assert result["metrics"]["pending_feedback"] == 0
+
+    test_interview.lifecycle_state = "ended"
+    test_interview.panel_members = []
+    db.commit()
+    result = get_interviewer_dashboard(db, test_interviewer, now=now)
+    assert result["metrics"]["pending_feedback"] == 0
+
+    test_interview.panel_members = [str(test_interviewer.id)]
+    test_interview_panel.human_review_submitted_at = now
+    db.commit()
+    result = get_interviewer_dashboard(db, test_interviewer, now=now)
+    assert result["metrics"]["pending_feedback"] == 0

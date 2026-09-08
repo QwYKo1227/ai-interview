@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, or_, update, case
+from sqlalchemy import desc, func, or_, update, case
 from app.models.models import (
     Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User,
     UserRole, OfferDecisionAudit, RecruitmentHcSlot
@@ -169,6 +169,10 @@ def get_offers(
             "accepted_at": offer.accepted_at,
             "actual_onboarded_at": offer.actual_onboarded_at,
             "onboarding_confirmed_by": str(offer.onboarding_confirmed_by) if offer.onboarding_confirmed_by else None,
+            "departed_at": offer.departed_at,
+            "departure_recorded_by": str(offer.departure_recorded_by) if offer.departure_recorded_by else None,
+            "departure_reason": offer.departure_reason,
+            "departure_released_hc": offer.departure_released_hc,
             "rejected_at": offer.rejected_at,
             "rejected_reason": offer.rejected_reason,
             "created_at": offer.created_at,
@@ -233,6 +237,10 @@ def get_offer(
         "accepted_at": offer.accepted_at,
         "actual_onboarded_at": offer.actual_onboarded_at,
         "onboarding_confirmed_by": str(offer.onboarding_confirmed_by) if offer.onboarding_confirmed_by else None,
+        "departed_at": offer.departed_at,
+        "departure_recorded_by": str(offer.departure_recorded_by) if offer.departure_recorded_by else None,
+        "departure_reason": offer.departure_reason,
+        "departure_released_hc": offer.departure_released_hc,
         "rejected_at": offer.rejected_at,
         "rejected_reason": offer.rejected_reason,
         "created_at": offer.created_at,
@@ -342,6 +350,8 @@ def record_offer_decision(
     }
     if offer.status not in allowed_statuses:
         raise ValueError("当前状态不允许登记Offer结果")
+    if offer.actual_onboarded_at is not None:
+        raise ValueError("已确认入职的候选人不能改为Offer结果，请使用登记离职")
 
     new_status = OfferStatus.ACCEPTED if decision == "accepted" else OfferStatus.REJECTED
     previous_status = offer.status
@@ -451,6 +461,101 @@ def confirm_onboarding(db: Session, offer_id: UUID, actual_onboard_date: date, a
     return offer
 
 
+def record_departure(
+    db: Session,
+    offer_id: UUID,
+    actual_departure_date: date,
+    release_hc: bool,
+    actor: User,
+    reason: Optional[str] = None,
+) -> Offer:
+    offer = db.query(Offer).filter(Offer.id == offer_id).first()
+    if offer is None:
+        raise ValueError("Offer不存在")
+    if offer.actual_onboarded_at is None:
+        raise ValueError("只有已确认入职的候选人才能登记离职")
+    if offer.departed_at is not None or offer.status == OfferStatus.DEPARTED:
+        raise ValueError("该候选人已登记离职")
+
+    departed_at = datetime.combine(actual_departure_date, time.min, COMPANY_TZ).astimezone(timezone.utc)
+    if actual_departure_date > datetime.now(COMPANY_TZ).date():
+        raise ValueError("实际离职日期不能晚于今天")
+    onboarded_at = (
+        offer.actual_onboarded_at.replace(tzinfo=timezone.utc)
+        if offer.actual_onboarded_at.tzinfo is None
+        else offer.actual_onboarded_at
+    )
+    if actual_departure_date < onboarded_at.astimezone(COMPANY_TZ).date():
+        raise ValueError("实际离职日期不能早于实际入职日期")
+
+    resume = db.query(Resume).filter(Resume.id == offer.resume_id).first()
+    if resume is None:
+        raise ValueError("关联简历不存在")
+    slot = (
+        db.query(RecruitmentHcSlot)
+        .filter(
+            RecruitmentHcSlot.position_id == offer.position_id,
+            RecruitmentHcSlot.candidate_resume_id == resume.id,
+            RecruitmentHcSlot.completed_at.isnot(None),
+        )
+        .first()
+    )
+    if slot is None:
+        raise ValueError("未找到该候选人占用的HC名额")
+
+    offer.status = OfferStatus.DEPARTED
+    offer.departed_at = departed_at
+    offer.departure_recorded_by = actor.id
+    offer.departure_reason = (reason or "").strip() or None
+    offer.departure_released_hc = release_hc
+
+    onboarded_days = (actual_departure_date - onboarded_at.astimezone(COMPANY_TZ).date()).days
+    old_status = resume.status
+    if onboarded_days < 30:
+        resume.status = ResumeStatus.OFFER_ACCEPTED
+    record_resume_status_event(
+        db,
+        resume,
+        old_status,
+        resume.status,
+        source="departure_registration",
+        source_id=offer.id,
+        actor_id=actor.id,
+        reason=offer.departure_reason,
+        occurred_at=departed_at,
+    )
+
+    if release_hc:
+        slot.status = "released"
+        slot.status_reason = "员工离职，HC已释放，历史积分已冻结"
+        next_round = (
+            db.query(func.max(RecruitmentHcSlot.recruitment_round))
+            .filter(
+                RecruitmentHcSlot.position_id == offer.position_id,
+                RecruitmentHcSlot.slot_number == slot.slot_number,
+            )
+            .scalar()
+            or slot.recruitment_round
+        ) + 1
+        db.add(RecruitmentHcSlot(
+            tenant_id=slot.tenant_id,
+            position_id=slot.position_id,
+            slot_number=slot.slot_number,
+            status="active",
+            assigned_at=departed_at,
+            round_started_at=departed_at,
+            recruitment_round=next_round,
+            status_reason="离职释放HC后开始新一轮招聘",
+        ))
+    else:
+        slot.status = "departed_retained"
+        slot.status_reason = "员工离职，HC未释放，历史积分已冻结"
+
+    db.commit()
+    db.refresh(offer)
+    return offer
+
+
 def get_offer_decision_audits(db: Session, offer_id: UUID) -> List[Dict[str, Any]]:
     rows = (
         db.query(OfferDecisionAudit)
@@ -519,7 +624,9 @@ def get_offer_stats(db: Session, current_user: Optional[User] = None) -> Dict[st
     total_offers = query.count()
     pending_offers = query.filter(Offer.status == OfferStatus.PENDING).count()
     sent_offers = query.filter(Offer.status == OfferStatus.SENT).count()
-    accepted_offers = query.filter(Offer.status == OfferStatus.ACCEPTED).count()
+    accepted_offers = query.filter(
+        Offer.status.in_([OfferStatus.ACCEPTED, OfferStatus.DEPARTED])
+    ).count()
     rejected_offers = query.filter(Offer.status == OfferStatus.REJECTED).count()
     expired_offers = query.filter(Offer.status == OfferStatus.EXPIRED).count()
     

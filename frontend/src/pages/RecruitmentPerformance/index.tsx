@@ -37,6 +37,7 @@ const { Text, Title } = Typography;
 type HcScore = {
   slot_id: string;
   slot_number: number;
+  recruitment_round?: number;
   candidate_name?: string;
   result_stage: string;
   result_coefficient: number;
@@ -48,6 +49,8 @@ type HcScore = {
   task_points: number;
   score: number;
   status: string;
+  departed_at?: string;
+  departure_released_hc?: boolean;
 };
 
 type PositionScore = {
@@ -246,8 +249,28 @@ const SlotLedger = ({ slots }: { slots: HcScore[] }) => (
       scroll={{ x: 980 }}
       dataSource={slots.filter(slot => !['cancelled', 'frozen'].includes(slot.status))}
       columns={[
-        { title: 'HC', dataIndex: 'slot_number', width: 66, render: value => `#${value}` },
-        { title: '候选人', dataIndex: 'candidate_name', render: value => value || <Text type="secondary">未占位</Text> },
+        {
+          title: 'HC',
+          dataIndex: 'slot_number',
+          width: 118,
+          render: (value, row) => `#${value} · 第${row.recruitment_round || 1}轮`,
+        },
+        {
+          title: '候选人',
+          dataIndex: 'candidate_name',
+          render: (value, row) => value ? (
+            <Space size={[4, 4]} wrap>
+              <Text>{value}</Text>
+              {row.departed_at && <Tag color="purple">已离职</Tag>}
+              {row.departed_at && (
+                <Tag color={row.departure_released_hc ? 'green' : 'orange'}>
+                  {row.departure_released_hc ? 'HC已释放' : 'HC未释放'}
+                </Tag>
+              )}
+              {row.departed_at && <Tag>积分已冻结</Tag>}
+            </Space>
+          ) : <Text type="secondary">未占位</Text>,
+        },
         { title: '结果', dataIndex: 'result_stage', render: (value, row) => <Space><Tag color={row.status === 'completed' ? 'green' : 'blue'}>{value}</Tag><Text type="secondary">× {row.result_coefficient}</Text></Space> },
         { title: '目标', dataIndex: 'target_days', render: value => `${value}天` },
         { title: '累计实际', dataIndex: 'actual_days', render: value => `${value}天` },

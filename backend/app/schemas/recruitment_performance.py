@@ -73,6 +73,7 @@ class PerformanceConfigResponse(PerformanceConfigPayload):
 class HcScore(BaseModel):
     slot_id: UUID
     slot_number: int
+    recruitment_round: int = 1
     candidate_name: Optional[str]
     result_stage: str
     result_coefficient: float
@@ -84,6 +85,8 @@ class HcScore(BaseModel):
     task_points: float
     score: float
     status: str
+    departed_at: Optional[datetime] = None
+    departure_released_hc: Optional[bool] = None
 
 
 class PositionScore(BaseModel):

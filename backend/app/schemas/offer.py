@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -12,6 +12,7 @@ class OfferStatus:
     REJECTED = "rejected"
     EXPIRED = "expired"
     WITHDRAWN = "withdrawn"
+    DEPARTED = "departed"
 
 class OfferBase(BaseModel):
     resume_id: UUID
@@ -97,6 +98,10 @@ class OfferResponse(BaseModel):
     accepted_at: Optional[datetime]
     actual_onboarded_at: Optional[datetime] = None
     onboarding_confirmed_by: Optional[UUID] = None
+    departed_at: Optional[datetime] = None
+    departure_recorded_by: Optional[UUID] = None
+    departure_reason: Optional[str] = None
+    departure_released_hc: Optional[bool] = None
     rejected_at: Optional[datetime]
     rejected_reason: Optional[str]
     
@@ -114,6 +119,7 @@ class OfferResponse(BaseModel):
         "sent_at",
         "accepted_at",
         "actual_onboarded_at",
+        "departed_at",
         "rejected_at",
         "created_at",
         "updated_at",
@@ -142,6 +148,14 @@ class OfferDecisionRequest(BaseModel):
     rejection_reason: Optional[str] = None
     rejection_detail: Optional[str] = None
     correction_reason: Optional[str] = None
+
+
+class OfferDepartureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actual_departure_date: date
+    release_hc: bool
+    reason: Optional[str] = Field(default=None, max_length=1000)
 
 class OfferStats(BaseModel):
     total_offers: int

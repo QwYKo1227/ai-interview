@@ -37,6 +37,10 @@ const acceptedOffer = {
   sent_at: '2026-08-20T00:00:00Z',
   accepted_at: '2026-08-21T00:00:00Z',
   actual_onboarded_at: null,
+  departed_at: null,
+  departure_recorded_by: null,
+  departure_reason: null,
+  departure_released_hc: null,
   rejected_at: null,
   rejected_reason: null,
   created_at: '2026-08-19T00:00:00Z',
@@ -79,5 +83,59 @@ describe('OffersList editing', () => {
     render(<OffersList />);
 
     expect(await screen.findByRole('button', { name: '编辑 张三 的 Offer' })).toBeInTheDocument();
+  });
+
+  it('shows a departed Offer as departed instead of onboarded', async () => {
+    const departedOffer = {
+      ...acceptedOffer,
+      status: 'departed',
+      actual_onboarded_at: '2026-08-25T00:00:00Z',
+      departed_at: '2026-09-01T00:00:00Z',
+      departure_recorded_by: 'admin-1',
+      departure_reason: '员工主动离职',
+      departure_released_hc: true,
+    };
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url.startsWith('/offers?')) return { items: [departedOffer], total: 1, page: 1, page_size: 10, total_pages: 1 };
+      if (url === '/offers/stats') return { total_offers: 1, pending_offers: 0, sent_offers: 0, accepted_offers: 1, rejected_offers: 0, expired_offers: 0, acceptance_rate: 100, avg_response_days: 1 };
+      if (url.startsWith('/positions')) return { items: [] };
+      if (url.startsWith('/resumes')) return [];
+      return { items: [] };
+    });
+
+    render(<OffersList />);
+
+    expect(await screen.findByText('已离职')).toBeInTheDocument();
+    expect(screen.queryByText('已入职')).not.toBeInTheDocument();
+  });
+
+  it('shows the current rejected status for legacy inconsistent onboarding data', async () => {
+    const rejectedOffer = {
+      ...acceptedOffer,
+      status: 'rejected',
+      actual_onboarded_at: '2026-08-25T00:00:00Z',
+      rejected_at: '2026-09-01T00:00:00Z',
+      rejected_reason: 'personal',
+    };
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url.startsWith('/offers?')) {
+        return { items: [rejectedOffer], total: 1, page: 1, page_size: 10, total_pages: 1 };
+      }
+      if (url === '/offers/stats') {
+        return {
+          total_offers: 1, pending_offers: 0, sent_offers: 0,
+          accepted_offers: 0, rejected_offers: 1, expired_offers: 0,
+          acceptance_rate: 0, avg_response_days: null,
+        };
+      }
+      if (url.startsWith('/positions')) return { items: [] };
+      if (url.startsWith('/resumes')) return [];
+      return { items: [] };
+    });
+
+    render(<OffersList />);
+
+    expect(await screen.findByText('已拒绝')).toBeInTheDocument();
+    expect(screen.queryByText('已入职')).not.toBeInTheDocument();
   });
 });

@@ -189,4 +189,34 @@ describe('RecruitmentPerformance', () => {
     expect(screen.queryByText('被取消候选人')).not.toBeInTheDocument();
     expect(screen.queryByText('已剔除')).not.toBeInTheDocument();
   });
+
+  it('marks a departed candidate and whether the HC was released', async () => {
+    authState.role = 'hr';
+    mockRequests({
+      ...overview,
+      people: [{
+        ...overview.people[0],
+        positions: [{
+          ...overview.people[0].positions[0],
+          slots: [{
+            slot_id: 'slot-released', slot_number: 1, recruitment_round: 1, candidate_name: '钱杰',
+            result_stage: '已接受Offer', result_coefficient: 0.9, target_days: 75,
+            actual_days: 1, deducted_days: 0, effective_held_days: 34,
+            time_coefficient: 1.2, task_points: 170, score: 183.6, status: 'released',
+            departed_at: '2026-09-08T00:00:00Z', departure_released_hc: true,
+          }],
+        }],
+      }],
+    });
+
+    render(<RecruitmentPerformance />);
+    await screen.findByText('后端工程师');
+    const expandButton = document.querySelector<HTMLButtonElement>('.ant-table-row-expand-icon');
+    fireEvent.click(expandButton!);
+
+    expect(await screen.findByText('已离职')).toBeInTheDocument();
+    expect(screen.getByText('HC已释放')).toBeInTheDocument();
+    expect(screen.getByText('积分已冻结')).toBeInTheDocument();
+    expect(screen.getByText('#1 · 第1轮')).toBeInTheDocument();
+  });
 });

@@ -79,6 +79,8 @@ PLACEHOLDER_CANDIDATE_EMAILS = {
     "无",
     "未知",
 }
+HISTORICAL_HC_STATUSES = {"released"}
+DEPARTED_HC_STATUSES = {"released", "departed_retained"}
 
 
 def _aware(value: Optional[datetime]) -> Optional[datetime]:
@@ -234,7 +236,10 @@ def sync_position_slots(db: Session, position: Position, *, assigned_at: Optiona
         .order_by(RecruitmentHcSlot.slot_number)
         .all()
     )
-    active = [slot for slot in slots if slot.status != "cancelled"]
+    active = [
+        slot for slot in slots
+        if slot.status not in {"cancelled", *HISTORICAL_HC_STATUSES}
+    ]
     desired = max(position.headcount or 1, 1)
     now = _aware(assigned_at) or datetime.now(timezone.utc)
     if len(active) < desired:
@@ -296,7 +301,10 @@ def _result_stage(db: Session, resume: Resume) -> tuple[str, datetime]:
         offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
         return "onboarded", _aware(getattr(offer, "actual_onboarded_at", None)) or _aware(resume.created_at) or now
     if status == ResumeStatus.OFFER_ACCEPTED:
-        offer = db.query(Offer).filter(Offer.resume_id == resume.id, Offer.status == OfferStatus.ACCEPTED).order_by(Offer.accepted_at.desc()).first()
+        offer = db.query(Offer).filter(
+            Offer.resume_id == resume.id,
+            Offer.status.in_([OfferStatus.ACCEPTED, OfferStatus.DEPARTED]),
+        ).order_by(Offer.accepted_at.desc()).first()
         return "offer_accepted", _aware(offer.accepted_at if offer else None) or now
     if status == ResumeStatus.OFFER_PENDING:
         offer = db.query(Offer).filter(Offer.resume_id == resume.id, Offer.status == OfferStatus.SENT).order_by(Offer.sent_at.desc()).first()
@@ -349,9 +357,15 @@ def _candidate_allocations(db: Session, positions: Iterable[Position], result_co
     if not position_ids:
         return {}
     resumes = db.query(Resume).filter(Resume.position_id.in_(position_ids)).all()
+    departed_resume_ids = {
+        resume_id for (resume_id,) in db.query(Offer.resume_id).filter(
+            Offer.position_id.in_(position_ids),
+            Offer.departed_at.isnot(None),
+        ).all()
+    }
     candidates = []
     for resume in resumes:
-        if resume.status in EXCLUDED_RESUME_STATUSES:
+        if resume.status in EXCLUDED_RESUME_STATUSES or resume.id in departed_resume_ids:
             continue
         stage, achieved_at = _result_stage(db, resume)
         rank = float(result_coefficients.get(stage, 0))
@@ -460,8 +474,17 @@ def _candidate_allocations_at(
     position_ids = [position.id for position in positions]
     if not position_ids:
         return {}
+    departed_resume_ids = {
+        resume_id for (resume_id,) in db.query(Offer.resume_id).filter(
+            Offer.position_id.in_(position_ids),
+            Offer.departed_at.isnot(None),
+            Offer.departed_at <= cutoff,
+        ).all()
+    }
     candidates = []
     for resume in db.query(Resume).filter(Resume.position_id.in_(position_ids)).all():
+        if resume.id in departed_resume_ids:
+            continue
         result = _historical_result_stage(db, resume, cutoff)
         if result is None:
             continue
@@ -636,36 +659,55 @@ def _score_position(
     slots = (
         db.query(RecruitmentHcSlot)
         .filter(RecruitmentHcSlot.position_id == position.id)
-        .order_by(RecruitmentHcSlot.slot_number)
+        .order_by(RecruitmentHcSlot.slot_number, RecruitmentHcSlot.recruitment_round)
         .all()
     )
     hc_scores = []
-    for index, slot in enumerate(slots):
-        candidate = candidates[index] if index < len(candidates) else None
-        resume, stage, _ = candidate if candidate else (None, "open", cutoff)
+    visible_slots = [slot for slot in slots if _aware(slot.assigned_at) <= cutoff]
+    fixed_resume_ids = {
+        slot.candidate_resume_id for slot in visible_slots if slot.candidate_resume_id is not None
+    }
+    available_candidates = [candidate for candidate in candidates if candidate[0].id not in fixed_resume_ids]
+    candidate_index = 0
+    for slot in visible_slots:
+        if slot.candidate_resume_id is not None:
+            resume = db.query(Resume).filter(Resume.id == slot.candidate_resume_id).first()
+            historical_result = _historical_result_stage(db, resume, cutoff) if resume else None
+            stage = historical_result[0] if historical_result else "open"
+        else:
+            candidate = available_candidates[candidate_index] if candidate_index < len(available_candidates) else None
+            candidate_index += 1 if candidate else 0
+            resume, stage, _ = candidate if candidate else (None, "open", cutoff)
         if eligible_only and stage not in HANDOFF_CREDIT_STAGES:
             continue
         result_coefficient = float(config.result_coefficients[stage])
+        offer = None
+        if resume is not None:
+            offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
+        departed_at = _aware(offer.departed_at) if offer else None
+        departure_visible = departed_at is not None and departed_at <= cutoff
         status = slot.status
+        if status in DEPARTED_HC_STATUSES and not departure_visible:
+            status = "completed"
         if status in {"cancelled", "frozen"}:
             if eligible_only:
                 continue
             hc_scores.append(HcScore(
-                slot_id=slot.id, slot_number=slot.slot_number, candidate_name=None,
+                slot_id=slot.id, slot_number=slot.slot_number,
+                recruitment_round=slot.recruitment_round, candidate_name=None,
                 result_stage="已剔除", result_coefficient=0, target_days=target_days,
                 actual_days=0, deducted_days=0, effective_held_days=0,
                 time_coefficient=0, task_points=0, score=0, status=status,
             ))
             continue
         slot_start = max(_aware(slot.assigned_at), period_start)
-        offer = None
-        if resume is not None:
-            offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
-        accepted_at = _aware(offer.accepted_at if offer and offer.status == OfferStatus.ACCEPTED else slot.accepted_at)
+        accepted_at = _aware(offer.accepted_at if offer else slot.accepted_at)
         onboarded_at = _aware(offer.actual_onboarded_at if offer else slot.completed_at)
         accepted_at = accepted_at if accepted_at is None or accepted_at <= cutoff else None
         onboarded_at = onboarded_at if onboarded_at is None or onboarded_at <= cutoff else None
         weight_end = min(value for value in [cutoff, accepted_at, onboarded_at] if value is not None)
+        if weight_end < period_start:
+            continue
         pauses = _approved_pauses(db, slot.id)
         score_intervals = holding_intervals
         if score_intervals is None:
@@ -693,6 +735,7 @@ def _score_position(
         hc_scores.append(HcScore(
             slot_id=slot.id,
             slot_number=slot.slot_number,
+            recruitment_round=slot.recruitment_round,
             candidate_name=resume.candidate_name if resume else None,
             result_stage=RESULT_LABELS[stage],
             result_coefficient=result_coefficient,
@@ -703,11 +746,16 @@ def _score_position(
             time_coefficient=time_coefficient,
             task_points=task_points,
             score=score,
-            status="completed" if stage == "onboarded" else status,
+            status=status,
+            departed_at=departed_at if departure_visible else None,
+            departure_released_hc=(
+                offer.departure_released_hc if offer and departure_visible else None
+            ),
         ))
     task_points = sum(item.task_points for item in hc_scores)
     score = sum(item.score for item in hc_scores)
-    valid = [item for item in hc_scores if item.status not in {"cancelled", "frozen"}]
+    scorable = [item for item in hc_scores if item.status not in {"cancelled", "frozen"}]
+    valid = [item for item in scorable if item.status not in HISTORICAL_HC_STATUSES]
     return PositionScore(
         position_id=position.id,
         title=position.title,
@@ -715,11 +763,11 @@ def _score_position(
         priority=position.priority,
         hc_count=len(valid),
         onboarded_count=sum(item.status == "completed" for item in valid),
-        excluded_count=len(hc_scores) - len(valid),
+        excluded_count=sum(item.status in {"cancelled", "frozen"} for item in hc_scores),
         task_points=task_points,
         score=score,
         achievement_rate=(score / task_points if task_points else None),
-        highest_result_stage=max(valid, key=lambda item: item.result_coefficient).result_stage if valid else "无有效任务",
+        highest_result_stage=max(scorable, key=lambda item: item.result_coefficient).result_stage if scorable else "无有效任务",
         slots=hc_scores,
     )
 

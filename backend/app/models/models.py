@@ -482,6 +482,7 @@ class OfferStatus(str, enum.Enum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     WITHDRAWN = "withdrawn"
+    DEPARTED = "departed"
 
 class Offer(TenantScopedMixin, Base):
     __tablename__ = "offers"
@@ -526,6 +527,10 @@ class Offer(TenantScopedMixin, Base):
     accepted_at = Column(DateTime)
     actual_onboarded_at = Column(DateTime(timezone=True), nullable=True)
     onboarding_confirmed_by = Column(UUID(as_uuid=True), nullable=True)
+    departed_at = Column(DateTime(timezone=True), nullable=True)
+    departure_recorded_by = Column(UUID(as_uuid=True), nullable=True)
+    departure_reason = Column(Text, nullable=True)
+    departure_released_hc = Column(Boolean, nullable=True)
     rejected_at = Column(DateTime)
     rejected_reason = Column(Text)
     
@@ -564,7 +569,13 @@ class RecruitmentHcSlot(TenantScopedMixin, Base):
     __table_args__ = (
         _tenant_identity("recruitment_hc_slots"),
         _tenant_reference("recruitment_hc_slots", "position_id", "positions", ondelete="CASCADE"),
-        UniqueConstraint("tenant_id", "position_id", "slot_number", name="uq_recruitment_hc_slot_number"),
+        UniqueConstraint(
+            "tenant_id",
+            "position_id",
+            "slot_number",
+            "recruitment_round",
+            name="uq_recruitment_hc_slot_round",
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

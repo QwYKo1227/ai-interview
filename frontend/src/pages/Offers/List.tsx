@@ -1,14 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Table, Button, Space, Tag, Modal, Form, Input, InputNumber, DatePicker,
-  Select, message, Popconfirm, Badge, Tooltip, Typography, Row, Col, Statistic,
+  Select, Switch, message, Popconfirm, Badge, Tooltip, Typography, Row, Col, Statistic,
   Drawer, Descriptions, Divider, Timeline, Alert
 } from 'antd';
 import {
   PlusOutlined, SwapOutlined, CheckOutlined, CloseOutlined, RollbackOutlined,
   EyeOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ReloadOutlined,
   FileTextOutlined, DollarOutlined, EnvironmentOutlined, ClockCircleOutlined,
-  RedoOutlined, UserAddOutlined
+  RedoOutlined, UserAddOutlined, LogoutOutlined
 } from '@ant-design/icons';
 import request from '../../utils/request';
 import dayjs from 'dayjs';
@@ -46,6 +46,10 @@ interface Offer {
   sent_at: string | null;
   accepted_at: string | null;
   actual_onboarded_at: string | null;
+  departed_at: string | null;
+  departure_recorded_by: string | null;
+  departure_reason: string | null;
+  departure_released_hc: boolean | null;
   rejected_at: string | null;
   rejected_reason: string | null;
   created_at: string;
@@ -116,6 +120,7 @@ const statusConfig: Record<string, { color: string; text: string }> = {
   rejected: { color: 'error', text: '已拒绝' },
   expired: { color: 'default', text: '已过期' },
   withdrawn: { color: 'default', text: '已撤回' },
+  departed: { color: 'purple', text: '已离职' },
 };
 
 const OffersList: React.FC = () => {
@@ -139,6 +144,7 @@ const OffersList: React.FC = () => {
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
   const [acceptModalVisible, setAcceptModalVisible] = useState(false);
   const [onboardingModalVisible, setOnboardingModalVisible] = useState(false);
+  const [departureModalVisible, setDepartureModalVisible] = useState(false);
   
   const [currentOffer, setCurrentOffer] = useState<Offer | null>(null);
   const [decisionAudits, setDecisionAudits] = useState<OfferDecisionAudit[]>([]);
@@ -147,6 +153,7 @@ const OffersList: React.FC = () => {
   const [rejectForm] = Form.useForm();
   const [acceptForm] = Form.useForm();
   const [onboardingForm] = Form.useForm();
+  const [departureForm] = Form.useForm();
   const [editSubmitting, setEditSubmitting] = useState(false);
 
   const confirmOnboarding = async () => {
@@ -163,6 +170,25 @@ const OffersList: React.FC = () => {
       fetchStats();
     } catch (error: any) {
       message.error(error?.response?.data?.detail || '确认入职失败');
+    }
+  };
+
+  const confirmDeparture = async () => {
+    if (!currentOffer) return;
+    const values = await departureForm.validateFields();
+    try {
+      await request.post(`/offers/${currentOffer.id}/departure`, {
+        actual_departure_date: values.actual_departure_date.format('YYYY-MM-DD'),
+        release_hc: values.release_hc,
+        reason: values.reason,
+      });
+      message.success(values.release_hc ? '离职已登记，HC已释放' : '离职已登记，HC保持占用');
+      setDepartureModalVisible(false);
+      departureForm.resetFields();
+      fetchOffers();
+      fetchStats();
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '登记离职失败');
     }
   };
 
@@ -517,6 +543,8 @@ const OffersList: React.FC = () => {
       dataIndex: 'status',
       key: 'status',
       render: (status: string, record: Offer) => {
+        if (record.departed_at || status === 'departed') return <Tag color="purple">已离职</Tag>;
+        if (status === 'rejected') return <Tag color="error">已拒绝</Tag>;
         if (record.actual_onboarded_at) return <Tag color="green">已入职</Tag>;
         const config = statusConfig[status] || { color: 'default', text: status };
         return <Tag color={config.color}>{config.text}</Tag>;
@@ -576,13 +604,20 @@ const OffersList: React.FC = () => {
                   setOnboardingModalVisible(true);
                 }} />
               </Tooltip>}
-              <Tooltip title="更正为拒绝">
+              {record.actual_onboarded_at && !record.departed_at && <Tooltip title="登记离职">
+                <Button type="text" style={{ color: '#722ed1' }} icon={<LogoutOutlined />} onClick={() => {
+                  setCurrentOffer(record);
+                  departureForm.setFieldsValue({ actual_departure_date: dayjs(), release_hc: true, reason: undefined });
+                  setDepartureModalVisible(true);
+                }} />
+              </Tooltip>}
+              {!record.actual_onboarded_at && <Tooltip title="更正为拒绝">
                 <Button type="text" danger icon={<CloseOutlined />} onClick={() => {
                   setCurrentOffer(record);
                   rejectForm.resetFields();
                   setRejectModalVisible(true);
                 }} />
-              </Tooltip>
+              </Tooltip>}
             </>
           )}
           {record.status === 'rejected' && record.can_decide && (
@@ -1087,8 +1122,8 @@ const OffersList: React.FC = () => {
                 {currentOffer.valid_until ? dayjs(currentOffer.valid_until).format('YYYY-MM-DD') : '长期有效'}
               </Descriptions.Item>
               <Descriptions.Item label="状态" span={2}>
-                <Tag color={statusConfig[currentOffer.status]?.color}>
-                  {statusConfig[currentOffer.status]?.text}
+                <Tag color={currentOffer.departed_at ? 'purple' : statusConfig[currentOffer.status]?.color}>
+                  {currentOffer.departed_at ? '已离职' : statusConfig[currentOffer.status]?.text}
                 </Tag>
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
@@ -1097,6 +1132,17 @@ const OffersList: React.FC = () => {
               <Descriptions.Item label="发送时间">
                 {formatOfferDateTime(currentOffer.sent_at)}
               </Descriptions.Item>
+              {currentOffer.departed_at && <>
+                <Descriptions.Item label="实际离职日期">
+                  {dayjs(currentOffer.departed_at).format('YYYY-MM-DD')}
+                </Descriptions.Item>
+                <Descriptions.Item label="HC处理">
+                  {currentOffer.departure_released_hc ? '已释放' : '未释放'}
+                </Descriptions.Item>
+                <Descriptions.Item label="离职说明" span={2}>
+                  {currentOffer.departure_reason || '-'}
+                </Descriptions.Item>
+              </>}
               {currentOffer.accepted_at && (
                 <Descriptions.Item label="接受时间">
                   {formatOfferDateTime(currentOffer.accepted_at)}
@@ -1189,6 +1235,33 @@ const OffersList: React.FC = () => {
         <Form form={onboardingForm} layout="vertical">
           <Form.Item name="actual_onboard_date" label="实际入职日期" rules={[{ required: true, message: '请选择实际入职日期' }]}>
             <DatePicker style={{ width: '100%' }} disabledDate={(date) => date && date.isAfter(dayjs(), 'day')} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="登记离职"
+        open={departureModalVisible}
+        okText="确认登记"
+        cancelText="取消"
+        onOk={confirmDeparture}
+        onCancel={() => setDepartureModalVisible(false)}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          title="入职未满30天时，招聘绩效将自动回退到“已接受 Offer”。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={departureForm} layout="vertical">
+          <Form.Item name="actual_departure_date" label="实际离职日期" rules={[{ required: true, message: '请选择实际离职日期' }]}>
+            <DatePicker style={{ width: '100%' }} disabledDate={(date) => date && date.isAfter(dayjs(), 'day')} />
+          </Form.Item>
+          <Form.Item name="release_hc" label="释放HC" valuePropName="checked">
+            <Switch checkedChildren="释放" unCheckedChildren="不释放" />
+          </Form.Item>
+          <Form.Item name="reason" label="离职说明">
+            <TextArea rows={3} maxLength={1000} placeholder="可选" />
           </Form.Item>
         </Form>
       </Modal>

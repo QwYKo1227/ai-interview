@@ -589,3 +589,214 @@ def test_owner_can_confirm_onboarding_on_same_beijing_date_as_offer_acceptance(
     )
 
     assert response.status_code == 200
+
+
+def test_owner_can_record_departure_and_release_hc_with_under_30_day_credit_rollback(
+    client, db, auth_headers, test_position, test_resume, test_user
+):
+    onboard_date = date.today() - timedelta(days=7)
+    accepted_at = datetime.now(timezone.utc) - timedelta(days=8)
+    test_position.created_at = accepted_at - timedelta(days=5)
+    sync_position_slots(db, test_position, assigned_at=accepted_at - timedelta(days=5))
+    replacement = Resume(
+        tenant_id=test_position.tenant_id,
+        candidate_name="李四",
+        contact="13800138001",
+        email="lisi@example.com",
+        position_id=test_position.id,
+        file_path="/uploads/replacement.pdf",
+        raw_text="替补候选人",
+        status=ResumeStatus.INTERVIEW_PASSED,
+        screening_result=ScreeningResult.PASSED,
+    )
+    db.add(replacement)
+    offer = Offer(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        position_id=test_position.id,
+        candidate_name=test_resume.candidate_name,
+        candidate_email=test_resume.email,
+        position_title=test_position.title,
+        status=OfferStatus.ACCEPTED,
+        accepted_at=accepted_at,
+        created_by=test_user.id,
+    )
+    test_resume.status = ResumeStatus.OFFER_ACCEPTED
+    db.add(offer)
+    db.commit()
+    assert client.post(
+        f"/api/offers/{offer.id}/confirm-onboarding",
+        headers=auth_headers,
+        json={"actual_onboard_date": onboard_date.isoformat()},
+    ).status_code == 200
+    occupied_slot_id = db.query(RecruitmentHcSlot.id).filter_by(
+        position_id=test_position.id,
+        candidate_resume_id=test_resume.id,
+    ).scalar()
+
+    response = client.post(
+        f"/api/offers/{offer.id}/departure",
+        headers=auth_headers,
+        json={
+            "actual_departure_date": date.today().isoformat(),
+            "release_hc": True,
+            "reason": "员工主动离职",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "departed"
+    assert response.json()["departure_released_hc"] is True
+    db.expire_all()
+    db.refresh(test_resume)
+    db.refresh(offer)
+    historical_slot = db.get(RecruitmentHcSlot, occupied_slot_id)
+    assert test_resume.status == ResumeStatus.OFFER_ACCEPTED
+    assert _result_stage(db, test_resume)[0] == "offer_accepted"
+    assert historical_slot.status == "released"
+    assert historical_slot.candidate_resume_id == test_resume.id
+    assert historical_slot.completed_at is not None
+    assert historical_slot.recruitment_round == 1
+    replacement_slot = db.query(RecruitmentHcSlot).filter_by(
+        position_id=test_position.id,
+        slot_number=historical_slot.slot_number,
+        recruitment_round=2,
+    ).one()
+    assert replacement_slot.status == "active"
+    assert replacement_slot.candidate_resume_id is None
+    assert replacement_slot.assigned_at.replace(tzinfo=timezone.utc).astimezone(
+        timezone(timedelta(hours=8))
+    ).date() == date.today()
+    overview = calculate_overview(
+        db,
+        f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}",
+        use_settlement=False,
+    )
+    position_score = overview.people[0].positions[0]
+    assert position_score.hc_count == test_position.headcount
+    historical_score = next(item for item in position_score.slots if item.slot_id == historical_slot.id)
+    current_score = next(item for item in position_score.slots if item.slot_id == replacement_slot.id)
+    assert historical_score.departed_at is not None
+    assert historical_score.departure_released_hc is True
+    assert historical_score.recruitment_round == 1
+    assert historical_score.task_points > 0
+    assert current_score.recruitment_round == 2
+    assert current_score.candidate_name == replacement.candidate_name
+    later_overview = calculate_overview(
+        db,
+        f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}",
+        now=datetime.now(timezone.utc) + timedelta(days=10),
+        use_settlement=False,
+    )
+    later_historical_score = next(
+        item for item in later_overview.people[0].positions[0].slots
+        if item.slot_id == historical_slot.id
+    )
+    assert later_historical_score.task_points == historical_score.task_points
+    assert later_historical_score.score == historical_score.score
+
+
+def test_owner_can_record_departure_without_releasing_hc(
+    client, db, auth_headers, test_position, test_resume, test_user
+):
+    onboard_date = date.today() - timedelta(days=7)
+    accepted_at = datetime.now(timezone.utc) - timedelta(days=8)
+    test_position.created_at = accepted_at - timedelta(days=5)
+    sync_position_slots(db, test_position, assigned_at=accepted_at - timedelta(days=5))
+    offer = Offer(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        position_id=test_position.id,
+        candidate_name=test_resume.candidate_name,
+        candidate_email=test_resume.email,
+        position_title=test_position.title,
+        status=OfferStatus.ACCEPTED,
+        accepted_at=accepted_at,
+        created_by=test_user.id,
+    )
+    test_resume.status = ResumeStatus.OFFER_ACCEPTED
+    db.add(offer)
+    db.commit()
+    assert client.post(
+        f"/api/offers/{offer.id}/confirm-onboarding",
+        headers=auth_headers,
+        json={"actual_onboard_date": onboard_date.isoformat()},
+    ).status_code == 200
+
+    response = client.post(
+        f"/api/offers/{offer.id}/departure",
+        headers=auth_headers,
+        json={"actual_departure_date": date.today().isoformat(), "release_hc": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["departure_released_hc"] is False
+    db.expire_all()
+    slot = db.query(RecruitmentHcSlot).filter_by(
+        position_id=test_position.id,
+        candidate_resume_id=test_resume.id,
+    ).one()
+    assert slot.status == "departed_retained"
+    assert slot.candidate_resume_id == test_resume.id
+    assert db.query(RecruitmentHcSlot).filter_by(
+        position_id=test_position.id,
+        slot_number=slot.slot_number,
+    ).count() == 1
+    overview = calculate_overview(
+        db,
+        f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}",
+        use_settlement=False,
+    )
+    score_slot = next(
+        item for item in overview.people[0].positions[0].slots if item.slot_id == slot.id
+    )
+    assert score_slot.departure_released_hc is False
+    assert score_slot.task_points > 0
+    later_overview = calculate_overview(
+        db,
+        f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}",
+        now=datetime.now(timezone.utc) + timedelta(days=10),
+        use_settlement=False,
+    )
+    later_score_slot = next(
+        item for item in later_overview.people[0].positions[0].slots if item.slot_id == slot.id
+    )
+    assert later_score_slot.task_points == score_slot.task_points
+    assert later_score_slot.score == score_slot.score
+
+
+def test_onboarded_offer_decision_correction_requires_departure_flow(
+    client, db, auth_headers, test_position, test_resume, test_user
+):
+    offer = Offer(
+        tenant_id=test_position.tenant_id,
+        resume_id=test_resume.id,
+        position_id=test_position.id,
+        candidate_name=test_resume.candidate_name,
+        candidate_email=test_resume.email,
+        position_title=test_position.title,
+        status=OfferStatus.ACCEPTED,
+        accepted_at=datetime.now(timezone.utc) - timedelta(days=2),
+        created_by=test_user.id,
+    )
+    test_resume.status = ResumeStatus.OFFER_ACCEPTED
+    db.add(offer)
+    db.commit()
+    assert client.post(
+        f"/api/offers/{offer.id}/confirm-onboarding",
+        headers=auth_headers,
+        json={"actual_onboard_date": (date.today() - timedelta(days=1)).isoformat()},
+    ).status_code == 200
+
+    response = client.post(
+        f"/api/offers/{offer.id}/decision",
+        headers=auth_headers,
+        json={
+            "decision": "rejected",
+            "rejection_reason": "personal",
+            "correction_reason": "错误操作",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "已确认入职的候选人不能改为Offer结果，请使用登记离职"

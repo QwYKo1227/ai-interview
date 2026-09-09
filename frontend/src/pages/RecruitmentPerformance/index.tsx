@@ -12,6 +12,7 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Statistic,
   Table,
   Tabs,
@@ -60,6 +61,9 @@ type PositionScore = {
   priority: number;
   hc_count: number;
   onboarded_count: number;
+  current_employed_count?: number;
+  cumulative_onboarded_count?: number;
+  departed_count?: number;
   excluded_count: number;
   task_points: number;
   score: number;
@@ -86,6 +90,9 @@ type PersonScore = {
   hc_count: number;
   excluded_count: number;
   onboarded_count: number;
+  current_employed_count?: number;
+  cumulative_onboarded_count?: number;
+  departed_count?: number;
   task_points: number;
   score: number;
   achievement_rate?: number;
@@ -305,7 +312,7 @@ const PositionTable = ({
     expandable={{ expandedRowRender: row => <SlotLedger slots={row.slots} /> }}
     columns={[
       { title: '岗位', dataIndex: 'title', render: (value, row) => <div><Text strong>{value}</Text><div><Text type="secondary">{categoryLabels[row.category] || row.category} · P{row.priority}</Text></div></div> },
-      { title: 'HC', dataIndex: 'hc_count', render: (value, row) => `${value}（入职 ${row.onboarded_count}）` },
+      { title: 'HC', dataIndex: 'hc_count', render: (value, row) => `${value}（在职 ${row.current_employed_count ?? row.onboarded_count}／累计入职 ${row.cumulative_onboarded_count ?? row.onboarded_count}／离职 ${row.departed_count ?? 0}）` },
       { title: '最高阶段', dataIndex: 'highest_result_stage', render: value => <Tag>{value}</Tag> },
       { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, sortOrder: sortField === 'task_points' ? sortOrder : null, render: formatScore },
       { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, sortOrder: sortField === 'score' ? sortOrder : null, render: (value) => <Text strong>{formatScore(value)}</Text> },
@@ -357,7 +364,9 @@ const ScoreWorkspace = ({ overview, admin, sortField, sortOrder, onSort }: { ove
   const people = overview?.people || [];
   const totals = useMemo(() => ({
     hc: people.reduce((sum, person) => sum + person.hc_count, 0),
-    onboarded: people.reduce((sum, person) => sum + person.onboarded_count, 0),
+    currentEmployed: people.reduce((sum, person) => sum + (person.current_employed_count ?? person.onboarded_count), 0),
+    cumulativeOnboarded: people.reduce((sum, person) => sum + (person.cumulative_onboarded_count ?? person.onboarded_count), 0),
+    departed: people.reduce((sum, person) => sum + (person.departed_count ?? 0), 0),
   }), [people]);
   const averageScore = people.length
     ? people.reduce((sum, person) => sum + person.score, 0) / people.length
@@ -381,10 +390,12 @@ const ScoreWorkspace = ({ overview, admin, sortField, sortOrder, onSort }: { ove
         </Space>
       </div>
       <Row gutter={[16, 16]} className="performance-metrics">
-        <Col xs={12} lg={6}><Card><Statistic title="有效HC" value={totals.hc} prefix={<TeamOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card><Statistic title="已入职HC" value={totals.onboarded} prefix={<CheckCircleOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card><Statistic title="平均绩效得分" value={averageScore == null ? '—' : formatScore(averageScore)} prefix={<AuditOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card><Statistic title="平均达成率" value={averageRate == null ? '—' : (averageRate * 100).toFixed(2)} suffix={averageRate == null ? undefined : '%'} prefix={<ClockCircleOutlined />} /></Card></Col>
+        <Col xs={12} lg={4}><Card><Statistic title="有效HC" value={totals.hc} prefix={<TeamOutlined />} /></Card></Col>
+        <Col xs={12} lg={4}><Card><Statistic title="当前在职HC" value={totals.currentEmployed} prefix={<CheckCircleOutlined />} /></Card></Col>
+        <Col xs={12} lg={4}><Card><Statistic title="累计入职HC" value={totals.cumulativeOnboarded} prefix={<CheckCircleOutlined />} /></Card></Col>
+        <Col xs={12} lg={4}><Card><Statistic title="已离职HC" value={totals.departed} prefix={<TeamOutlined />} /></Card></Col>
+        <Col xs={12} lg={4}><Card><Statistic title="平均绩效得分" value={averageScore == null ? '—' : formatScore(averageScore)} prefix={<AuditOutlined />} /></Card></Col>
+        <Col xs={12} lg={4}><Card><Statistic title="平均达成率" value={averageRate == null ? '—' : (averageRate * 100).toFixed(2)} suffix={averageRate == null ? undefined : '%'} prefix={<ClockCircleOutlined />} /></Card></Col>
       </Row>
       <Card className="performance-table-card" variant="borderless">
         {people.length === 0 ? <Empty description="当前季度没有有效绩效任务" /> : admin ? (
@@ -397,7 +408,9 @@ const ScoreWorkspace = ({ overview, admin, sortField, sortOrder, onSort }: { ove
             columns={[
               { title: 'Recruiter', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name), sortOrder: sortField === 'name' ? sortOrder : null, render: (value, row) => <div><Space><Text strong>{value}</Text>{!row.is_active && <Tag>已停用</Tag>}</Space><div><Text type="secondary">{row.email}</Text></div></div> },
               { title: 'HC任务', dataIndex: 'hc_count' },
-              { title: '已入职', dataIndex: 'onboarded_count', sorter: (a, b) => a.onboarded_count - b.onboarded_count, sortOrder: sortField === 'onboarded_count' ? sortOrder : null },
+              { title: '当前在职', dataIndex: 'current_employed_count', render: (value, row) => value ?? row.onboarded_count },
+              { title: '累计入职', dataIndex: 'cumulative_onboarded_count', render: (value, row) => value ?? row.onboarded_count },
+              { title: '已离职', dataIndex: 'departed_count', render: value => value ?? 0 },
               { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, sortOrder: sortField === 'task_points' ? sortOrder : null, render: formatScore },
               { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, sortOrder: sortField === 'score' ? sortOrder : null, render: (value) => <Text strong>{formatScore(value)}</Text> },
               { title: '总达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), sortOrder: sortField === 'achievement_rate' ? sortOrder : null, render: value => formatRate(value) },
@@ -477,7 +490,7 @@ const RecruitmentPerformance: React.FC = () => {
   const [periodsLoading, setPeriodsLoading] = useState(true);
   const [overview, setOverview] = useState<Overview>();
   const [leaderboard, setLeaderboard] = useState<Leaderboard>();
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let active = true;
     setPeriodsLoading(true);
@@ -489,7 +502,11 @@ const RecruitmentPerformance: React.FC = () => {
           ? requestedPeriod
           : current && data.periods.includes(current) ? current : data.default_period);
       })
-      .catch(() => message.error('获取绩效季度失败'))
+      .catch(() => {
+        if (!active) return;
+        message.error('获取绩效季度失败');
+        setLoading(false);
+      })
       .finally(() => { if (active) setPeriodsLoading(false); });
     return () => { active = false; };
   }, [requestedPeriod]);
@@ -526,6 +543,15 @@ const RecruitmentPerformance: React.FC = () => {
     const absolute = year * 4 + q;
     return `${Math.floor(absolute / 4)}-Q${(absolute % 4) + 1}`;
   }, []);
+
+  if (periodsLoading || loading) {
+    return (
+      <div className="performance-loading">
+        <Spin size="large" tip="正在加载数据..." />
+      </div>
+    );
+  }
+
   return (
     <div className="performance-page">
       <header className="performance-hero">
@@ -539,6 +565,7 @@ const RecruitmentPerformance: React.FC = () => {
             value={period}
             options={periods.map(value => ({ value, label: value }))}
             onChange={(value) => {
+              setLoading(true);
               setPeriod(value);
               setQuery({ period: value });
             }}

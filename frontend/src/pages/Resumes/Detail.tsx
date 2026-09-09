@@ -58,6 +58,7 @@ const STATUS_MAP: Record<string, { text: string; color: string }> = {
   offer_accepted: { text: '已接受Offer', color: 'success' },
   offer_rejected: { text: '已拒绝Offer', color: 'error' },
   completed: { text: '已入职', color: 'success' },
+  departed: { text: '已离职', color: 'purple' },
   rejected: { text: '已淘汰', color: 'error' },
   waitlist: { text: '备选', color: 'gold' },
 };
@@ -803,7 +804,7 @@ const ResumeDetail: React.FC = () => {
           安排面试
         </Button>
       );
-    } else if (resume.status !== 'rejected' && resume.status !== 'completed') {
+    } else if (!['rejected', 'completed', 'departed'].includes(resume.status)) {
       buttons.push(
         <Button key="reject" danger icon={<CloseCircleOutlined />} onClick={() => setIsRejectModalVisible(true)}>淘汰</Button>
       );
@@ -814,7 +815,7 @@ const ResumeDetail: React.FC = () => {
 
   // 渲染部门评审区域
   const renderDepartmentReviewSection = () => {
-    if (!['pending_review', 'pending_dept_review', 'pending_hr_decision', 'rejected', 'completed', 'waitlist', 'pending_interview'].includes(resume.status)) {
+    if (!['pending_review', 'pending_dept_review', 'pending_hr_decision', 'rejected', 'completed', 'departed', 'waitlist', 'pending_interview'].includes(resume.status)) {
       return null;
     }
 

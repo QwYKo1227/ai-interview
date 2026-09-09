@@ -24,6 +24,7 @@ from app.services.recruitment_performance_service import (
     get_config,
     sync_position_slots,
 )
+from app.services.position_service import get_position_stats
 
 
 def test_available_periods_span_position_history_through_current_quarter(db, test_position):
@@ -651,12 +652,17 @@ def test_owner_can_record_departure_and_release_hc_with_under_30_day_credit_roll
     db.refresh(test_resume)
     db.refresh(offer)
     historical_slot = db.get(RecruitmentHcSlot, occupied_slot_id)
-    assert test_resume.status == ResumeStatus.OFFER_ACCEPTED
+    assert test_resume.status == ResumeStatus.DEPARTED
     assert _result_stage(db, test_resume)[0] == "offer_accepted"
     assert historical_slot.status == "released"
     assert historical_slot.candidate_resume_id == test_resume.id
     assert historical_slot.completed_at is not None
     assert historical_slot.recruitment_round == 1
+    position_stats = get_position_stats(db, test_position.id)
+    assert position_stats.occupied_headcount == 0
+    assert position_stats.current_employed == 0
+    assert position_stats.cumulative_onboarded == 1
+    assert position_stats.departed == 1
     replacement_slot = db.query(RecruitmentHcSlot).filter_by(
         position_id=test_position.id,
         slot_number=historical_slot.slot_number,
@@ -674,6 +680,9 @@ def test_owner_can_record_departure_and_release_hc_with_under_30_day_credit_roll
     )
     position_score = overview.people[0].positions[0]
     assert position_score.hc_count == test_position.headcount
+    assert position_score.current_employed_count == 0
+    assert position_score.cumulative_onboarded_count == 1
+    assert position_score.departed_count == 1
     historical_score = next(item for item in position_score.slots if item.slot_id == historical_slot.id)
     current_score = next(item for item in position_score.slots if item.slot_id == replacement_slot.id)
     assert historical_score.departed_at is not None
@@ -738,6 +747,13 @@ def test_owner_can_record_departure_without_releasing_hc(
     ).one()
     assert slot.status == "departed_retained"
     assert slot.candidate_resume_id == test_resume.id
+    db.refresh(test_resume)
+    assert test_resume.status == ResumeStatus.DEPARTED
+    position_stats = get_position_stats(db, test_position.id)
+    assert position_stats.occupied_headcount == 1
+    assert position_stats.current_employed == 0
+    assert position_stats.cumulative_onboarded == 1
+    assert position_stats.departed == 1
     assert db.query(RecruitmentHcSlot).filter_by(
         position_id=test_position.id,
         slot_number=slot.slot_number,
@@ -750,6 +766,10 @@ def test_owner_can_record_departure_without_releasing_hc(
     score_slot = next(
         item for item in overview.people[0].positions[0].slots if item.slot_id == slot.id
     )
+    position_score = overview.people[0].positions[0]
+    assert position_score.current_employed_count == 0
+    assert position_score.cumulative_onboarded_count == 1
+    assert position_score.departed_count == 1
     assert score_slot.departure_released_hc is False
     assert score_slot.task_points > 0
     later_overview = calculate_overview(

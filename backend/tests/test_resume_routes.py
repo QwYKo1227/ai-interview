@@ -7,6 +7,21 @@ from sqlalchemy.orm import Session
 from app.models.models import Position, Resume, ResumeStatus
 
 
+def test_departed_status_can_only_be_set_through_offer_departure(
+    client: TestClient,
+    auth_headers: dict,
+    test_resume: Resume,
+):
+    response = client.put(
+        f"/api/resumes/{test_resume.id}",
+        headers=auth_headers,
+        json={"status": "departed"},
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json()["detail"] == "已离职状态只能通过Offer登记离职产生"
+
+
 def test_filters_resumes_by_position_id(
     client: TestClient,
     auth_headers: dict,

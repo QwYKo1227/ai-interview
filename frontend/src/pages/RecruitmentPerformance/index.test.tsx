@@ -25,12 +25,16 @@ const overview = {
     hc_count: 1,
     excluded_count: 0,
     onboarded_count: 0,
+    current_employed_count: 1,
+    cumulative_onboarded_count: 2,
+    departed_count: 1,
     task_points: 100,
     score: 60,
     achievement_rate: 0.6,
     positions: [{
       position_id: 'p-1', title: '后端工程师', category: 'domestic_rd', priority: 4,
-      hc_count: 1, onboarded_count: 0, excluded_count: 0, task_points: 100,
+      hc_count: 1, onboarded_count: 0, current_employed_count: 1,
+      cumulative_onboarded_count: 2, departed_count: 1, excluded_count: 0, task_points: 100,
       score: 60, achievement_rate: 0.6, highest_result_stage: '面试通过，进入录用决策', slots: [],
     }],
   }],
@@ -63,6 +67,17 @@ const mockRequests = (responseOverview = overview, responseLeaderboard = leaderb
 describe('RecruitmentPerformance', () => {
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
+  it('shows the dashboard-style loading animation while data is loading', async () => {
+    authState.role = 'hr';
+    mockRequests();
+
+    render(<RecruitmentPerformance />);
+
+    expect(screen.getByText('正在加载数据...')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '招聘绩效' })).toBeInTheDocument();
+    expect(screen.queryByText('正在加载数据...')).not.toBeInTheDocument();
+  });
+
   it('shows an HR only their read-only position ledger', async () => {
     authState.role = 'hr';
     mockRequests();
@@ -76,6 +91,10 @@ describe('RecruitmentPerformance', () => {
     expect(screen.queryByText('试运行预览')).not.toBeInTheDocument();
     expect(screen.queryByText('每一分，都能回到一次真实交付')).not.toBeInTheDocument();
     expect(screen.getByText('数据截至 2026-08-17')).toBeInTheDocument();
+    expect(screen.getByText('当前在职HC')).toBeInTheDocument();
+    expect(screen.getByText('累计入职HC')).toBeInTheDocument();
+    expect(screen.getByText('已离职HC')).toBeInTheDocument();
+    expect(screen.getByText(/在职 1／累计入职 2／离职 1/)).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /规则设置/ })).not.toBeInTheDocument();
     await waitFor(() => expect(request.get).toHaveBeenCalledWith('/recruitment-performance/periods'));
     await waitFor(() => expect(request.get).toHaveBeenCalledWith(expect.stringContaining('/recruitment-performance/me?period=')));

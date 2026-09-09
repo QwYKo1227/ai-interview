@@ -116,6 +116,25 @@ describe('ResumeDetail laptop layout', () => {
     })
   })
 
+  it('shows departed as a terminal status without recruitment actions', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1') return { ...resume, status: 'departed' }
+      if (url === '/auth/interviewers') return []
+      return {}
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('已离职')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /淘汰/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /安排面试/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /HR决策/ })).not.toBeInTheDocument()
+  })
+
   it('uses the personal review view when an administrator enters with a review id', async () => {
     vi.mocked(request.get).mockImplementation(async (url: string) => {
       if (url === '/resumes/resume-1?review_id=review-1') {

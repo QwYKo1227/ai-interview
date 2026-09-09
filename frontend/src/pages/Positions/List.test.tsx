@@ -44,6 +44,10 @@ const position = {
     offer_pending: 0,
     offer_accepted: 0,
     rejected: 0,
+    departed: 0,
+    current_employed: 0,
+    cumulative_onboarded: 0,
+    occupied_headcount: 0,
   },
 }
 
@@ -115,6 +119,10 @@ describe('PositionsList responsive table', () => {
         offer_pending: 1,
         offer_accepted: 3,
         rejected: 3,
+        departed: 0,
+        current_employed: 3,
+        cumulative_onboarded: 3,
+        occupied_headcount: 1,
       },
     }] : [])
     const { container } = render(<MemoryRouter><PositionsList /></MemoryRouter>)
@@ -130,11 +138,48 @@ describe('PositionsList responsive table', () => {
       '面试完成: 1',
       '面试通过: 1',
       'Offer待定: 1',
-      '已入职: 3',
+      'Offer已接受: 3',
       '已淘汰: 3',
+      '当前在职: 3',
+      '累计入职: 3',
+      '已离职: 0',
     ]) {
       expect(await screen.findByText(progressText)).toBeInTheDocument()
     }
+  })
+
+  it('measures recruitment progress against the position headcount', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [{
+      ...position,
+      headcount: 2,
+      stats: {
+        ...position.stats,
+        total_resumes: 9,
+        offer_accepted: 1,
+        occupied_headcount: 1,
+      },
+    }] : [])
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50')
+  })
+
+  it('caps recruitment progress at 100 percent when hiring exceeds headcount', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [{
+      ...position,
+      headcount: 2,
+      stats: {
+        ...position.stats,
+        total_resumes: 9,
+        offer_accepted: 3,
+        occupied_headcount: 3,
+      },
+    }] : [])
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/positions', expect.any(Object)))
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
   })
 
   it('shows a readable primary action in the batch toolbar', async () => {

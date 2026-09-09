@@ -509,15 +509,13 @@ def record_departure(
     offer.departure_reason = (reason or "").strip() or None
     offer.departure_released_hc = release_hc
 
-    onboarded_days = (actual_departure_date - onboarded_at.astimezone(COMPANY_TZ).date()).days
     old_status = resume.status
-    if onboarded_days < 30:
-        resume.status = ResumeStatus.OFFER_ACCEPTED
+    resume.status = ResumeStatus.DEPARTED
     record_resume_status_event(
         db,
         resume,
         old_status,
-        resume.status,
+        ResumeStatus.DEPARTED,
         source="departure_registration",
         source_id=offer.id,
         actor_id=actor.id,

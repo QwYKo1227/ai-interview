@@ -56,6 +56,7 @@ EXCLUDED_RESUME_STATUSES = {
     ResumeStatus.REJECTED,
     ResumeStatus.INTERVIEW_FAILED,
     ResumeStatus.OFFER_REJECTED,
+    ResumeStatus.DEPARTED,
 }
 HANDOFF_CREDIT_STATUSES = {
     ResumeStatus.INTERVIEW_PASSED.value,
@@ -294,9 +295,31 @@ def record_resume_status_event(
     )
 
 
+def _departed_result_stage(offer: Offer) -> tuple[str, datetime]:
+    departed_at = _aware(offer.departed_at)
+    onboarded_at = _aware(offer.actual_onboarded_at)
+    onboarded_days = (
+        departed_at.astimezone(COMPANY_TZ).date()
+        - onboarded_at.astimezone(COMPANY_TZ).date()
+    ).days
+    if onboarded_days < 30:
+        return "offer_accepted", _aware(offer.accepted_at) or onboarded_at
+    return "onboarded", onboarded_at
+
+
 def _result_stage(db: Session, resume: Resume) -> tuple[str, datetime]:
     now = datetime.now(timezone.utc)
     status = resume.status
+    if status == ResumeStatus.DEPARTED:
+        offer = (
+            db.query(Offer)
+            .filter(Offer.resume_id == resume.id, Offer.departed_at.isnot(None))
+            .order_by(Offer.departed_at.desc())
+            .first()
+        )
+        if offer is not None and offer.actual_onboarded_at is not None:
+            return _departed_result_stage(offer)
+        return "open", _aware(resume.created_at) or now
     if status == ResumeStatus.COMPLETED:
         offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
         return "onboarded", _aware(getattr(offer, "actual_onboarded_at", None)) or _aware(resume.created_at) or now
@@ -429,7 +452,21 @@ def _historical_result_stage(
         except ValueError:
             return None
         achieved_at = _aware(event.occurred_at)
-    if status == ResumeStatus.COMPLETED:
+    if status == ResumeStatus.DEPARTED:
+        offer = (
+            db.query(Offer)
+            .filter(
+                Offer.resume_id == resume.id,
+                Offer.departed_at.isnot(None),
+                Offer.departed_at <= cutoff,
+            )
+            .order_by(Offer.departed_at.desc())
+            .first()
+        )
+        if offer is None or offer.actual_onboarded_at is None:
+            return None
+        stage, achieved_at = _departed_result_stage(offer)
+    elif status == ResumeStatus.COMPLETED:
         stage = "onboarded"
     elif status in {ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING}:
         stage = "offer_accepted"
@@ -763,6 +800,12 @@ def _score_position(
         priority=position.priority,
         hc_count=len(valid),
         onboarded_count=sum(item.status == "completed" for item in valid),
+        current_employed_count=sum(item.status == "completed" for item in valid),
+        cumulative_onboarded_count=sum(
+            item.status == "completed" or item.departed_at is not None
+            for item in hc_scores
+        ),
+        departed_count=sum(item.departed_at is not None for item in hc_scores),
         excluded_count=sum(item.status in {"cancelled", "frozen"} for item in hc_scores),
         task_points=task_points,
         score=score,
@@ -1023,6 +1066,9 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
             hc_count=sum(item.hc_count for item in scores),
             excluded_count=sum(item.excluded_count for item in scores),
             onboarded_count=sum(item.onboarded_count for item in scores),
+            current_employed_count=sum(item.current_employed_count for item in scores),
+            cumulative_onboarded_count=sum(item.cumulative_onboarded_count for item in scores),
+            departed_count=sum(item.departed_count for item in scores),
             task_points=task_points,
             score=score,
             achievement_rate=(score / task_points if task_points else None),

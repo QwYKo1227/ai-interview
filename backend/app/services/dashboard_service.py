@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, and_, or_
 from app.models.models import (
-    Position, Resume, Interview, QuestionBank, User, InterviewPanel, DepartmentReview,
+    Position, Resume, Interview, Offer, QuestionBank, User, InterviewPanel, DepartmentReview,
     PositionStatus, ResumeStatus, InterviewStatus, InterviewResult, UserRole
 )
 from datetime import datetime, timedelta, timezone
@@ -129,6 +129,15 @@ def _interview_query(db: Session, current_user: User | None, *entities):
         )
     return query
 
+
+def _offer_query(db: Session, current_user: User | None, *entities):
+    query = db.query(*(entities or (Offer,)))
+    if current_user is not None and not is_admin(current_user):
+        query = query.join(Position, Offer.position_id == Position.id).filter(
+            Position.hiring_manager_id == current_user.id
+        )
+    return query
+
 def get_dashboard_stats(db: Session, current_user: User | None = None):
     active_positions_count = _position_query(db, current_user).filter(
         Position.status == PositionStatus.PUBLISHED
@@ -218,6 +227,9 @@ def get_recent_activities(db: Session, current_user: User | None = None, limit: 
         elif resume.status in [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.COMPLETED]:
             status_text = "已录用"
             color = "#10B981"
+        elif resume.status == ResumeStatus.DEPARTED:
+            status_text = "已离职"
+            color = "#722ED1"
             
         activities.append({
             "id": str(resume.id),
@@ -271,8 +283,10 @@ def get_recruitment_funnel(db: Session, current_user: User | None = None) -> Dic
             ResumeStatus.PENDING_INTERVIEW_RESULT, ResumeStatus.PENDING_NEXT_INTERVIEW,
         ]),
         ("interview_completed", "面试完成", [ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED, ResumeStatus.OFFER_PENDING]),
-        ("offer_sent", "Offer发放", [ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED, ResumeStatus.OFFER_REJECTED]),
-        ("hired", "入职", [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.COMPLETED]),
+        ("offer_sent", "Offer发放", [ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED, ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED, ResumeStatus.DEPARTED]),
+        ("current_employed", "当前在职", [ResumeStatus.COMPLETED]),
+        ("cumulative_onboarded", "累计入职", [ResumeStatus.COMPLETED, ResumeStatus.DEPARTED]),
+        ("departed", "已离职", [ResumeStatus.DEPARTED]),
     ]
     
     stages = []
@@ -311,7 +325,7 @@ def get_recruitment_funnel(db: Session, current_user: User | None = None) -> Dic
                           ResumeStatus.PENDING_NEXT_INTERVIEW, ResumeStatus.INTERVIEW_PASSED,
                           ResumeStatus.INTERVIEW_FAILED, ResumeStatus.OFFER_PENDING,
                           ResumeStatus.OFFER_ACCEPTED, ResumeStatus.OFFER_REJECTED,
-                          ResumeStatus.COMPLETED])
+                          ResumeStatus.COMPLETED, ResumeStatus.DEPARTED])
     ).count()
     stages.append({
         "stage": "screening_passed",
@@ -338,7 +352,7 @@ def get_recruitment_funnel(db: Session, current_user: User | None = None) -> Dic
     interview_completed = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED,
                           ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-                          ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED])
+                          ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED, ResumeStatus.DEPARTED])
     ).count()
     stages.append({
         "stage": "interview_completed",
@@ -349,7 +363,7 @@ def get_recruitment_funnel(db: Session, current_user: User | None = None) -> Dic
     
     offer_sent = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-                          ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED])
+                          ResumeStatus.OFFER_REJECTED, ResumeStatus.COMPLETED, ResumeStatus.DEPARTED])
     ).count()
     stages.append({
         "stage": "offer_sent",
@@ -358,17 +372,31 @@ def get_recruitment_funnel(db: Session, current_user: User | None = None) -> Dic
         "percentage": round(offer_sent / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    hired = _resume_query(db, current_user).filter(
-        Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+    current_employed = _resume_query(db, current_user).filter(
+        Resume.status == ResumeStatus.COMPLETED
     ).count()
-    stages.append({
-        "stage": "hired",
-        "stage_name": "入职",
-        "count": hired,
-        "percentage": round(hired / total_resumes * 100, 1) if total_resumes > 0 else 0
-    })
+    cumulative_onboarded = _resume_query(db, current_user).filter(
+        Resume.status.in_([ResumeStatus.COMPLETED, ResumeStatus.DEPARTED])
+    ).count()
+    departed = _resume_query(db, current_user).filter(
+        Resume.status == ResumeStatus.DEPARTED
+    ).count()
+    stages.extend([
+        {
+            "stage": "current_employed", "stage_name": "当前在职", "count": current_employed,
+            "percentage": round(current_employed / total_resumes * 100, 1),
+        },
+        {
+            "stage": "cumulative_onboarded", "stage_name": "累计入职", "count": cumulative_onboarded,
+            "percentage": round(cumulative_onboarded / total_resumes * 100, 1),
+        },
+        {
+            "stage": "departed", "stage_name": "已离职", "count": departed,
+            "percentage": round(departed / total_resumes * 100, 1),
+        },
+    ])
     
-    conversion_rate = round(hired / total_resumes * 100, 1) if total_resumes > 0 else 0
+    conversion_rate = round(cumulative_onboarded / total_resumes * 100, 1) if total_resumes > 0 else 0
     
     return {
         "stages": stages,
@@ -405,18 +433,24 @@ def get_position_analytics(db: Session, current_user: User | None = None) -> Dic
         interview_completed = sum(1 for r in resumes if r.status in [
             ResumeStatus.INTERVIEW_PASSED, ResumeStatus.INTERVIEW_FAILED,
             ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-            ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED
+            ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED,
+            ResumeStatus.DEPARTED,
         ])
         
         offer_sent = sum(1 for r in resumes if r.status in [
             ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-            ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED
+            ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED,
+            ResumeStatus.DEPARTED,
         ])
         
-        hired = sum(1 for r in resumes if r.status in [
-            ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED
-        ])
-        total_all_hired += hired
+        current_employed = sum(r.status == ResumeStatus.COMPLETED for r in resumes)
+        cumulative_onboarded = sum(
+            r.status in {ResumeStatus.COMPLETED, ResumeStatus.DEPARTED}
+            for r in resumes
+        )
+        departed = sum(r.status == ResumeStatus.DEPARTED for r in resumes)
+        hired = current_employed
+        total_all_hired += cumulative_onboarded
         
         rejected = sum(1 for r in resumes if r.status == ResumeStatus.REJECTED)
         
@@ -425,14 +459,14 @@ def get_position_analytics(db: Session, current_user: User | None = None) -> Dic
         
         processing_times = []
         for r in resumes:
-            if r.status in [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]:
+            if r.status in [ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED, ResumeStatus.DEPARTED]:
                 if r.parsed_at:
                     parsed_at = r.parsed_at.replace(tzinfo=timezone.utc) if r.parsed_at.tzinfo is None else r.parsed_at
                     days = (datetime.now(timezone.utc) - parsed_at).days
                     processing_times.append(days)
         avg_processing_days = round(statistics.mean(processing_times), 1) if processing_times else None
         
-        conversion_rate = round(hired / total_resumes * 100, 1) if total_resumes > 0 else 0
+        conversion_rate = round(cumulative_onboarded / total_resumes * 100, 1) if total_resumes > 0 else 0
         
         position_analytics.append({
             "id": str(position.id),
@@ -445,6 +479,9 @@ def get_position_analytics(db: Session, current_user: User | None = None) -> Dic
             "interview_completed": interview_completed,
             "offer_sent": offer_sent,
             "hired": hired,
+            "current_employed": current_employed,
+            "cumulative_onboarded": cumulative_onboarded,
+            "departed": departed,
             "rejected": rejected,
             "avg_match_score": avg_match_score,
             "avg_processing_days": avg_processing_days,
@@ -559,6 +596,7 @@ def get_timeline_analytics(db: Session, current_user: User | None = None, days: 
     total_completed = 0
     total_offers = 0
     total_hires = 0
+    total_departures = 0
     
     while current <= end_date:
         date_str = current.strftime("%Y-%m-%d")
@@ -582,15 +620,20 @@ def get_timeline_analytics(db: Session, current_user: User | None = None, days: 
         
         offers_sent = _resume_query(db, current_user).filter(
             Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-                              ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
+                              ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED,
+                              ResumeStatus.DEPARTED]),
             Resume.created_at >= current,
             Resume.created_at < next_day
         ).count()
         
-        hires = _resume_query(db, current_user).filter(
-            Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
-            Resume.created_at >= current,
-            Resume.created_at < next_day
+        hires = _offer_query(db, current_user).filter(
+            Offer.actual_onboarded_at >= current,
+            Offer.actual_onboarded_at < next_day,
+        ).count()
+
+        departures = _offer_query(db, current_user).filter(
+            Offer.departed_at >= current,
+            Offer.departed_at < next_day,
         ).count()
         
         timeline_data.append({
@@ -599,7 +642,8 @@ def get_timeline_analytics(db: Session, current_user: User | None = None, days: 
             "interviews_scheduled": interviews_scheduled,
             "interviews_completed": interviews_completed,
             "offers_sent": offers_sent,
-            "hires": hires
+            "hires": hires,
+            "departures": departures,
         })
         
         total_resumes += resumes_count
@@ -607,6 +651,7 @@ def get_timeline_analytics(db: Session, current_user: User | None = None, days: 
         total_completed += interviews_completed
         total_offers += offers_sent
         total_hires += hires
+        total_departures += departures
         
         current = next_day
     
@@ -617,6 +662,7 @@ def get_timeline_analytics(db: Session, current_user: User | None = None, days: 
         "total_interviews_completed": total_completed,
         "total_offers_sent": total_offers,
         "total_hires": total_hires,
+        "total_departures": total_departures,
         "avg_resumes_per_day": round(total_resumes / days, 1) if days > 0 else 0,
         "avg_interviews_per_day": round(total_interviews / days, 1) if days > 0 else 0
     }
@@ -645,16 +691,25 @@ def get_overview(db: Session, current_user: User | None = None) -> Dict[str, Any
     
     total_offers = _resume_query(db, current_user).filter(
         Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
-                          ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+                          ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED,
+                          ResumeStatus.DEPARTED])
     ).count()
     
     accepted_offers = _resume_query(db, current_user).filter(
-        Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+        Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED,
+                          ResumeStatus.DEPARTED])
     ).count()
     
     hired_resumes = _resume_query(db, current_user).filter(
-        Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
+        Resume.status.in_([ResumeStatus.COMPLETED, ResumeStatus.DEPARTED])
     ).all()
+    current_employed = _resume_query(db, current_user).filter(
+        Resume.status == ResumeStatus.COMPLETED
+    ).count()
+    cumulative_onboarded = len(hired_resumes)
+    departed = _resume_query(db, current_user).filter(
+        Resume.status == ResumeStatus.DEPARTED
+    ).count()
     
     time_to_hire_list = []
     for resume in hired_resumes:
@@ -683,6 +738,9 @@ def get_overview(db: Session, current_user: User | None = None) -> Dict[str, Any
         "completed_interviews": completed_interviews,
         "total_offers": total_offers,
         "accepted_offers": accepted_offers,
+        "current_employed": current_employed,
+        "cumulative_onboarded": cumulative_onboarded,
+        "departed": departed,
         "avg_time_to_hire": avg_time_to_hire,
         "avg_match_score": avg_match_score,
         "interview_pass_rate": interview_pass_rate,

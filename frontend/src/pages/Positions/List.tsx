@@ -37,6 +37,10 @@ interface PositionStats {
   offer_pending: number;
   offer_accepted: number;
   rejected: number;
+  departed: number;
+  current_employed: number;
+  cumulative_onboarded: number;
+  occupied_headcount: number;
 }
 
 interface QuestionBankBrief {
@@ -420,10 +424,15 @@ const PositionsList: React.FC = () => {
     }
   };
 
-  const renderStats = (stats: PositionStats | undefined) => {
+  const renderStats = (stats: PositionStats | undefined, headcount = 1) => {
     if (!stats) return <Text type="secondary">-</Text>;
     const total = stats.total_resumes || 0;
     if (total === 0) return <Text type="secondary">暂无简历</Text>;
+    const hiringTarget = Math.max(headcount, 1);
+    const recruitmentProgress = Math.min(
+      100,
+      Math.max(0, Math.round((stats.occupied_headcount / hiringTarget) * 100)),
+    );
     
     return (
       <Tooltip title={
@@ -433,14 +442,17 @@ const PositionsList: React.FC = () => {
           <div>面试完成: {stats.interview_completed}</div>
           <div>面试通过: {stats.interview_passed}</div>
           <div>Offer待定: {stats.offer_pending}</div>
-          <div>已入职: {stats.offer_accepted}</div>
+          <div>Offer已接受: {stats.offer_accepted}</div>
           <div>已淘汰: {stats.rejected}</div>
+          <div>当前在职: {stats.current_employed}</div>
+          <div>累计入职: {stats.cumulative_onboarded}</div>
+          <div>已离职: {stats.departed}</div>
         </div>
       }>
         <Space size={4}>
           <Badge count={total} style={{ backgroundColor: '#3B82F6' }} />
           <Progress 
-            percent={Math.round((stats.offer_accepted / total) * 100) || 0} 
+            percent={recruitmentProgress}
             size="small" 
             style={{ width: 60 }}
             showInfo={false}
@@ -558,7 +570,7 @@ const PositionsList: React.FC = () => {
       title: '招聘进度', 
       key: 'stats',
       width: 160,
-      render: (_: unknown, record: Position) => renderStats(record.stats)
+      render: (_: unknown, record: Position) => renderStats(record.stats, record.headcount)
     },
     { 
       title: '创建时间', 
@@ -1005,8 +1017,16 @@ const PositionsList: React.FC = () => {
                   <div style={{ fontSize: 24, fontWeight: 600, color: '#6366F1' }}>{viewingRecord.stats?.offer_pending || 0}</div>
                 </div>
                 <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
-                  <Text type="secondary">已入职</Text>
-                  <div style={{ fontSize: 24, fontWeight: 600, color: '#10B981' }}>{viewingRecord.stats?.offer_accepted || 0}</div>
+                  <Text type="secondary">当前在职</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#10B981' }}>{viewingRecord.stats?.current_employed || 0}</div>
+                </div>
+                <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
+                  <Text type="secondary">累计入职</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#059669' }}>{viewingRecord.stats?.cumulative_onboarded || 0}</div>
+                </div>
+                <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
+                  <Text type="secondary">已离职</Text>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#722ED1' }}>{viewingRecord.stats?.departed || 0}</div>
                 </div>
                 <div style={{ background: '#F8FAFC', padding: '12px 16px', borderRadius: 8 }}>
                   <Text type="secondary">已淘汰</Text>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -107,5 +107,21 @@ describe('ResumesList pagination', () => {
 
     await screen.findByText('Candidate 1');
     expect(screen.getByRole('button', { name: '安排面试' })).toBeInTheDocument();
+  });
+
+  it('shows departed as a terminal resume status', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => (
+      url === '/resumes'
+        ? [{ ...resumes[0], status: 'departed' }]
+        : []
+    ));
+
+    render(<MemoryRouter><ResumesList /></MemoryRouter>);
+
+    const status = await screen.findByText('已离职');
+    const row = status.closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).queryByRole('button', { name: '安排面试' })).not.toBeInTheDocument();
+    expect(within(row as HTMLElement).queryByTitle('淘汰')).not.toBeInTheDocument();
   });
 });

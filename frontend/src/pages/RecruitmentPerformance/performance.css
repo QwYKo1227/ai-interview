@@ -5,6 +5,14 @@
   margin: 0 auto;
 }
 
+.performance-loading {
+  display: flex;
+  min-height: 400px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
 .performance-hero {
   position: relative;
   display: grid;

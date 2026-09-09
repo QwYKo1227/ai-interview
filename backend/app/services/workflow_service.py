@@ -312,6 +312,10 @@ class NodeExecutor:
         resume = self.db.query(Resume).filter(Resume.id == resume_id).first()
         if not resume:
             raise ValueError(f"Resume not found: {resume_id}")
+        if new_status == ResumeStatus.DEPARTED.value:
+            raise ValueError("Departed status can only be set through Offer departure registration")
+        if resume.status == ResumeStatus.DEPARTED:
+            raise ValueError("Departed is a terminal resume status")
         
         try:
             resume.status = ResumeStatus(new_status)

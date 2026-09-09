@@ -48,6 +48,9 @@ class PositionAnalytics(BaseModel):
     interview_completed: int
     offer_sent: int
     hired: int
+    current_employed: int
+    cumulative_onboarded: int
+    departed: int
     rejected: int
     avg_match_score: Optional[float]
     avg_processing_days: Optional[float]
@@ -79,6 +82,7 @@ class TimelineDataPoint(BaseModel):
     interviews_completed: int
     offers_sent: int
     hires: int
+    departures: int
 
 class TimelineAnalyticsResponse(BaseModel):
     timeline: List[TimelineDataPoint]
@@ -93,6 +97,9 @@ class OverviewMetrics(BaseModel):
     completed_interviews: int
     total_offers: int
     accepted_offers: int
+    current_employed: int
+    cumulative_onboarded: int
+    departed: int
     avg_time_to_hire: Optional[float]
     avg_match_score: Optional[float]
     interview_pass_rate: float

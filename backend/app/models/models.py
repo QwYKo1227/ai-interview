@@ -224,6 +224,7 @@ class ResumeStatus(str, enum.Enum):
     OFFER_REJECTED = "offer_rejected"
     ONBOARDING = "onboarding"  # Deprecated; retained for enum compatibility only.
     COMPLETED = "completed"
+    DEPARTED = "departed"
     REJECTED = "rejected"
     WAITLIST = "waitlist"  # 备选
 

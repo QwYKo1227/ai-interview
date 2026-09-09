@@ -734,6 +734,11 @@ def update_resume(db: Session, resume_id: UUID, resume: ResumeUpdate):
         return None
     
     update_data = resume.dict(exclude_unset=True)
+    requested_status = update_data.get("status")
+    if requested_status == ResumeStatus.DEPARTED:
+        raise HTTPException(status_code=409, detail="已离职状态只能通过Offer登记离职产生")
+    if db_resume.status == ResumeStatus.DEPARTED and requested_status is not None:
+        raise HTTPException(status_code=409, detail="已离职是终态，不能直接修改简历状态")
     extracted_profile_updates = {
         key: update_data.pop(key)
         for key in EXTRACTED_PROFILE_FIELDS

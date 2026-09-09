@@ -76,6 +76,9 @@ interface PositionAnalytics {
   interview_completed: number;
   offer_sent: number;
   hired: number;
+  current_employed: number;
+  cumulative_onboarded: number;
+  departed: number;
   rejected: number;
   avg_match_score: number | null;
   avg_processing_days: number | null;
@@ -101,6 +104,7 @@ interface TimelineDataPoint {
   interviews_completed: number;
   offers_sent: number;
   hires: number;
+  departures: number;
 }
 
 interface OverviewMetrics {
@@ -112,6 +116,9 @@ interface OverviewMetrics {
   completed_interviews: number;
   total_offers: number;
   accepted_offers: number;
+  current_employed: number;
+  cumulative_onboarded: number;
+  departed: number;
   avg_time_to_hire: number | null;
   avg_match_score: number | null;
   interview_pass_rate: number;
@@ -276,12 +283,23 @@ const RecruitmentDashboard: React.FC = () => {
       )
     },
     {
-      title: '已录用',
-      dataIndex: 'hired',
-      key: 'hired',
+      title: '当前在职',
+      dataIndex: 'current_employed',
+      key: 'current_employed',
       render: (val: number) => (
         <Text type="success" strong>{val}</Text>
       )
+    },
+    {
+      title: '累计入职',
+      dataIndex: 'cumulative_onboarded',
+      key: 'cumulative_onboarded'
+    },
+    {
+      title: '已离职',
+      dataIndex: 'departed',
+      key: 'departed',
+      render: (val: number) => <Text style={{ color: '#722ED1' }}>{val}</Text>
     },
     {
       title: '转化率',
@@ -450,6 +468,9 @@ const RecruitmentDashboard: React.FC = () => {
                   valueStyle={{ color: overview?.avg_match_score && overview.avg_match_score >= 70 ? '#10B981' : '#F59E0B' }}
                 />
               </Col>
+              <Col span={12}><Statistic title="当前在职" value={overview?.current_employed || 0} valueStyle={{ color: '#10B981' }} /></Col>
+              <Col span={12}><Statistic title="累计入职" value={overview?.cumulative_onboarded || 0} /></Col>
+              <Col span={12}><Statistic title="已离职" value={overview?.departed || 0} valueStyle={{ color: '#722ED1' }} /></Col>
             </Row>
           </Card>
         </Col>
@@ -537,6 +558,7 @@ const RecruitmentDashboard: React.FC = () => {
               <Line type="monotone" dataKey="interviews_scheduled" name="面试安排" stroke="#F59E0B" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="interviews_completed" name="面试完成" stroke="#10B981" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="hires" name="入职" stroke="#8B5CF6" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="departures" name="离职" stroke="#722ED1" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>

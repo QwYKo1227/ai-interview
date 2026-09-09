@@ -99,6 +99,7 @@ const duplicateStatusLabels: Record<string, string> = {
   offer_rejected: '已拒绝Offer',
   waitlist: '备选',
   completed: '已入职',
+  departed: '已离职',
   rejected: '已淘汰',
 };
 
@@ -354,7 +355,7 @@ const ResumesList: React.FC = () => {
       const resumeInterviews = allInterviews.filter((interview) => interview.resume_id === record.id);
       setExistingInterviews(resumeInterviews);
 
-      if (['interview_passed', 'offer_pending', 'offer_accepted', 'offer_rejected', 'completed'].includes(record.status)) {
+      if (['interview_passed', 'offer_pending', 'offer_accepted', 'offer_rejected', 'completed', 'departed'].includes(record.status)) {
         message.warning('该候选人已进入录用决策或后续阶段，无法继续安排面试');
         return;
       }
@@ -749,6 +750,7 @@ const ResumesList: React.FC = () => {
           case 'offer_rejected': color = 'error'; text = '已拒绝Offer'; break;
           case 'waitlist': color = 'gold'; text = '备选'; break;
           case 'completed': color = 'success'; text = '已入职'; break;
+          case 'departed': color = 'purple'; text = '已离职'; break;
           case 'rejected': color = 'error'; text = '已淘汰'; break;
           default: break;
         }
@@ -813,7 +815,7 @@ const ResumesList: React.FC = () => {
                 />
               </Tooltip>
             )}
-            {record.status !== 'rejected' && record.status !== 'completed' && (
+            {!['rejected', 'completed', 'departed'].includes(record.status) && (
               <Tooltip title="淘汰">
                  <Button type="text" danger icon={<CloseCircleOutlined />} onClick={() => handleReject(record.id)} />
               </Tooltip>
@@ -909,6 +911,7 @@ const ResumesList: React.FC = () => {
                 <Select.Option value="offer_rejected">已拒绝Offer</Select.Option>
                 <Select.Option value="waitlist">备选</Select.Option>
                 <Select.Option value="completed">已入职</Select.Option>
+                <Select.Option value="departed">已离职</Select.Option>
                 <Select.Option value="rejected">已淘汰</Select.Option>
               </Select>
             </Form.Item>

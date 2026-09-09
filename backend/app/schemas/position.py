@@ -97,6 +97,10 @@ class PositionStats(BaseModel):
     offer_pending: int = 0
     offer_accepted: int = 0
     rejected: int = 0
+    departed: int = 0
+    current_employed: int = 0
+    cumulative_onboarded: int = 0
+    occupied_headcount: int = 0
 
 class PositionWithStats(PositionResponse):
     stats: PositionStats = PositionStats()

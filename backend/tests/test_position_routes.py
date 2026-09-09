@@ -102,11 +102,22 @@ class TestPositionRecruitmentProgress:
         assert progress["offer_pending"] == 1
         assert progress["offer_accepted"] == 3
         assert progress["rejected"] == 3
+        assert progress["departed"] == 1
+        assert progress["current_employed"] == 1
+        assert progress["occupied_headcount"] == 0
         assert "waitlisted" not in progress
         assert sum(
-            count
-            for name, count in progress.items()
-            if name != "total_resumes"
+            progress[name]
+            for name in (
+                "pending_screening",
+                "pending_interview",
+                "interview_completed",
+                "interview_passed",
+                "offer_pending",
+                "offer_accepted",
+                "rejected",
+                "departed",
+            )
         ) == progress["total_resumes"]
 
 

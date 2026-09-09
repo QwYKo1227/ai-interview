@@ -96,6 +96,9 @@ class PositionScore(BaseModel):
     priority: int
     hc_count: int
     onboarded_count: int
+    current_employed_count: int = 0
+    cumulative_onboarded_count: int = 0
+    departed_count: int = 0
     excluded_count: int
     task_points: float
     score: float
@@ -122,6 +125,9 @@ class PersonScore(BaseModel):
     hc_count: int
     excluded_count: int
     onboarded_count: int
+    current_employed_count: int = 0
+    cumulative_onboarded_count: int = 0
+    departed_count: int = 0
     task_points: float
     score: float
     achievement_rate: Optional[float]

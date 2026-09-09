@@ -5,6 +5,8 @@ from app.models.models import (
     PositionCategory,
     PositionEvent,
     PositionEventType,
+    Offer,
+    RecruitmentHcSlot,
     Resume,
     ResumeStatus,
     QuestionBank,
@@ -70,6 +72,7 @@ POSITION_PROGRESS_STATUS_GROUPS = {
         ResumeStatus.INTERVIEW_FAILED,
         ResumeStatus.OFFER_REJECTED,
     }),
+    "departed": frozenset({ResumeStatus.DEPARTED}),
 }
 
 def get_positions(
@@ -250,7 +253,30 @@ def get_position_stats(db: Session, position_id: UUID) -> PositionStats:
         bucket: sum(resume.status in statuses for resume in resumes)
         for bucket, statuses in POSITION_PROGRESS_STATUS_GROUPS.items()
     }
-    return PositionStats(total_resumes=len(resumes), **bucket_counts)
+    cumulative_onboarded = (
+        db.query(func.count(func.distinct(Offer.resume_id)))
+        .filter(
+            Offer.position_id == position_id,
+            Offer.actual_onboarded_at.isnot(None),
+        )
+        .scalar()
+        or 0
+    )
+    occupied_headcount = (
+        db.query(RecruitmentHcSlot)
+        .filter(
+            RecruitmentHcSlot.position_id == position_id,
+            RecruitmentHcSlot.status.in_(["completed", "departed_retained"]),
+        )
+        .count()
+    )
+    return PositionStats(
+        total_resumes=len(resumes),
+        current_employed=sum(resume.status == ResumeStatus.COMPLETED for resume in resumes),
+        cumulative_onboarded=cumulative_onboarded,
+        occupied_headcount=occupied_headcount,
+        **bucket_counts,
+    )
 
 def get_linked_question_banks(db: Session, position_id: UUID) -> List[QuestionBankBrief]:
     banks = db.query(QuestionBank).filter(QuestionBank.position_id == position_id).all()

@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Card, Col, Descriptions, Button, Result, Typography, Divider, Tag, List, Space, message, Dropdown, Spin, Input, Modal, Row, Select } from 'antd';
+import { Alert, Card, Col, Descriptions, Button, Result, Typography, Divider, Tag, List, Space, message, Dropdown, Spin, Input, Modal, Row, Select, Upload } from 'antd';
 import type { MenuProps } from 'antd';
 import { useParams, useNavigate } from 'react-router-dom';
-import { DownloadOutlined, FileMarkdownOutlined, FilePdfOutlined, DownOutlined, PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FileMarkdownOutlined, FilePdfOutlined, DownOutlined, PauseCircleOutlined, PlayCircleOutlined, UploadOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useOptionalAuth } from '../../contexts/AuthContext';
 import ReactMarkdown from 'react-markdown';
@@ -36,6 +36,15 @@ type TranscriptSegment = {
   end?: number;
   text?: string;
   speaker?: string | number;
+};
+
+type TranscriptImportPreview = {
+  format: 'webvtt' | 'plain_text';
+  has_timestamps: boolean;
+  text: string;
+  segments: TranscriptSegment[];
+  speakers: string[];
+  warnings: string[];
 };
 
 const transcriptText = (value: unknown): string => {
@@ -107,6 +116,7 @@ type TranscriptPaneProps = {
   playingSegmentKey?: string | null;
   onTogglePlayback?: (segment: TranscriptSegment, index: number) => void;
   maxHeight?: number;
+  showTimeline?: boolean;
 };
 
 const transcriptSegmentKey = (segment: TranscriptSegment, index: number) => (
@@ -126,6 +136,7 @@ const TranscriptPane: React.FC<TranscriptPaneProps> = ({
   playingSegmentKey,
   onTogglePlayback,
   maxHeight = 560,
+  showTimeline = true,
 }) => {
   const palette = accent === 'blue'
     ? { border: '#BFDBFE', header: '#EFF6FF', tag: 'blue' }
@@ -144,7 +155,7 @@ const TranscriptPane: React.FC<TranscriptPaneProps> = ({
         {segments.length > 0 ? segments.map((segment, index) => {
           const start = formatTranscriptTime(segment.start);
           const end = formatTranscriptTime(segment.end);
-          const timeRange = start && end ? `${start}–${end}` : start;
+          const timeRange = showTimeline ? (start && end ? `${start}–${end}` : start) : '';
           const speaker = getSpeakerName(segment.speaker);
           const segmentKey = transcriptSegmentKey(segment, index);
           const canPlay = typeof segment.start === 'number'
@@ -215,6 +226,12 @@ const InterviewResultPage: React.FC = () => {
   const [speakerLabelsOpen, setSpeakerLabelsOpen] = useState(false);
   const [speakerLabelDraft, setSpeakerLabelDraft] = useState<Record<string, string>>({});
   const [savingSpeakerLabels, setSavingSpeakerLabels] = useState(false);
+  const [transcriptImportOpen, setTranscriptImportOpen] = useState(false);
+  const [transcriptImportFileName, setTranscriptImportFileName] = useState('');
+  const [transcriptImportPreview, setTranscriptImportPreview] = useState<TranscriptImportPreview | null>(null);
+  const [transcriptImportSpeakerDraft, setTranscriptImportSpeakerDraft] = useState<Record<string, string>>({});
+  const [previewingTranscriptImport, setPreviewingTranscriptImport] = useState(false);
+  const [savingTranscriptImport, setSavingTranscriptImport] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playbackEndRef = useRef<number | null>(null);
   const [playbackUrl, setPlaybackUrl] = useState('');
@@ -490,6 +507,98 @@ const InterviewResultPage: React.FC = () => {
     }
   };
 
+  const openTranscriptImport = () => {
+    setTranscriptImportFileName('');
+    setTranscriptImportPreview(null);
+    setTranscriptImportSpeakerDraft({});
+    setTranscriptImportOpen(true);
+  };
+
+  const previewTranscriptImport = async (file: File) => {
+    const suffix = file.name.split('.').pop()?.toLowerCase();
+    if (!suffix || !['txt', 'vtt'].includes(suffix)) {
+      message.error('仅支持 .txt 和 .vtt 文件');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      message.error('文件不能超过 5 MB');
+      return;
+    }
+    setPreviewingTranscriptImport(true);
+    setTranscriptImportFileName(file.name);
+    setTranscriptImportPreview(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const preview = await request.post(
+        `/interviews/${id}/transcript/import/preview`,
+        formData,
+        { timeout: 30000 },
+      ) as TranscriptImportPreview;
+      setTranscriptImportPreview(preview);
+      setTranscriptImportSpeakerDraft(Object.fromEntries(
+        (preview.speakers || []).map((speaker) => [speaker, speaker]),
+      ));
+    } catch (error: any) {
+      setTranscriptImportFileName('');
+      message.error(error?.response?.data?.detail || '转写文件解析失败');
+    } finally {
+      setPreviewingTranscriptImport(false);
+    }
+  };
+
+  const performTranscriptImport = async () => {
+    if (!transcriptImportPreview) return;
+    setSavingTranscriptImport(true);
+    try {
+      const segments = transcriptImportPreview.segments.map((segment) => {
+        if (segment.speaker === undefined || segment.speaker === null) return segment;
+        const original = String(segment.speaker);
+        const updated = transcriptImportSpeakerDraft[original]?.trim();
+        return { ...segment, speaker: updated || original };
+      });
+      await request.post(`/interviews/${id}/transcript/import`, {
+        format: transcriptImportPreview.format,
+        has_timestamps: transcriptImportPreview.has_timestamps,
+        segments,
+      });
+      message.success('面试记录已导入，AI 正在分析');
+      setTranscriptImportOpen(false);
+      setTranscriptImportPreview(null);
+      await fetchInterview(id!, true);
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '导入面试记录失败');
+    } finally {
+      setSavingTranscriptImport(false);
+    }
+  };
+
+  const saveTranscriptImport = () => {
+    if (!transcriptImportPreview) {
+      message.error('请先选择并解析转写文件');
+      return;
+    }
+    const values = interview?.transcripts || {};
+    const willOverwrite = !!(
+      transcriptText(values.full_interview)
+      || transcriptText(values.full_interview_data)
+      || transcriptText(values.corrected_full_interview_data)
+    );
+    if (willOverwrite || interview?.final_decision_at) {
+      Modal.confirm({
+        title: willOverwrite ? '确认覆盖当前离线转写？' : '该面试已完成最终决策',
+        content: interview?.final_decision_at
+          ? '导入会更新离线转写和 AI 分析，但不会改变人工评价或最终决定。'
+          : '原离线转写及其校订版将被直接覆盖，且无法恢复。',
+        okText: '确认导入并分析',
+        cancelText: '取消',
+        onOk: performTranscriptImport,
+      });
+      return;
+    }
+    void performTranscriptImport();
+  };
+
   const handleExport = async (format: string = 'markdown') => {
     // Avoid event object being passed as format
     if (typeof format !== 'string') format = 'markdown';
@@ -648,6 +757,16 @@ const InterviewResultPage: React.FC = () => {
   const originalOfflineInterviewData = transcripts.full_interview_data;
   const correctedOfflineInterviewData = transcripts.corrected_full_interview_data;
   const displayedOfflineInterviewData = correctedOfflineInterviewData || originalOfflineInterviewData;
+  const importedOfflineTranscript = !!(
+    originalOfflineInterviewData
+    && typeof originalOfflineInterviewData === 'object'
+    && (originalOfflineInterviewData as { source?: unknown }).source === 'imported'
+  );
+  const offlineHasTimestamps = !(
+    displayedOfflineInterviewData
+    && typeof displayedOfflineInterviewData === 'object'
+    && (displayedOfflineInterviewData as { has_timestamps?: unknown }).has_timestamps === false
+  );
   const segmentsFrom = (value: unknown): TranscriptSegment[] => (
     value
     && typeof value === 'object'
@@ -764,7 +883,7 @@ const InterviewResultPage: React.FC = () => {
           </Space>
         </Card>
 
-        <Card title="AI 录音分析" extra={isHr && interview.ai_analysis_status === 'failed' ? <Button onClick={retryAnalysis}>重试分析</Button> : null}>
+        <Card title="AI 面试分析" extra={isHr && interview.ai_analysis_status === 'failed' ? <Button onClick={retryAnalysis}>重试分析</Button> : null}>
           {['pending', 'transcribing', 'analyzing'].includes(interview.ai_analysis_status) && (
             <div style={{ textAlign: 'center', padding: 32 }}><Spin /><div style={{ marginTop: 12 }}>{aiStatusText}</div></div>
           )}
@@ -964,16 +1083,16 @@ const InterviewResultPage: React.FC = () => {
           </Card>
         )}
 
-        {hasTranscripts && (
-          <Card
-            title="面试过程记录"
-            extra={hasOfflineTranscript ? (
-              <Space wrap>
-                {speakerIds.length > 0 && <Button onClick={openSpeakerLabels}>标注说话人</Button>}
-                {isHr && offlineInterviewSegments.length > 0 && <Button onClick={openTranscriptCorrection}>校订转写并重新分析</Button>}
-              </Space>
-            ) : null}
-          >
+        <Card
+          title="面试过程记录"
+          extra={(
+            <Space wrap>
+              {isHr && <Button icon={<UploadOutlined />} onClick={openTranscriptImport}>导入面试记录</Button>}
+              {hasOfflineTranscript && speakerIds.length > 0 && <Button onClick={openSpeakerLabels}>标注说话人</Button>}
+              {isHr && offlineInterviewSegments.length > 0 && <Button onClick={openTranscriptCorrection}>校订转写并重新分析</Button>}
+            </Space>
+          )}
+        >
             <Alert
               type="info"
               showIcon
@@ -993,20 +1112,21 @@ const InterviewResultPage: React.FC = () => {
               />
               <TranscriptPane
                 title="离线转写"
-                subtitle="面试结束后由离线模型生成，用于校订与 AI 分析"
-                badge={hasCorrectedOfflineTranscript ? '已校订' : '离线稿'}
+                subtitle={importedOfflineTranscript ? '从会议转写文件导入，用于校订与 AI 分析' : '面试结束后由离线模型生成，用于校订与 AI 分析'}
+                badge={importedOfflineTranscript ? (hasCorrectedOfflineTranscript ? '导入稿·已校订' : '导入稿') : (hasCorrectedOfflineTranscript ? '已校订' : '离线稿')}
                 accent="green"
                 segments={offlineInterviewSegments}
                 text={offlineInterviewText}
                 emptyText="离线转写尚未生成"
                 getSpeakerName={speakerName}
-                playbackReady={playbackReady}
+                playbackReady={!importedOfflineTranscript && playbackReady}
                 playingSegmentKey={playingSegmentKey}
-                onTogglePlayback={toggleSegmentPlayback}
+                onTogglePlayback={importedOfflineTranscript ? undefined : toggleSegmentPlayback}
+                showTimeline={offlineHasTimestamps}
               />
             </div>
-          </Card>
-        )}
+          {!hasTranscripts && <div style={{ marginTop: 12 }}><Text type="secondary">尚无面试过程记录，可通过右上角按钮导入会议转写文件。</Text></div>}
+        </Card>
 
         {isHr && (
           <Card title="HR/Admin 最终决定">
@@ -1080,6 +1200,97 @@ const InterviewResultPage: React.FC = () => {
             onChange={setReplacementUser}
             options={reviewCandidates.filter((candidate) => !requiredIds.has(String(candidate.id))).map((candidate) => ({ value: String(candidate.id), label: candidate.full_name || candidate.email }))}
           />
+        </Modal>
+        <Modal
+          title="导入面试记录"
+          width={920}
+          open={transcriptImportOpen}
+          onOk={saveTranscriptImport}
+          confirmLoading={savingTranscriptImport}
+          onCancel={() => setTranscriptImportOpen(false)}
+          okText="导入并进行 AI 分析"
+          cancelText="取消"
+          okButtonProps={{ disabled: !transcriptImportPreview || previewingTranscriptImport }}
+        >
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="支持 .txt、.vtt，最大 5 MB；原文件仅用于解析，不会保存在系统中。"
+            />
+            {hasOfflineTranscript && (
+              <Alert
+                type="warning"
+                showIcon
+                message="导入后将直接覆盖当前离线转写及校订版。"
+              />
+            )}
+            {interview.final_decision_at && (
+              <Alert
+                type="warning"
+                showIcon
+                message="该面试已有最终决定；AI 分析会更新，但不会改变人工评价或最终决定。"
+              />
+            )}
+            <Space wrap>
+              <Upload
+                accept=".txt,.vtt,text/plain,text/vtt"
+                maxCount={1}
+                showUploadList={false}
+                beforeUpload={(file) => {
+                  void previewTranscriptImport(file);
+                  return false;
+                }}
+              >
+                <Button icon={<UploadOutlined />} loading={previewingTranscriptImport}>选择转写文件</Button>
+              </Upload>
+              {transcriptImportFileName && <Text>{transcriptImportFileName}</Text>}
+            </Space>
+            {transcriptImportPreview && (
+              <>
+                <Space wrap>
+                  <Tag color="blue">{transcriptImportPreview.format === 'webvtt' ? 'WEBVTT' : '纯文本'}</Tag>
+                  <Text type="secondary">{transcriptImportPreview.segments.length} 个文本段</Text>
+                  <Text type="secondary">{transcriptImportPreview.speakers.length} 位说话人</Text>
+                </Space>
+                {transcriptImportPreview.warnings.map((warning, index) => (
+                  <Alert key={`${warning}-${index}`} type="warning" showIcon message={warning} />
+                ))}
+                {transcriptImportPreview.speakers.length > 0 && (
+                  <section>
+                    <Text strong>说话人名称（可选修正）</Text>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 8, marginTop: 8 }}>
+                      {transcriptImportPreview.speakers.map((speaker) => (
+                        <Input
+                          key={speaker}
+                          addonBefore={speaker}
+                          value={transcriptImportSpeakerDraft[speaker] || ''}
+                          maxLength={100}
+                          onChange={(event) => setTranscriptImportSpeakerDraft((current) => ({ ...current, [speaker]: event.target.value }))}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+                <TranscriptPane
+                  title="导入预览"
+                  subtitle="确认内容无误后导入；正文校订请在导入完成后进行"
+                  badge="预览"
+                  accent="green"
+                  segments={transcriptImportPreview.segments}
+                  text={transcriptImportPreview.text}
+                  emptyText="没有可导入的内容"
+                  getSpeakerName={(speaker) => {
+                    if (speaker === undefined || speaker === null) return '';
+                    const original = String(speaker);
+                    return transcriptImportSpeakerDraft[original]?.trim() || original;
+                  }}
+                  showTimeline={transcriptImportPreview.has_timestamps}
+                  maxHeight={420}
+                />
+              </>
+            )}
+          </Space>
         </Modal>
         <Modal title="校订离线转写" width={1120} open={correctionOpen} onOk={saveTranscriptCorrection} confirmLoading={savingCorrection} onCancel={() => setCorrectionOpen(false)} okText="保存并重新分析">
           <Alert type="info" showIcon message="左侧实时稿仅供对照；右侧修改会创建新的离线校订版本。实时稿和原始离线稿都会保留。" style={{ marginBottom: 12 }} />

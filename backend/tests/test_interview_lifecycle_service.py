@@ -31,6 +31,7 @@ from app.services.interview_lifecycle_service import (
     reserve_recording,
     submit_human_review,
     process_asr_job,
+    analyze_sealed_recording,
     utcnow,
 )
 from app.services.interview_lifecycle_monitor import (
@@ -802,3 +803,67 @@ def test_async_asr_job_is_persisted_completed_and_deleted(
     assert current.transcripts["full_interview"] == "正式离线转写"
     assert deleted == ["job-1"]
     assert analyzed == [(test_interview.tenant_id, test_interview.id)]
+
+
+def test_imported_transcript_is_analyzed_without_recording(
+    db: Session,
+    monkeypatch,
+    test_interview: Interview,
+):
+    segment = {
+        "id": "import-1",
+        "speaker": "Candidate",
+        "text": "我负责医疗器械质量体系维护。",
+        "start": 10,
+        "end": 12,
+    }
+    test_interview.lifecycle_state = "ended"
+    test_interview.audio_records = None
+    test_interview.transcripts = {
+        "full_interview": segment["text"],
+        "full_interview_data": {
+            "text": segment["text"],
+            "segments": [segment],
+            "source": "imported",
+            "format": "webvtt",
+            "has_timestamps": True,
+        },
+    }
+    test_interview.ai_analysis_status = "pending"
+    db.commit()
+
+    raw = {
+        "format_version": 2,
+        "dimensions": {
+            key: {
+                "score": 8,
+                "assessment": f"{config['label']}证据充分",
+                "evidence": [{"start": 10, "end": 12, "quote": segment["text"]}],
+            }
+            for key, config in SCORE_DIMENSIONS.items()
+        },
+        "recommendation": "passed",
+        "summary": "候选人具备相关经验。",
+        "strengths": [],
+        "risks": [],
+        "recommendation_reason": "证据充分。",
+        "next_round_questions": [],
+    }
+    monkeypatch.setattr(
+        interview_lifecycle_service.prompt_manager,
+        "get_prompt",
+        lambda *args, **kwargs: {"user": "analyze", "system": "system"},
+    )
+    monkeypatch.setattr(
+        interview_lifecycle_service,
+        "generate_text",
+        lambda *args, **kwargs: __import__("json").dumps(raw, ensure_ascii=False),
+    )
+
+    analyze_sealed_recording(test_interview.tenant_id, test_interview.id)
+
+    db.expire_all()
+    current = db.query(Interview).filter(Interview.id == test_interview.id).one()
+    assert current.ai_analysis_status == "completed"
+    assert current.ai_analysis["source"] == "imported_transcript"
+    assert current.ai_analysis["weighted_score"] == 8.0

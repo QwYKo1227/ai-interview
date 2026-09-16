@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import InterviewResultPage, { mergeAdjacentTranscriptSegments } from './Result'
 import request from '../../utils/request'
 
+const { mockUseOptionalAuth } = vi.hoisted(() => ({
+  mockUseOptionalAuth: vi.fn(),
+}))
+
 vi.mock('../../utils/request', () => ({
   default: { get: vi.fn(), post: vi.fn() },
 }))
@@ -13,7 +17,7 @@ vi.mock('html2pdf.js', () => ({
 }))
 
 vi.mock('../../contexts/AuthContext', () => ({
-  useOptionalAuth: () => ({ user: { id: 'interviewer-1', role: 'interviewer' } }),
+  useOptionalAuth: mockUseOptionalAuth,
 }))
 
 const interviewPayload = {
@@ -56,6 +60,7 @@ const renderResult = () => render(
 
 describe('InterviewResultPage', () => {
   beforeEach(() => {
+    mockUseOptionalAuth.mockReturnValue({ user: { id: 'interviewer-1', role: 'interviewer' } })
     vi.mocked(request.get).mockReset().mockResolvedValue(interviewPayload)
     vi.mocked(request.post).mockReset()
   })
@@ -261,6 +266,30 @@ describe('InterviewResultPage', () => {
     renderResult()
 
     expect(await screen.findByText('无录音证据，未执行 AI 分析')).toBeInTheDocument()
+  })
+
+  it('keeps the process card visible and offers transcript import to HR when no transcript exists', async () => {
+    mockUseOptionalAuth.mockReturnValue({ user: { id: 'hr-1', role: 'hr' } })
+    vi.mocked(request.get).mockImplementation((path: string) => (
+      path === '/auth/interviewers'
+        ? Promise.resolve([])
+        : path.endsWith('/notes')
+          ? Promise.resolve([])
+          : Promise.resolve({
+              ...interviewPayload,
+              lifecycle_state: 'ended',
+              ai_analysis_status: 'not_applicable',
+              transcripts: {},
+              panel_members: [],
+              panels: [],
+            })
+    ))
+
+    renderResult()
+
+    expect(await screen.findByText('面试过程记录')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /导入面试记录/ })).toBeInTheDocument()
+    expect(screen.getByText('尚无面试过程记录，可通过右上角按钮导入会议转写文件。')).toBeInTheDocument()
   })
 })
 

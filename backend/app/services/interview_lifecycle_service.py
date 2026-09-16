@@ -63,6 +63,7 @@ MAX_RECORDING_CHUNKS = 10_000
 MAX_REALTIME_TRANSCRIPT_SEGMENTS = 10_000
 ASR_MAX_ATTEMPTS = 3
 ASR_POLL_SECONDS = 15
+ANALYSIS_CHUNK_CHAR_LIMIT = 60_000
 
 SCORE_DIMENSIONS = {
     "technical_fit": {"label": "技术匹配", "weight": 35, "gate": True},
@@ -691,6 +692,107 @@ def enforce_analysis_contract(value: dict, transcript_data: dict | None = None) 
     }
 
 
+def _split_transcript_for_analysis(transcript_data: dict) -> list[dict]:
+    """Split every segment into bounded AI inputs without dropping content."""
+    segments = [segment for segment in transcript_data.get("segments") or [] if isinstance(segment, dict)]
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_size = 0
+    for segment in segments:
+        serialized_size = len(json.dumps(segment, ensure_ascii=False))
+        if current and current_size + serialized_size > ANALYSIS_CHUNK_CHAR_LIMIT:
+            chunks.append(current)
+            current = []
+            current_size = 0
+        current.append(segment)
+        current_size += serialized_size
+    if current:
+        chunks.append(current)
+    if not chunks:
+        return []
+    return [
+        {
+            **{key: value for key, value in transcript_data.items() if key not in {"text", "segments"}},
+            "text": "\n".join(str(segment.get("text") or "") for segment in chunk),
+            "segments": chunk,
+            "chunk_index": index + 1,
+            "chunk_count": len(chunks),
+        }
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def _unique_dicts(values: list[dict], limit: int | None = None) -> list[dict]:
+    seen: set[str] = set()
+    result = []
+    for value in values:
+        marker = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(value)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
+def _aggregate_chunk_analyses(values: list[dict]) -> dict:
+    """Combine bounded AI calls into one contract-shaped result."""
+    dimensions = {}
+    for key in SCORE_DIMENSIONS:
+        items = [value["dimensions"][key] for value in values]
+        scored = [item for item in items if item.get("score") is not None]
+        dimensions[key] = {
+            "score": (
+                round(sum(float(item["score"]) for item in scored) / len(scored), 1)
+                if scored else None
+            ),
+            "assessment": "；".join(dict.fromkeys(
+                str(item.get("assessment") or "").strip() for item in items if item.get("assessment")
+            )),
+            "evidence": _unique_dicts([
+                evidence
+                for item in scored
+                for evidence in item.get("evidence") or []
+            ], limit=8),
+        }
+
+    recommendation_priority = {
+        "inconclusive": 0,
+        "passed": 1,
+        "next_round": 2,
+        "waitlist": 3,
+        "rejected": 4,
+    }
+    recommendation = max(
+        (value.get("recommendation", "inconclusive") for value in values),
+        key=lambda item: recommendation_priority.get(item, 0),
+    )
+    questions = list(dict.fromkeys(
+        question
+        for value in values
+        for question in value.get("next_round_questions") or []
+    ))
+    return {
+        "format_version": 2,
+        "dimensions": dimensions,
+        "recommendation": recommendation,
+        "summary": f"已完整分析 {len(values)} 个转写分段。" + "；".join(
+            value["summary"] for value in values
+        ),
+        "strengths": _unique_dicts([
+            finding for value in values for finding in value.get("strengths") or []
+        ], limit=4),
+        "risks": _unique_dicts([
+            finding for value in values for finding in value.get("risks") or []
+        ], limit=4),
+        "recommendation_reason": "；".join(dict.fromkeys(
+            value["recommendation_reason"] for value in values
+        )),
+        "next_round_questions": questions,
+    }
+
+
 def _asr_history(interview: Interview, **values) -> None:
     history = list(interview.asr_job_history or [])
     history.append({"at": utcnow().isoformat(), **values})
@@ -884,35 +986,44 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
         interview = db.query(Interview).filter(Interview.id == interview_id).first()
         if not interview:
             return
-        url = (interview.audio_records or {}).get("full_interview")
-        match = re.fullmatch(r"/api/files/([0-9a-fA-F-]{36})", url or "")
-        if not match:
-            interview.ai_analysis_status = "failed"
-            interview.ai_analysis_error = "Recording file is missing"
-            db.commit()
-            return
-        stored = db.query(StoredFile).filter(StoredFile.id == UUID(match.group(1))).first()
-        if not stored:
-            interview.ai_analysis_status = "failed"
-            interview.ai_analysis_error = "Recording file is missing"
-            db.commit()
-            return
+        transcripts = interview.transcripts or {}
+        corrected_data = transcripts.get("corrected_full_interview_data")
+        completed_data = transcripts.get("full_interview_data")
+        imported_data = (
+            completed_data
+            if isinstance(completed_data, dict) and completed_data.get("source") == "imported"
+            else None
+        )
+        saved_transcript_data = corrected_data if use_corrected and corrected_data else imported_data
 
-        interview.ai_analysis_status = "transcribing"
+        stored = None
+        if saved_transcript_data is None:
+            url = (interview.audio_records or {}).get("full_interview")
+            match = re.fullmatch(r"/api/files/([0-9a-fA-F-]{36})", url or "")
+            if not match:
+                interview.ai_analysis_status = "failed"
+                interview.ai_analysis_error = "Recording file is missing"
+                db.commit()
+                return
+            stored = db.query(StoredFile).filter(StoredFile.id == UUID(match.group(1))).first()
+            if not stored:
+                interview.ai_analysis_status = "failed"
+                interview.ai_analysis_error = "Recording file is missing"
+                db.commit()
+                return
+
+        interview.ai_analysis_status = "analyzing" if saved_transcript_data is not None else "transcribing"
         interview.ai_analysis_started_at = utcnow()
         interview.ai_analysis_error = None
         db.commit()
         try:
-            transcripts = interview.transcripts or {}
-            corrected_data = transcripts.get("corrected_full_interview_data")
-            completed_data = transcripts.get("full_interview_data")
-            if use_corrected and corrected_data:
-                transcript_data = corrected_data
+            if saved_transcript_data is not None:
+                transcript_data = saved_transcript_data
             elif interview.asr_job_status == "completed" and completed_data:
                 transcript_data = completed_data
             else:
                 transcript_data = transcribe_audio(
-                    str(stored_file_path(stored)),
+                    str(stored_file_path(stored)),  # type: ignore[arg-type]
                     config=get_transcription_config(db),
                 )
             if (
@@ -937,25 +1048,44 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
                 position.description if position else "",
                 f"任职要求：\n{position.requirements}" if position and position.requirements else "",
             ]))
-            prompt = prompt_manager.get_prompt(
-                "generate_interview_evaluation",
-                db=db,
-                position_title=position.title if position else "未知岗位",
-                position_description=position_description or "未提供岗位描述",
-                score_dimensions=json.dumps(SCORE_DIMENSIONS, ensure_ascii=False),
-                transcript_data=json.dumps(transcript_data, ensure_ascii=False),
+            chunks = _split_transcript_for_analysis(transcript_data)
+            if not chunks:
+                raise AnalysisContractError("录音转写缺少带时间戳的有效分段")
+            chunk_analyses = []
+            for chunk in chunks:
+                prompt = prompt_manager.get_prompt(
+                    "generate_interview_evaluation",
+                    db=db,
+                    position_title=position.title if position else "未知岗位",
+                    position_description=position_description or "未提供岗位描述",
+                    score_dimensions=json.dumps(SCORE_DIMENSIONS, ensure_ascii=False),
+                    transcript_data=json.dumps(chunk, ensure_ascii=False),
+                )
+                if prompt["user"] in {"", "提示词变量缺失", "提示词格式化失败"}:
+                    raise AnalysisContractError("面试评价提示词配置无效")
+                raw = generate_text(
+                    prompt["user"],
+                    db=db,
+                    system_prompt=prompt["system"],
+                    json_response=True,
+                )
+                chunk_analyses.append(enforce_analysis_contract(_extract_json(raw), chunk))
+            analysis = (
+                chunk_analyses[0]
+                if len(chunk_analyses) == 1
+                else enforce_analysis_contract(
+                    _aggregate_chunk_analyses(chunk_analyses),
+                    transcript_data,
+                )
             )
-            if prompt["user"] in {"", "提示词变量缺失", "提示词格式化失败"}:
-                raise AnalysisContractError("面试评价提示词配置无效")
-            raw = generate_text(
-                prompt["user"],
-                db=db,
-                system_prompt=prompt["system"],
-                json_response=True,
-            )
-            analysis = enforce_analysis_contract(_extract_json(raw), transcript_data)
             analysis["matrix"] = SCORE_DIMENSIONS
-            analysis["source"] = "corrected_transcript" if use_corrected and corrected_data else "recording_only"
+            analysis["source"] = (
+                "corrected_transcript"
+                if use_corrected and corrected_data
+                else "imported_transcript"
+                if imported_data is not None
+                else "recording_only"
+            )
             interview.ai_analysis = analysis
             interview.ai_analysis_status = "completed"
             interview.ai_analysis_error = None

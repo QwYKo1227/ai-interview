@@ -1531,6 +1531,146 @@ class TestSpeakerLabelsRoute:
         assert data["transcripts"]["full_interview_data"] == original_data
 
 
+class TestTranscriptImportRoutes:
+    def test_hr_previews_webvtt_without_persisting_it(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+    ):
+        test_interview.lifecycle_state = "ended"
+        test_interview.transcripts = {"realtime_full_interview": "existing realtime"}
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/transcript/import/preview",
+            headers=auth_headers,
+            files={
+                "file": (
+                    "meeting.txt",
+                    b"WEBVTT\n\n00:18:32.000 --> 00:18:34.000\nCandidate: hello\n",
+                    "text/plain",
+                )
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["segments"][0]["start"] == 1112.0
+        db.refresh(test_interview)
+        assert test_interview.transcripts == {"realtime_full_interview": "existing realtime"}
+
+    def test_hr_import_overwrites_only_offline_transcript_and_starts_analysis(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+        monkeypatch,
+    ):
+        analyzed = []
+        test_interview.lifecycle_state = "ended"
+        test_interview.transcripts = {
+            "realtime_full_interview": "existing realtime",
+            "full_interview": "old offline",
+            "corrected_full_interview_data": {"segments": [{"text": "old correction"}]},
+        }
+        test_interview.ai_analysis_status = "completed"
+        db.commit()
+        monkeypatch.setattr(
+            "app.routes.interviews.analyze_sealed_recording",
+            lambda tenant_id, interview_id, use_corrected=False: analyzed.append(
+                (tenant_id, interview_id, use_corrected)
+            ),
+        )
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/transcript/import",
+            headers=auth_headers,
+            json={
+                "format": "webvtt",
+                "has_timestamps": True,
+                "segments": [{
+                    "id": "import-1",
+                    "start": 10,
+                    "end": 12,
+                    "speaker": "Candidate",
+                    "text": "new imported answer",
+                }],
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        payload = response.json()
+        assert payload["ai_analysis_status"] == "pending"
+        db.refresh(test_interview)
+        assert test_interview.transcripts["realtime_full_interview"] == "existing realtime"
+        assert test_interview.transcripts["full_interview"] == "new imported answer"
+        assert test_interview.transcripts["full_interview_data"]["source"] == "imported"
+        assert "corrected_full_interview_data" not in test_interview.transcripts
+        assert test_interview.transcripts["speaker_labels"] == {"Candidate": "Candidate"}
+        assert analyzed == [(test_interview.tenant_id, test_interview.id, False)]
+
+    def test_interviewer_cannot_import_transcript(
+        self,
+        client: TestClient,
+        interviewer_auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+    ):
+        test_interview.lifecycle_state = "ended"
+        db.commit()
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/transcript/import",
+            headers=interviewer_auth_headers,
+            json={
+                "format": "plain_text",
+                "has_timestamps": False,
+                "segments": [{"start": 0, "end": 1, "text": "answer"}],
+            },
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_hr_can_retry_imported_transcript_analysis_without_recording(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        test_interview: Interview,
+        db: Session,
+        monkeypatch,
+    ):
+        analyzed = []
+        test_interview.lifecycle_state = "ended"
+        test_interview.audio_records = None
+        test_interview.transcripts = {
+            "full_interview_data": {
+                "source": "imported",
+                "text": "candidate answer",
+                "segments": [{"start": 0, "end": 1, "text": "candidate answer"}],
+            }
+        }
+        test_interview.ai_analysis_status = "failed"
+        test_interview.ai_analysis_error = "temporary error"
+        db.commit()
+        monkeypatch.setattr(
+            "app.routes.interviews.analyze_sealed_recording",
+            lambda tenant_id, interview_id, use_corrected=False: analyzed.append(
+                (tenant_id, interview_id, use_corrected)
+            ),
+        )
+
+        response = client.post(
+            f"/api/interviews/{test_interview.id}/analysis/retry",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["ai_analysis_status"] == "pending"
+        assert analyzed == [(test_interview.tenant_id, test_interview.id, False)]
+
+
 class TestInterviewerDisplayNames:
     def test_result_and_frozen_notes_include_interviewer_name(
         self,

@@ -18,6 +18,7 @@ from app.schemas.interview import (
     ReviewerReplacementRequest, InterviewReviewersUpdate, validate_interview_time_range,
     CorrectedTranscriptRequest, SpeakerLabelsRequest, InterviewScheduleUpdate,
     InterviewScheduleNotificationRequest,
+    ImportedTranscriptRequest,
 )
 from app.models.models import User, UserRole, Resume, Position, Interview, InterviewStatus, InterviewResult, InterviewPanel
 from app.routes.auth import get_current_user
@@ -62,6 +63,7 @@ from app.services.interview_lifecycle_service import (
     utcnow,
 )
 from app.services.audio_service import AsrServiceError, create_realtime_session, get_transcription_config
+from app.services.transcript_import_service import parse_transcript_upload
 from app.services.resume_interview_status import (
     mark_legacy_interview_completed,
     mark_legacy_interview_ended,
@@ -404,6 +406,25 @@ def retry_analysis_route(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
     interview = require_interview_access(db, interview_id, current_user)
+    transcript_values = interview.transcripts or {}
+    corrected_data = transcript_values.get("corrected_full_interview_data")
+    imported_data = transcript_values.get("full_interview_data")
+    has_imported_transcript = (
+        isinstance(imported_data, dict)
+        and imported_data.get("source") == "imported"
+        and bool(imported_data.get("segments"))
+    )
+    if corrected_data or has_imported_transcript:
+        interview.ai_analysis_status = "pending"
+        interview.ai_analysis_error = None
+        db.commit()
+        background_tasks.add_task(
+            analyze_sealed_recording,
+            interview.tenant_id,
+            interview.id,
+            bool(corrected_data),
+        )
+        return interview
     if (
         interview.lifecycle_state == "ended"
         and not (interview.audio_records or {}).get("full_interview")
@@ -432,6 +453,61 @@ def retry_analysis_route(
     return interview
 
 
+@router.post("/{interview_id}/transcript/import/preview")
+async def preview_transcript_import_route(
+    interview_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state != "ended":
+        raise HTTPException(status_code=409, detail="只能为已结束的面试导入转写")
+    return await parse_transcript_upload(file)
+
+
+@router.post("/{interview_id}/transcript/import", response_model=InterviewResponse)
+def import_transcript_route(
+    interview_id: UUID,
+    payload: ImportedTranscriptRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    interview = require_interview_access(db, interview_id, current_user)
+    if interview.lifecycle_state != "ended":
+        raise HTTPException(status_code=409, detail="只能为已结束的面试导入转写")
+
+    segments = [segment.model_dump(exclude_none=True) for segment in payload.segments]
+    text = "\n".join(segment["text"] for segment in segments)
+    transcripts = dict(interview.transcripts or {})
+    transcripts.pop("corrected_full_interview_data", None)
+    transcripts.pop("analysis_transcript_data", None)
+    transcripts["full_interview"] = text
+    transcripts["full_interview_data"] = {
+        "text": text,
+        "segments": segments,
+        "source": "imported",
+        "format": payload.format,
+        "has_timestamps": payload.has_timestamps,
+    }
+    speakers = {
+        str(segment["speaker"])
+        for segment in segments
+        if segment.get("speaker") is not None
+    }
+    if speakers:
+        transcripts["speaker_labels"] = {speaker: speaker for speaker in sorted(speakers)}
+    else:
+        transcripts.pop("speaker_labels", None)
+    interview.transcripts = transcripts
+    interview.ai_analysis_status = "pending"
+    interview.ai_analysis_error = None
+    db.commit()
+    background_tasks.add_task(analyze_sealed_recording, interview.tenant_id, interview.id)
+    return interview
+
+
 @router.post("/{interview_id}/transcript/corrections", response_model=InterviewResponse)
 def correct_transcript_route(
     interview_id: UUID,
@@ -446,11 +522,18 @@ def correct_transcript_route(
     if not payload.segments:
         raise HTTPException(status_code=422, detail="At least one corrected segment is required")
     segments = [segment.model_dump() for segment in payload.segments]
+    original_data = (interview.transcripts or {}).get("full_interview_data")
     corrected = {
         "text": " ".join(segment["text"].strip() for segment in segments if segment["text"].strip()),
         "segments": segments,
         "corrected_by": str(current_user.id),
         "corrected_at": utcnow().isoformat(),
+        "source": "corrected",
+        "has_timestamps": (
+            original_data.get("has_timestamps", True)
+            if isinstance(original_data, dict)
+            else True
+        ),
     }
     interview.transcripts = {
         **(interview.transcripts or {}),

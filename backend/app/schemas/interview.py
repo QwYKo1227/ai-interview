@@ -272,6 +272,37 @@ class CorrectedTranscriptRequest(BaseModel):
     segments: List[CorrectedTranscriptSegment]
 
 
+class ImportedTranscriptSegment(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=200)
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    text: str = Field(min_length=1, max_length=20000)
+    speaker: Optional[Union[str, int]] = None
+
+    @model_validator(mode="after")
+    def normalize_segment(self):
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("转写文本不能为空")
+        if self.end < self.start:
+            raise ValueError("结束时间不能早于开始时间")
+        if isinstance(self.speaker, str):
+            self.speaker = self.speaker.strip()[:100] or None
+        return self
+
+
+class ImportedTranscriptRequest(BaseModel):
+    format: Literal["webvtt", "plain_text"]
+    has_timestamps: bool
+    segments: List[ImportedTranscriptSegment] = Field(min_length=1, max_length=20000)
+
+    @model_validator(mode="after")
+    def validate_total_size(self):
+        if sum(len(segment.text.encode("utf-8")) for segment in self.segments) > 5 * 1024 * 1024:
+            raise ValueError("转写正文不能超过 5 MB")
+        return self
+
+
 class SpeakerLabelsRequest(BaseModel):
     labels: Dict[str, str]
 

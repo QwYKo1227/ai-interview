@@ -214,6 +214,32 @@ def process_resume_task(tenant_id: UUID, resume_id: UUID, payload: Dict[str, Any
         return _process_resume_task(db, tenant_id, resume_id, payload)
 
 
+AI_SCREENING_STATUSES = {
+    ResumeStatus.PENDING_SCREENING,
+    ResumeStatus.PENDING_REVIEW,
+    ResumeStatus.AUTO_REJECTED_PENDING_REVIEW,
+    ResumeStatus.WAITLIST,
+}
+
+
+def _can_refresh_ai_screening(db: Session, resume: Resume) -> bool:
+    """Only AI-owned screening states may follow a new parsing result."""
+    if (
+        resume.status not in AI_SCREENING_STATUSES
+        or resume.manual_screening_decision
+        or resume.hr_review
+        or resume.rejected_by
+    ):
+        return False
+    return db.query(DepartmentReview.id).filter(
+        DepartmentReview.resume_id == resume.id,
+        or_(
+            DepartmentReview.reviewed_position_id == resume.position_id,
+            DepartmentReview.reviewed_position_id.is_(None),
+        ),
+    ).first() is None
+
+
 def _process_resume_task(
     db: Session,
     tenant_id: UUID,
@@ -301,9 +327,6 @@ def _process_resume_task(
         if match_score is None:
             match_score = 0
 
-        # 提取 screening_result
-        screening_result = parsed_data.get("screening_result", ScreeningResult.PENDING)
-
         # 提取 ai_review
         ai_review = parsed_data.get("ai_review", "")
         if not ai_review:
@@ -353,7 +376,10 @@ def _process_resume_task(
         # 更新简历信息
         resume.parsed_data = parsed_data
         resume.match_score = match_score if isinstance(match_score, int) else 0
-        resume.screening_result = screening_result if isinstance(screening_result, str) else ScreeningResult.PENDING
+        update_screening_state = (
+            not payload.get("preserve_workflow_state")
+            and _can_refresh_ai_screening(db, resume)
+        )
         resume.ai_review = ai_review
 
         # 存储其他岗位匹配信息
@@ -376,13 +402,17 @@ def _process_resume_task(
                     has_better_match = True
                     break
 
-        if resume.match_score >= 60:
-            resume.status = ResumeStatus.PENDING_REVIEW
-        elif has_better_match:
-            # 有更适合的其他岗位，设为备选状态
-            resume.status = ResumeStatus.WAITLIST
-        else:
-            resume.status = ResumeStatus.AUTO_REJECTED_PENDING_REVIEW
+        if update_screening_state:
+            if resume.match_score >= 60:
+                resume.status = ResumeStatus.PENDING_REVIEW
+                resume.screening_result = ScreeningResult.PASSED
+            elif has_better_match:
+                # 有更适合的其他岗位，设为备选状态
+                resume.status = ResumeStatus.WAITLIST
+                resume.screening_result = ScreeningResult.WAITLIST
+            else:
+                resume.status = ResumeStatus.AUTO_REJECTED_PENDING_REVIEW
+                resume.screening_result = ScreeningResult.REJECTED
 
         db.commit()
 
@@ -403,7 +433,6 @@ def _on_resume_parse_failure(db: Session, resume_id: UUID, error: str):
         if resume:
             resume.parse_status = "failed"
             resume.parse_error = f"解析失败（重试后）: {error[:400]}"
-            resume.candidate_name = "解析失败"
             db.commit()
             print(f"[TaskQueue] Updated resume {resume_id} status to failed")
     except Exception:
@@ -416,6 +445,7 @@ def process_resume_background(
     resume_id: UUID,
     position_id: UUID,
     protected_identity_fields: List[str] | None = None,
+    preserve_workflow_state: bool = False,
 ):
     queue = get_task_queue()
     queue.submit(
@@ -428,6 +458,7 @@ def process_resume_background(
             "resume_id": resume_id,
             "position_id": position_id,
             "protected_identity_fields": protected_identity_fields or [],
+            "preserve_workflow_state": preserve_workflow_state,
         },
         callback=process_resume_task,
         on_failure=on_resume_parse_failure,
@@ -547,22 +578,24 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
     if not resume.position_id:
         raise HTTPException(status_code=400, detail="Resume missing position_id")
 
+    preserve_workflow_state = not _can_refresh_ai_screening(db, resume)
+
     resume.parse_status = "processing"
     resume.parse_error = None
     resume.parsed_at = None
     resume.parsed_data = None
     resume.match_score = None
     resume.ai_review = None
-    resume.screening_result = ScreeningResult.PENDING
-    resume.status = ResumeStatus.PENDING_SCREENING
-    resume.candidate_name = "解析中..."
-    resume.contact = None
-    resume.email = None
     db.commit()
     db.refresh(resume)
 
     background_tasks.add_task(
-        process_resume_background, resume.tenant_id, resume.id, resume.position_id
+        process_resume_background,
+        resume.tenant_id,
+        resume.id,
+        resume.position_id,
+        ["candidate_name", "contact", "email"],
+        preserve_workflow_state,
     )
     return resume
 
@@ -749,6 +782,9 @@ def update_resume(db: Session, resume_id: UUID, resume: ResumeUpdate):
         parsed_data = dict(db_resume.parsed_data or {})
         parsed_data.update(extracted_profile_updates)
         db_resume.parsed_data = parsed_data
+
+    if "status" in update_data or "screening_result" in update_data:
+        db_resume.manual_screening_decision = True
 
     for key, value in update_data.items():
         setattr(db_resume, key, value)
@@ -1403,6 +1439,7 @@ def submit_hr_decision(db: Session, resume_id: UUID, hr_id: UUID, decision_data:
 
     # 更新简历状态
     resume.status = decision
+    resume.manual_screening_decision = True
     resume.hr_review = decision_data.hr_comment
 
     # 如果是淘汰，记录淘汰原因
@@ -1462,6 +1499,7 @@ def override_rejection(db: Session, resume_id: UUID, hr_id: UUID) -> Resume:
 
     # 恢复到部门评审流程
     resume.status = ResumeStatus.PENDING_REVIEW
+    resume.manual_screening_decision = True
     resume.reject_reason_category = None
     resume.reject_reason_detail = None
 
@@ -1538,6 +1576,7 @@ def transfer_resume_position(
     resume.match_score = None
     resume.ai_review = None
     resume.screening_result = ScreeningResult.PENDING
+    resume.manual_screening_decision = False
     resume.other_position_matches = None
     resume.status = ResumeStatus.PENDING_SCREENING
 

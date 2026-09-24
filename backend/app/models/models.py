@@ -272,6 +272,7 @@ class Resume(TenantScopedMixin, Base):
     parse_error = Column(Text)
     parsed_at = Column(DateTime)
     screening_result = Column(Enum(ScreeningResult), default=ScreeningResult.PENDING)
+    manual_screening_decision = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     ai_review = Column(Text)
     hr_review = Column(Text)
     status = Column(Enum(ResumeStatus), default=ResumeStatus.PENDING_SCREENING)

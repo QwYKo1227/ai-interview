@@ -2,7 +2,9 @@ import logging
 
 import httpx
 import pytest
+from fastapi import BackgroundTasks
 
+from app.models.models import DepartmentReview, ResumeStatus, ScreeningResult
 from app.services import document_parser, resume_service
 
 
@@ -314,3 +316,163 @@ def test_resume_processing_protects_only_user_supplied_identity_fields(
     assert test_resume.contact == "13662660569"
     assert test_resume.email == "user@example.com"
     assert test_resume.parsed_data["email"] == "user@example.com"
+
+
+def test_reparse_preserves_workflow_and_identity_while_queued(
+    db, test_resume
+):
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    test_resume.screening_result = ScreeningResult.PASSED
+    test_resume.parse_status = "success"
+    test_resume.parsed_data = {"candidate_name": test_resume.candidate_name}
+    original_identity = (
+        test_resume.candidate_name,
+        test_resume.contact,
+        test_resume.email,
+    )
+    db.commit()
+    background_tasks = BackgroundTasks()
+
+    reparsing = resume_service.reparse_resume(
+        db, test_resume.id, background_tasks
+    )
+
+    assert reparsing.status == ResumeStatus.INTERVIEW_PASSED
+    assert reparsing.screening_result == ScreeningResult.PASSED
+    assert (
+        reparsing.candidate_name,
+        reparsing.contact,
+        reparsing.email,
+    ) == original_identity
+    assert reparsing.parse_status == "processing"
+    assert reparsing.parsed_data is None
+    queued_call = background_tasks.tasks[0]
+    assert queued_call.args[3] == ["candidate_name", "contact", "email"]
+    assert queued_call.args[4] is True
+
+
+def test_reparse_worker_does_not_overwrite_interview_passed_state(
+    db, tenant_a, test_position, test_resume, monkeypatch
+):
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    test_resume.screening_result = ScreeningResult.PASSED
+    db.commit()
+    monkeypatch.setattr(
+        resume_service,
+        "extract_document_text",
+        lambda _path: "Candidate resume",
+    )
+    monkeypatch.setattr(
+        resume_service,
+        "analyze_resume",
+        lambda *_args, **_kwargs: {
+            "candidate_name": "Candidate",
+            "match_score": 10,
+            "screening_result": "rejected",
+            "ai_review": "Not suitable",
+            "other_position_matches": [],
+        },
+    )
+
+    resume_service._process_resume_task(
+        db,
+        tenant_a.id,
+        test_resume.id,
+        {
+            "position_id": test_position.id,
+            "preserve_workflow_state": True,
+        },
+    )
+
+    db.refresh(test_resume)
+    assert test_resume.parse_status == "success"
+    assert test_resume.match_score == 10
+    assert test_resume.status == ResumeStatus.INTERVIEW_PASSED
+    assert test_resume.screening_result == ScreeningResult.PASSED
+
+
+@pytest.mark.parametrize(
+    ("old_status", "score", "other_matches", "expected_status", "expected_result"),
+    [
+        (ResumeStatus.AUTO_REJECTED_PENDING_REVIEW, 78, [], ResumeStatus.PENDING_REVIEW, ScreeningResult.PASSED),
+        (ResumeStatus.PENDING_REVIEW, 45, [], ResumeStatus.AUTO_REJECTED_PENDING_REVIEW, ScreeningResult.REJECTED),
+        (ResumeStatus.AUTO_REJECTED_PENDING_REVIEW, 45, [{"match_score": 72}], ResumeStatus.WAITLIST, ScreeningResult.WAITLIST),
+        (ResumeStatus.WAITLIST, 60, [], ResumeStatus.PENDING_REVIEW, ScreeningResult.PASSED),
+    ],
+)
+def test_reparse_refreshes_unreviewed_ai_screening(
+    db, tenant_a, test_position, test_resume, monkeypatch,
+    old_status, score, other_matches, expected_status, expected_result,
+):
+    test_resume.status = old_status
+    test_resume.screening_result = ScreeningResult.REJECTED
+    db.commit()
+    background_tasks = BackgroundTasks()
+
+    resume_service.reparse_resume(db, test_resume.id, background_tasks)
+    assert background_tasks.tasks[0].args[4] is False
+
+    monkeypatch.setattr(resume_service, "extract_document_text", lambda _path: "Candidate resume")
+    monkeypatch.setattr(
+        resume_service,
+        "analyze_resume",
+        lambda *_args, **_kwargs: {
+            "candidate_name": "Candidate",
+            "match_score": score,
+            "screening_result": "rejected",  # Status follows the score, not this AI text.
+            "ai_review": "AI assessment",
+            "other_position_matches": other_matches,
+        },
+    )
+    resume_service._process_resume_task(
+        db, tenant_a.id, test_resume.id,
+        {"position_id": test_position.id, "preserve_workflow_state": False},
+    )
+
+    db.refresh(test_resume)
+    assert test_resume.match_score == score
+    assert test_resume.status == expected_status
+    assert test_resume.screening_result == expected_result
+
+
+def test_reparse_keeps_manual_override_and_assigned_review(
+    db, tenant_a, test_position, test_resume, test_interviewer, monkeypatch,
+):
+    test_resume.status = ResumeStatus.AUTO_REJECTED_PENDING_REVIEW
+    db.commit()
+    resume_service.override_rejection(db, test_resume.id, test_interviewer.id)
+    background_tasks = BackgroundTasks()
+    resume_service.reparse_resume(db, test_resume.id, background_tasks)
+    assert background_tasks.tasks[0].args[4] is True
+
+    monkeypatch.setattr(resume_service, "extract_document_text", lambda _path: "Candidate resume")
+    monkeypatch.setattr(
+        resume_service,
+        "analyze_resume",
+        lambda *_args, **_kwargs: {
+            "candidate_name": "Candidate",
+            "match_score": 10,
+            "screening_result": "rejected",
+            "ai_review": "AI assessment",
+            "other_position_matches": [],
+        },
+    )
+    resume_service._process_resume_task(
+        db, tenant_a.id, test_resume.id,
+        {"position_id": test_position.id, "preserve_workflow_state": True},
+    )
+    db.refresh(test_resume)
+    assert test_resume.status == ResumeStatus.PENDING_REVIEW
+    assert test_resume.manual_screening_decision is True
+
+    # An assignment made while parsing is also enough to protect the workflow.
+    test_resume.manual_screening_decision = False
+    review = DepartmentReview(
+        tenant_id=tenant_a.id,
+        resume_id=test_resume.id,
+        reviewer_id=test_interviewer.id,
+        reviewed_position_id=test_position.id,
+    )
+    db.add(review)
+    db.commit()
+    assert resume_service._can_refresh_ai_screening(db, test_resume) is False

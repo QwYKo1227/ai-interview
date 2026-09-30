@@ -5,7 +5,7 @@ import request from '../../utils/request';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import dayjs from 'dayjs';
-import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined, LinkOutlined, MailOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FilePdfOutlined, FileWordOutlined, ArrowLeftOutlined, CloseCircleOutlined, EditOutlined, SaveOutlined, ReloadOutlined, UserOutlined, CheckCircleOutlined, TeamOutlined, SolutionOutlined, ClockCircleOutlined, LinkOutlined, MailOutlined, DeleteOutlined } from '@ant-design/icons';
 import RejectReasonSelector, { REJECT_REASONS } from '../../components/RejectReasonSelector';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
@@ -647,6 +647,27 @@ const ResumeDetail: React.FC = () => {
     }
   };
 
+  const handleDeleteReviewer = (review: any) => {
+    Modal.confirm({
+      title: '删除部门评审人',
+      content: `确认删除 ${review.reviewer_name || '该评审人'}？删除后将撤销其评审权限，原评审链接失效，并根据剩余评审自动调整简历状态。`,
+      okText: '确认删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await request.delete(`/resumes/${id}/department-reviews/${review.id}`);
+          message.success('部门评审人已删除');
+          window.dispatchEvent(new Event('resume-pending-counts-updated'));
+          await fetchResume(id!, false);
+        } catch (error: any) {
+          message.error(error.response?.data?.detail || '删除评审人失败，请重试');
+          throw error;
+        }
+      },
+    });
+  };
+
   // HR决策
   const handleHRDecision = async () => {
     try {
@@ -913,6 +934,11 @@ const ResumeDetail: React.FC = () => {
                           {isManagementMode && !review.is_completed && (
                             <Button size="small" onClick={() => openChangeReviewer(review)}>
                               修改评审人
+                            </Button>
+                          )}
+                          {isManagementMode && resume.status === 'pending_dept_review' && !review.is_completed && (
+                            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDeleteReviewer(review)}>
+                              删除评审人
                             </Button>
                           )}
                           {isManagementMode && (

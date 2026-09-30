@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Modal } from 'antd'
+import { ConfigProvider, Modal } from 'antd'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ResumeDetail from './Detail'
@@ -8,7 +8,7 @@ import request from '../../utils/request'
 import resumeDetailCss from '../../index.css?inline'
 
 vi.mock('../../utils/request', () => ({
-  default: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
+  default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }))
 
 vi.mock('../../contexts/AuthContext', () => ({
@@ -162,8 +162,79 @@ describe('ResumeDetail laptop layout', () => {
     expect(screen.getByRole('button', { name: /提交评审/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /指派部门评审人/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /HR直接决策/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /删除评审人/ })).not.toBeInTheDocument()
     expect(request.get).not.toHaveBeenCalledWith('/auth/interviewers')
     expect(request.get).not.toHaveBeenCalledWith('/resumes/resume-1/department-reviews')
+  })
+
+  it('confirms removing a pending reviewer and refreshes the existing HR action', async () => {
+    const user = userEvent.setup()
+    // jsdom does not finish the CSS transition of static confirmation dialogs.
+    ConfigProvider.config({
+      holderRender: children => <ConfigProvider theme={{ token: { motion: false } }}>{children}</ConfigProvider>,
+    })
+    const review = {
+      id: 'review-1', reviewer_id: 'interviewer-1', reviewer_name: '王评审', is_completed: false,
+    }
+    let removed = false
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1') {
+        return { ...resume, status: removed ? 'pending_review' : 'pending_dept_review', department_reviews: removed ? [] : [review] }
+      }
+      if (url === '/resumes/resume-1/department-reviews') {
+        return { total_reviewers: removed ? 0 : 1, completed_reviewers: 0, recommend_ratio: 0, reviews: removed ? [] : [review] }
+      }
+      return []
+    })
+    vi.mocked(request.delete).mockImplementation(async () => { removed = true; return { status: 'pending_review' } })
+    const countsUpdated = vi.fn()
+    window.addEventListener('resume-pending-counts-updated', countsUpdated)
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resumes/resume-1']}>
+          <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+        </MemoryRouter>,
+      )
+      await screen.findByText('王评审')
+      expect(screen.queryByRole('button', { name: /HR直接决策/ })).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: /删除评审人/ }))
+      expect(await screen.findByText(/原评审链接失效/)).toBeInTheDocument()
+      expect(request.delete).not.toHaveBeenCalled()
+      await user.click(screen.getByRole('button', { name: /取\s*消/ }))
+      expect(request.delete).not.toHaveBeenCalled()
+      await waitFor(() => expect(screen.queryByText(/原评审链接失效/)).not.toBeInTheDocument())
+      await user.click(screen.getByRole('button', { name: /删除评审人/ }))
+      await user.click(screen.getByRole('button', { name: /确认删除/ }))
+      await waitFor(() => expect(request.delete).toHaveBeenCalledWith('/resumes/resume-1/department-reviews/review-1'))
+      expect(await screen.findByRole('button', { name: /HR直接决策/ })).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByText('王评审')).not.toBeInTheDocument())
+      expect(countsUpdated).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('resume-pending-counts-updated', countsUpdated)
+      ConfigProvider.config({ holderRender: undefined })
+    }
+  }, 15000)
+
+  it.each([
+    ['pending_dept_review', true],
+    ['pending_hr_decision', false],
+    ['pending_interview', false],
+  ])('does not offer reviewer deletion for status %s with completed=%s', async (status, completed) => {
+    const review = { id: 'review-1', reviewer_id: 'interviewer-1', reviewer_name: '王评审', is_completed: completed }
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/resumes/resume-1') return { ...resume, status, department_reviews: [review] }
+      if (url === '/resumes/resume-1/department-reviews') {
+        return { total_reviewers: 1, completed_reviewers: completed ? 1 : 0, recommend_ratio: 0, reviews: [review] }
+      }
+      return []
+    })
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByText('王评审')
+    expect(screen.queryByRole('button', { name: /删除评审人/ })).not.toBeInTheDocument()
   })
 
   it('saves one trimmed HR review and preloads it in the decision dialog', async () => {

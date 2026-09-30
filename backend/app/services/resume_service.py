@@ -25,14 +25,14 @@ import PyPDF2
 import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import or_, and_, func, update
+from sqlalchemy import or_, and_, func, update, delete
 import json
 import logging
 import re
 from app.core.observability import background_task_context
 
 from app.config.tenant_session import get_tenant_id, tenant_session
-from app.services.public_token_service import get_or_issue_reusable_public_token
+from app.services.public_token_service import get_or_issue_reusable_public_token, revoke_public_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -1038,6 +1038,64 @@ def create_department_review(db: Session, resume_id: UUID, reviewer_id: UUID) ->
         db.commit()
 
     return review
+
+
+def delete_department_reviewer(
+    db: Session, resume_id: UUID, review_id: UUID,
+) -> Dict[str, str]:
+    """Remove an unfinished assignment and reconcile the screening state atomically."""
+    resume = (
+        db.query(Resume).filter(Resume.id == resume_id)
+        .populate_existing().with_for_update().first()
+    )
+    if resume is None:
+        raise HTTPException(status_code=404, detail="简历不存在")
+    if resume.status != ResumeStatus.PENDING_DEPT_REVIEW:
+        raise HTTPException(status_code=400, detail="仅待部门评审的简历可删除评审人")
+
+    review = db.query(DepartmentReview).filter(
+        DepartmentReview.id == review_id,
+        DepartmentReview.resume_id == resume_id,
+        DepartmentReview.tenant_id == resume.tenant_id,
+    ).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="评审记录不存在")
+    if review.is_completed:
+        raise HTTPException(status_code=400, detail="已完成的评审不可删除评审人")
+
+    try:
+        # Keep a concurrently completed review even if it was pending when loaded.
+        deleted = db.execute(
+            delete(DepartmentReview).where(
+                DepartmentReview.id == review_id,
+                DepartmentReview.resume_id == resume_id,
+                DepartmentReview.tenant_id == resume.tenant_id,
+                DepartmentReview.is_completed.is_(False),
+            ).execution_options(synchronize_session="fetch")
+        )
+        if deleted.rowcount != 1:
+            raise HTTPException(status_code=409, detail="评审记录已变更，请刷新后重试")
+        revoke_public_tokens(db, resume.tenant_id, "department_review", review_id)
+
+        remaining = db.query(DepartmentReview).filter(
+            DepartmentReview.resume_id == resume_id,
+            DepartmentReview.tenant_id == resume.tenant_id,
+        ).all()
+        if not remaining:
+            resume.status = ResumeStatus.PENDING_REVIEW
+        elif all(record.is_completed for record in remaining):
+            resume.status = ResumeStatus.PENDING_HR_DECISION
+        else:
+            resume.status = ResumeStatus.PENDING_DEPT_REVIEW
+        new_status = resume.status
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    if new_status == ResumeStatus.PENDING_HR_DECISION:
+        _send_hr_review_notification(db, resume, remaining)
+    return {"message": "部门评审人已删除", "status": new_status.value}
 
 
 def reassign_department_reviewer(

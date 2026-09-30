@@ -17,7 +17,7 @@ from app.services.resume_service import (
     batch_upload_resumes, reparse_resume,
     check_duplicate_resume, create_department_review, get_department_reviews,
     get_assigned_department_reviews,
-    complete_department_review, reassign_department_reviewer,
+    complete_department_review, reassign_department_reviewer, delete_department_reviewer,
     reissue_department_review_link, aggregate_department_reviews, submit_hr_decision,
     confirm_rejection, override_rejection, get_duplicate_resumes,
     get_resume_with_reviews, transfer_resume_position
@@ -536,6 +536,17 @@ def complete_department_review_route(
         current_user.id,
         review_data,
     )
+
+
+@router.delete("/{resume_id}/department-reviews/{review_id}")
+def delete_department_reviewer_route(
+    resume_id: UUID,
+    review_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
+):
+    require_resume_access(db, resume_id, current_user, manage=True)
+    return delete_department_reviewer(db, resume_id, review_id)
 
 
 @router.put(

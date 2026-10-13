@@ -7,7 +7,7 @@ from app.models.models import (
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import statistics
-from app.services.recruitment_access import is_admin
+from app.services.recruitment_access import is_admin, scope_resume_query
 from app.services.interview_lifecycle_service import get_my_pending_human_review_count
 
 
@@ -113,12 +113,7 @@ def _position_query(db: Session, current_user: User | None, *entities):
 
 
 def _resume_query(db: Session, current_user: User | None, *entities):
-    query = db.query(*(entities or (Resume,)))
-    if current_user is not None and not is_admin(current_user):
-        query = query.join(Position, Resume.position_id == Position.id).filter(
-            Position.hiring_manager_id == current_user.id
-        )
-    return query
+    return scope_resume_query(db.query(*(entities or (Resume,))), current_user)
 
 
 def _interview_query(db: Session, current_user: User | None, *entities):

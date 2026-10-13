@@ -54,7 +54,7 @@ DEPARTMENT_REVIEW_EMAIL_COOLDOWN = timedelta(hours=8)
 @router.get("", response_model=List[ResumeResponse])
 def get_resumes_route(
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     candidate_name: str = None,
     status: str = None,
     position_id: Optional[UUID] = None,

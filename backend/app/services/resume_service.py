@@ -33,6 +33,7 @@ from app.core.observability import background_task_context
 
 from app.config.tenant_session import get_tenant_id, tenant_session
 from app.services.public_token_service import get_or_issue_reusable_public_token, revoke_public_tokens
+from app.services.recruitment_access import scope_resume_query
 
 logger = logging.getLogger(__name__)
 
@@ -684,28 +685,16 @@ def _annotate_duplicate_resume_counts(
 def get_resumes(
     db: Session,
     skip: int = 0,
-    limit: int = 100,
+    limit: int | None = None,
     candidate_name: str = None,
     status: str = None,
     position_id: UUID = None,
     reviewer_id: UUID = None,
     current_user: User | None = None,
 ):
-    query = db.query(Resume).options(joinedload(Resume.position))
-
-    if current_user is not None and current_user.role != UserRole.ADMIN:
-        access_filters = [
-            Resume.department_reviews.any(
-                DepartmentReview.reviewer_id == current_user.id
-            )
-        ]
-        if current_user.role == UserRole.HR:
-            access_filters.append(
-                Resume.position.has(Position.hiring_manager_id == current_user.id)
-            )
-        query = query.filter(
-            or_(*access_filters)
-        )
+    query = scope_resume_query(
+        db.query(Resume).options(joinedload(Resume.position)), current_user,
+    )
 
     if candidate_name:
         query = query.filter(Resume.candidate_name.ilike(f"%{candidate_name}%"))
@@ -728,7 +717,10 @@ def get_resumes(
 
     query = query.order_by(Resume.created_at.desc())
 
-    resumes = query.offset(skip).limit(limit).all()
+    query = query.offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    resumes = query.all()
     return _annotate_duplicate_resume_counts(db, resumes)
 
 def get_resume(db: Session, resume_id: UUID):

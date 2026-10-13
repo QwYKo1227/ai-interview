@@ -2,7 +2,7 @@
 
 from fastapi import HTTPException, status
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from app.models.models import (
     DepartmentReview,
@@ -25,6 +25,24 @@ def is_admin(user: User) -> bool:
 
 def is_recruiter(user: User) -> bool:
     return role_value(user) == UserRole.HR.value
+
+
+def scope_resume_query(query: Query, user: User | None) -> Query:
+    """Use the same resume visibility for lists and dashboard aggregates.
+
+    EXISTS predicates keep each resume unique even when ownership and several
+    review assignments overlap. Tenant isolation remains on the scoped session.
+    """
+    if user is None or is_admin(user):
+        return query
+    access_filters = [
+        Resume.department_reviews.any(DepartmentReview.reviewer_id == user.id)
+    ]
+    if is_recruiter(user):
+        access_filters.append(
+            Resume.position.has(Position.hiring_manager_id == user.id)
+        )
+    return query.filter(or_(*access_filters))
 
 
 def owns_position(position: Position | None, user: User) -> bool:

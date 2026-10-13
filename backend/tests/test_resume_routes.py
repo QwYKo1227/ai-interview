@@ -7,6 +7,41 @@ from sqlalchemy.orm import Session
 from app.models.models import Position, Resume, ResumeStatus
 
 
+def test_resume_list_has_no_implicit_limit_but_honors_explicit_limit(
+    client: TestClient,
+    admin_auth_headers: dict,
+    db: Session,
+    test_resume: Resume,
+    test_position: Position,
+):
+    extra_resumes = [
+        Resume(
+            id=uuid4(),
+            tenant_id=test_position.tenant_id,
+            candidate_name=f"Candidate {index}",
+            position_id=test_position.id,
+            file_path=f"/uploads/candidate-{index}.pdf",
+            status=ResumeStatus.PENDING_SCREENING,
+        )
+        for index in range(105)
+    ]
+    db.add_all(extra_resumes)
+    db.commit()
+
+    full_response = client.get("/api/resumes", headers=admin_auth_headers)
+    limited_response = client.get(
+        "/api/resumes", params={"limit": 10}, headers=admin_auth_headers
+    )
+
+    assert full_response.status_code == status.HTTP_200_OK
+    assert len(full_response.json()) == 106
+    assert {item["id"] for item in full_response.json()} == {
+        str(test_resume.id), *(str(resume.id) for resume in extra_resumes)
+    }
+    assert limited_response.status_code == status.HTTP_200_OK
+    assert len(limited_response.json()) == 10
+
+
 def test_departed_status_can_only_be_set_through_offer_departure(
     client: TestClient,
     auth_headers: dict,

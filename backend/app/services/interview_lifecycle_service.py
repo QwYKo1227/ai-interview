@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
 import unicodedata
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from uuid import UUID, uuid4
@@ -42,6 +44,7 @@ from app.services.audio_service import (
     transcribe_audio,
 )
 from app.services.ai_service import generate_text
+from app.services.interview_analysis_lock import analysis_lock
 from app.utils.prompt_manager import prompt_manager
 from app.utils.file_storage import (
     MAX_UPLOAD_SIZE,
@@ -54,6 +57,7 @@ from app.utils.file_storage import (
 )
 
 
+logger = logging.getLogger(__name__)
 RECORDING_RESERVATION_SECONDS = 60
 RECORDING_DISCONNECT_SECONDS = 30
 RECORDING_RETENTION_DAYS = 30
@@ -878,7 +882,10 @@ def process_asr_job(tenant_id: UUID, interview_id: UUID) -> None:
         if (
             interview is None
             or interview.lifecycle_state != "ended"
-            or not (interview.audio_records or {}).get("full_interview")
+            or not (
+                (interview.audio_records or {}).get("full_interview")
+                or has_saved_analysis_transcript(interview)
+            )
         ):
             return
 
@@ -889,7 +896,12 @@ def process_asr_job(tenant_id: UUID, interview_id: UUID) -> None:
             _delete_remote_asr_job(interview, config)
             db.commit()
 
-        if use_legacy_provider:
+        if has_saved_analysis_transcript(interview):
+            # An import/correction is authoritative even if an older ASR job
+            # is still processing. Do not replace it with that job's output.
+            should_analyze = interview.ai_analysis_status in {"pending", "transcribing", "analyzing"}
+            use_legacy_provider = False
+        elif use_legacy_provider:
             pass
         elif interview.asr_job_status == "completed":
             should_analyze = interview.ai_analysis_status in {"pending", "transcribing", "analyzing"}
@@ -980,11 +992,52 @@ def process_asr_job(tenant_id: UUID, interview_id: UUID) -> None:
         analyze_sealed_recording(tenant_id, interview_id)
 
 
+def has_saved_analysis_transcript(interview: Interview) -> bool:
+    transcripts = interview.transcripts or {}
+    corrected = transcripts.get("corrected_full_interview_data")
+    original = transcripts.get("full_interview_data")
+    return bool(
+        (isinstance(corrected, dict) and corrected.get("segments"))
+        or (isinstance(original, dict) and original.get("source") == "imported" and original.get("segments"))
+    )
+
+
+def _analysis_input_signature(interview: Interview) -> str:
+    transcripts = interview.transcripts or {}
+    value = {
+        "recording": (interview.audio_records or {}).get("full_interview"),
+        "original": transcripts.get("full_interview_data"),
+        "corrected": transcripts.get("corrected_full_interview_data"),
+    }
+    return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _current_analysis(db: Session, interview_id: UUID, started_at: datetime, signature: str) -> Interview | None:
+    """Lock and refresh before writing; a new request invalidates old work."""
+    interview = (
+        db.query(Interview).filter(Interview.id == interview_id)
+        .populate_existing().with_for_update().first()
+    )
+    if (
+        interview is None
+        or interview.ai_analysis_status not in {"transcribing", "analyzing"}
+        or interview.ai_analysis_started_at is None
+        or as_utc(interview.ai_analysis_started_at) != as_utc(started_at)
+        or _analysis_input_signature(interview) != signature
+    ):
+        logger.info("Interview analysis superseded; discarded old work")
+        return None
+    return interview
+
+
 @background_task_context
 def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected: bool = False) -> None:
-    with tenant_session(tenant_id) as db:
-        interview = db.query(Interview).filter(Interview.id == interview_id).first()
-        if not interview:
+    with tenant_session(tenant_id) as db, analysis_lock(db.get_bind(), tenant_id, interview_id) as acquired:
+        if not acquired:
+            logger.info("Interview analysis already running; skipped duplicate task")
+            return
+        interview = db.query(Interview).filter(Interview.id == interview_id).with_for_update().first()
+        if not interview or interview.ai_analysis_status not in {"pending", "transcribing", "analyzing"}:
             return
         transcripts = interview.transcripts or {}
         corrected_data = transcripts.get("corrected_full_interview_data")
@@ -994,7 +1047,10 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
             if isinstance(completed_data, dict) and completed_data.get("source") == "imported"
             else None
         )
-        saved_transcript_data = corrected_data if use_corrected and corrected_data else imported_data
+        # Recovery must use the same latest evidence as the request callback.
+        # Retain use_corrected in the public signature for existing callers.
+        use_corrected = bool(corrected_data)
+        saved_transcript_data = corrected_data if use_corrected else imported_data
 
         stored = None
         if saved_transcript_data is None:
@@ -1013,9 +1069,12 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
                 return
 
         interview.ai_analysis_status = "analyzing" if saved_transcript_data is not None else "transcribing"
-        interview.ai_analysis_started_at = utcnow()
+        started_at = utcnow()
+        signature = _analysis_input_signature(interview)
+        interview.ai_analysis_started_at = started_at
         interview.ai_analysis_error = None
         db.commit()
+        logger.info("Interview analysis started (%s)", started_at.isoformat())
         try:
             if saved_transcript_data is not None:
                 transcript_data = saved_transcript_data
@@ -1033,6 +1092,9 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
             ):
                 raise AnalysisContractError("录音转写缺少带时间戳的有效分段")
             transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
+            interview = _current_analysis(db, interview_id, started_at, signature)
+            if interview is None:
+                return
             transcript_values = dict(interview.transcripts or {})
             if use_corrected and corrected_data:
                 transcript_values["analysis_transcript_data"] = transcript_data
@@ -1041,6 +1103,7 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
                 transcript_values["full_interview_data"] = transcript_data
             interview.transcripts = transcript_values
             interview.ai_analysis_status = "analyzing"
+            signature = _analysis_input_signature(interview)
             db.commit()
 
             position = db.query(Position).filter(Position.id == interview.position_id).first()
@@ -1086,6 +1149,9 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
                 if imported_data is not None
                 else "recording_only"
             )
+            interview = _current_analysis(db, interview_id, started_at, signature)
+            if interview is None:
+                return
             interview.ai_analysis = analysis
             interview.ai_analysis_status = "completed"
             interview.ai_analysis_error = None
@@ -1093,9 +1159,13 @@ def analyze_sealed_recording(tenant_id: UUID, interview_id: UUID, use_corrected:
             interview.ai_analysis_completed_at = utcnow()
             interview.status = InterviewStatus.COMPLETED
             db.commit()
+            logger.info(
+                "Interview analysis completed (version=%s, score=%s, source=%s, started_at=%s)",
+                interview.ai_analysis_version, analysis["weighted_score"], analysis["source"], started_at.isoformat(),
+            )
         except Exception as error:
             db.rollback()
-            interview = db.query(Interview).filter(Interview.id == interview_id).first()
+            interview = _current_analysis(db, interview_id, started_at, signature)
             if interview:
                 interview.ai_analysis_status = "failed"
                 interview.ai_analysis_error = (

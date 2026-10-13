@@ -16,6 +16,7 @@ from app.models.models import Interview
 from app.models.tenant_models import Tenant, TenantStatus
 from app.services.interview_lifecycle_service import (
     as_utc,
+    has_saved_analysis_transcript,
     process_asr_job,
     seal_recording,
     utcnow,
@@ -126,22 +127,28 @@ def resume_asr_jobs_for_tenant(tenant_id: UUID) -> int:
         candidates = [
             interview.id
             for interview in interviews
-            if (interview.audio_records or {}).get("full_interview")
+            if ((interview.audio_records or {}).get("full_interview") or has_saved_analysis_transcript(interview))
             and (
                 interview.asr_job_delete_pending
-                or interview.asr_job_status in {"pending", "submitting", "queued", "processing", "retry_wait"}
                 or (
-                    interview.asr_job_status == "completed"
+                    not has_saved_analysis_transcript(interview)
+                    and interview.asr_job_status in {"pending", "submitting", "queued", "processing", "retry_wait"}
+                )
+                or (
+                    (interview.asr_job_status == "completed" or has_saved_analysis_transcript(interview))
                     and interview.ai_analysis_status in {"pending", "transcribing", "analyzing"}
                 )
             )
             and (
                 interview.asr_job_delete_pending
+                or has_saved_analysis_transcript(interview)
                 or not interview.asr_job_next_poll_at
                 or as_utc(interview.asr_job_next_poll_at) <= utcnow()
             )
         ]
     for interview_id in candidates:
+        # The analysis entry point takes a nonblocking worker lock. An active
+        # scorer is skipped; a disconnected worker's task can be recovered.
         process_asr_job(tenant_id, interview_id)
         resumed += 1
     return resumed

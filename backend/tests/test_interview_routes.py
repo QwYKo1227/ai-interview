@@ -7,7 +7,7 @@ POST /interviews/{id}/confirm, GET /interviews/{id}/submission-status 等
 
 import pytest
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from fastapi import status
@@ -299,6 +299,67 @@ class TestGetInterviewsRoute:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert len(data) >= 1
+
+    def test_get_interviews_does_not_implicitly_truncate_any_role(
+        self,
+        client: TestClient,
+        db: Session,
+        auth_headers: dict,
+        admin_auth_headers: dict,
+        interviewer_auth_headers: dict,
+        test_interview: Interview,
+        test_interviewer: User,
+    ):
+        extra_interviews = [
+            Interview(
+                id=uuid4(),
+                tenant_id=test_interview.tenant_id,
+                resume_id=test_interview.resume_id,
+                position_id=test_interview.position_id,
+                interviewer="面试官",
+                interview_time=datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(hours=index),
+                status=InterviewStatus.SCHEDULED,
+                result=InterviewResult.PENDING,
+                panel_members=[str(test_interviewer.id)],
+            )
+            for index in range(105)
+        ]
+        db.add_all(extra_interviews)
+        db.commit()
+        expected_ids = {str(test_interview.id)} | {
+            str(interview.id) for interview in extra_interviews
+        }
+
+        for headers in (
+            admin_auth_headers,
+            auth_headers,
+            interviewer_auth_headers,
+        ):
+            response = client.get("/api/interviews", headers=headers)
+
+            assert response.status_code == status.HTTP_200_OK
+            payload = response.json()
+            assert len(payload) == 106
+            assert {item["id"] for item in payload} == expected_ids
+            assert payload[0]["id"] == str(extra_interviews[-1].id)
+
+            page = client.get(
+                "/api/interviews",
+                params={"skip": 100, "limit": 10},
+                headers=headers,
+            )
+            assert page.status_code == status.HTTP_200_OK
+            assert page.json() == payload[100:110]
+            calendar = client.get(
+                "/api/interviews",
+                params={"start": "2025-01-01T00:00:00Z", "end": "2025-02-01T00:00:00Z"},
+                headers=headers,
+            )
+            assert calendar.status_code == status.HTTP_200_OK
+            assert {item["id"] for item in calendar.json()} == {
+                str(item.id) for item in extra_interviews
+            }
 
 
     def test_realtime_session_uses_ephemeral_token_and_hides_upstream_url(

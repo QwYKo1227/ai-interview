@@ -65,7 +65,7 @@ const OfferTemplates: React.FC = () => {
 
   const fetchPositions = async () => {
     try {
-      const response = await request.get('/positions?page=1&page_size=100');
+      const response = await request.get('/positions');
       const positionsData = Array.isArray(response) ? response : (response.items || []);
       setPositions(positionsData);
     } catch (error) {

@@ -771,7 +771,7 @@ def create_interview_route(
 @router.get("", response_model=List[InterviewResponse])
 def get_interviews_route(
     skip: int = 0, 
-    limit: int = 100, 
+    limit: Optional[int] = Query(default=None, ge=1),
     status: str = None,
     range_start: Optional[datetime] = Query(default=None, alias="start"),
     range_end: Optional[datetime] = Query(default=None, alias="end"),
@@ -791,13 +791,13 @@ def get_interviews_route(
             db,
             current_user.id,
             skip=0,
-            limit=10000,
+            limit=None,
             range_start=range_start,
             range_end=range_end,
         )
         if status:
             interviews = [i for i in interviews if str(i.status) == status or getattr(i.status, "value", None) == status]
-        return interviews[skip: skip + limit]
+        return interviews[skip:] if limit is None else interviews[skip: skip + limit]
         
     return get_interviews(
         db,

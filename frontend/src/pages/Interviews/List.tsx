@@ -260,7 +260,7 @@ const InterviewsList: React.FC = () => {
     setCalendarLoading(true);
     try {
       const res = await request.get('/interviews', {
-        params: { start: start.toISOString(), end: end.toISOString(), limit: 10000 },
+        params: { start: start.toISOString(), end: end.toISOString() },
       });
       setCalendarData(res || []);
     } catch {

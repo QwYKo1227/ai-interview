@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.config.database import get_unscoped_db
@@ -25,7 +25,7 @@ from app.core.host_policy import resolve_request_origin
 from app.core.password_policy import validate_password_policy
 from sqlalchemy.exc import IntegrityError
 from datetime import timedelta
-from typing import List
+from typing import List, Optional
 
 
 LOGIN_ERROR = "公司、账号或密码错误"
@@ -254,11 +254,14 @@ def change_password(
 @router.get("/users", response_model=List[UserResponse])
 def get_users(
     skip: int = 0, 
-    limit: int = 100, 
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_tenant_db),
     current_user: UserResponse = Depends(check_roles([UserRole.ADMIN]))
 ):
-    return db.query(User).offset(skip).limit(limit).all()
+    query = db.query(User).offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
 
 def _is_email_unique_conflict(error: IntegrityError) -> bool:
     original = error.orig

@@ -78,7 +78,7 @@ POSITION_PROGRESS_STATUS_GROUPS = {
 def get_positions(
     db: Session,
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = None,
     status: str = None,
     title: str = None,
     hiring_manager_id: Optional[UUID] = None,
@@ -108,7 +108,10 @@ def get_positions(
         query = query.filter(Position.priority == priority)
     if category:
         query = query.filter(Position.category == category)
-    return query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
+    query = query.order_by(Position.created_at.desc()).offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
 
 
 def get_hiring_managers(db: Session) -> List[User]:
@@ -139,7 +142,7 @@ def get_position_departments(db: Session, current_user: Optional[User] = None) -
 def get_positions_with_stats(
     db: Session,
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = None,
     status: str = None,
     title: str = None,
     hiring_manager_id: Optional[UUID] = None,
@@ -170,7 +173,10 @@ def get_positions_with_stats(
     if category:
         query = query.filter(Position.category == category)
     
-    positions = query.order_by(Position.created_at.desc()).offset(skip).limit(limit).all()
+    query = query.order_by(Position.created_at.desc()).offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    positions = query.all()
     
     result = []
     for pos in positions:

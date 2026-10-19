@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.workflow import (
@@ -27,7 +27,7 @@ router = APIRouter(
 @router.get("", response_model=List[WorkflowResponse])
 def list_workflows(
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     status: Optional[WorkflowStatus] = None,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
@@ -134,7 +134,7 @@ def execute_workflow(
 def list_executions(
     workflow_id: UUID,
     skip: int = 0,
-    limit: int = 50,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):

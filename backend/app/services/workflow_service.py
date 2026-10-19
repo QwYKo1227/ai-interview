@@ -215,7 +215,7 @@ class NodeExecutor:
         status = config.get("status")
         position_id = config.get("position_id")
         min_match_score = config.get("min_match_score", 0)
-        limit = config.get("limit", 100)
+        limit = config.get("limit")
         
         query = self.db.query(Resume).options(joinedload(Resume.position))
         
@@ -226,7 +226,9 @@ class NodeExecutor:
         if min_match_score:
             query = query.filter(Resume.match_score >= min_match_score)
         
-        resumes = query.limit(limit).all()
+        if limit is not None:
+            query = query.limit(limit)
+        resumes = query.all()
         
         resume_list = [
             {
@@ -496,11 +498,14 @@ class WorkflowEngine:
     def get_workflow(self, workflow_id: UUID) -> Optional[Workflow]:
         return self.db.query(Workflow).filter(Workflow.id == workflow_id).first()
     
-    def get_workflows(self, skip: int = 0, limit: int = 100, status: WorkflowStatus = None) -> List[Workflow]:
+    def get_workflows(self, skip: int = 0, limit: int | None = None, status: WorkflowStatus = None) -> List[Workflow]:
         query = self.db.query(Workflow)
         if status:
             query = query.filter(Workflow.status == status)
-        return query.offset(skip).limit(limit).all()
+        query = query.offset(skip)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
     
     def update_workflow(self, workflow_id: UUID, data: dict) -> Optional[Workflow]:
         workflow = self.get_workflow(workflow_id)
@@ -663,11 +668,14 @@ class WorkflowEngine:
             joinedload(WorkflowExecution.node_executions)
         ).filter(WorkflowExecution.id == execution_id).first()
     
-    def get_executions(self, workflow_id: UUID = None, skip: int = 0, limit: int = 50) -> List[WorkflowExecution]:
+    def get_executions(self, workflow_id: UUID = None, skip: int = 0, limit: int | None = None) -> List[WorkflowExecution]:
         query = self.db.query(WorkflowExecution).order_by(WorkflowExecution.created_at.desc())
         if workflow_id:
             query = query.filter(WorkflowExecution.workflow_id == workflow_id)
-        return query.offset(skip).limit(limit).all()
+        query = query.offset(skip)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
 
 def create_builtin_workflows(db: Session):

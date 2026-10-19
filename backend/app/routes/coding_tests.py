@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Request
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from app.config.database import get_unscoped_db
@@ -64,7 +64,7 @@ def create_coding_test_route(
 @router.get("", response_model=List[CodingTestResponse])
 def list_coding_tests_route(
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):
@@ -195,7 +195,7 @@ def reissue_coding_test_public_token_route(
 def list_coding_test_submissions_route(
     coding_test_id: UUID,
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR])),
 ):

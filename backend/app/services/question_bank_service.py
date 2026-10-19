@@ -10,7 +10,7 @@ from app.utils.file_storage import (
 )
 import json
 
-from typing import List
+from typing import List, Optional
 from app.services.tenant_reference_service import require_tenant_entity
 
 def create_question_bank(
@@ -52,8 +52,11 @@ def create_question_bank(
     db.refresh(db_question_bank)
     return db_question_bank
 
-def get_question_banks(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(QuestionBank).offset(skip).limit(limit).all()
+def get_question_banks(db: Session, skip: int = 0, limit: Optional[int] = None):
+    query = db.query(QuestionBank).offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
 
 def get_question_bank(db: Session, question_bank_id: UUID):
     return db.query(QuestionBank).filter(QuestionBank.id == question_bank_id).first()

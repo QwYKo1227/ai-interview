@@ -326,6 +326,43 @@ def auth_header(user, *, tenant_id=None, role=None):
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_user_list_has_no_implicit_limit_but_honors_explicit_limit(
+    client, db, tenant_a
+):
+    admin = create_user(
+        db,
+        tenant_a.id,
+        "list-admin@example.com",
+        "Password123",
+        role=UserRole.ADMIN,
+    )
+    users = [
+        User(
+            id=uuid4(),
+            tenant_id=tenant_a.id,
+            email=f"list-user-{index}@example.com",
+            hashed_password="not-used",
+            role=UserRole.INTERVIEWER,
+            is_active=True,
+        )
+        for index in range(105)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    full_response = client.get("/api/auth/users", headers=auth_header(admin))
+    limited_response = client.get(
+        "/api/auth/users",
+        params={"limit": 10},
+        headers=auth_header(admin),
+    )
+
+    assert full_response.status_code == 200
+    assert len(full_response.json()) == 106
+    assert limited_response.status_code == 200
+    assert len(limited_response.json()) == 10
+
+
 def raw_token(**overrides):
     claims = {
         "sub": str(uuid4()),

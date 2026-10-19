@@ -227,7 +227,7 @@ const OffersList: React.FC = () => {
 
   const fetchPositions = async () => {
     try {
-      const response = await request.get('/positions?page=1&page_size=100');
+      const response = await request.get('/positions');
       const positionsData = Array.isArray(response) ? response : (response.items || []);
       setPositions(positionsData);
     } catch (error) {
@@ -237,7 +237,7 @@ const OffersList: React.FC = () => {
 
   const fetchPassedResumes = async () => {
     try {
-      const response = await request.get('/resumes?limit=500');
+      const response = await request.get('/resumes');
       const eligibleStatuses = ['interview_passed', 'offer_pending', 'completed'];
       const eligibleResumes = (response || []).filter((r: any) => 
         eligibleStatuses.includes(r.status)

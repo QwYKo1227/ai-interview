@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import request from '../../utils/request';
@@ -56,6 +56,31 @@ describe('OffersList editing', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('includes an eligible candidate after the first 500 resumes and fills their position', async () => {
+    const resumes = Array.from({ length: 500 }, (_, index) => ({
+      id: `pending-${index}`, status: 'pending_screening', candidate_name: `待筛选${index}`,
+    }));
+    const candidate = {
+      id: 'passed-501', status: 'interview_passed', candidate_name: '完整列表候选人',
+      email: 'passed@example.com', position_id: 'position-101',
+    };
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url.startsWith('/offers?')) return { items: [], total: 0 };
+      if (url === '/positions') return [{ id: 'position-101', title: '第101个岗位', department: '研发部' }];
+      if (url === '/resumes') return [...resumes, candidate];
+      if (url.startsWith('/resumes?')) return resumes;
+      return { items: [] };
+    });
+
+    render(<OffersList />);
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith('/resumes'));
+    fireEvent.click(screen.getByRole('button', { name: /新建Offer/ }));
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '选择候选人（通过面试）' }));
+    fireEvent.click(await screen.findByText(/完整列表候选人 - 未知岗位/));
+    expect(screen.getByRole('textbox', { name: '候选人姓名' })).toHaveValue('完整列表候选人');
+    expect(screen.getByRole('textbox', { name: '岗位名称' })).toHaveValue('第101个岗位');
   });
 
   it('shows an edit action for an accepted Offer', async () => {

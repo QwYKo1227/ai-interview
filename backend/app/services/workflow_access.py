@@ -63,7 +63,7 @@ def list_accessible_executions(
     workflow_id: UUID,
     current_user: User,
     skip: int,
-    limit: int,
+    limit: int | None,
     batch_size: int = 200,
 ):
     query = (
@@ -73,12 +73,15 @@ def list_accessible_executions(
         .order_by(WorkflowExecution.created_at.desc())
     )
     if is_admin(current_user):
-        return query.offset(skip).limit(limit).all()
+        query = query.offset(skip)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
     visible_seen = 0
     result = []
     offset = 0
-    while len(result) < limit:
+    while limit is None or len(result) < limit:
         batch = query.offset(offset).limit(batch_size).all()
         if not batch:
             break
@@ -90,6 +93,6 @@ def list_accessible_executions(
                 visible_seen += 1
                 continue
             result.append(execution)
-            if len(result) == limit:
+            if limit is not None and len(result) == limit:
                 break
     return result

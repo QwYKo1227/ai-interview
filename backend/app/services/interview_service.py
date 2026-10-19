@@ -651,7 +651,7 @@ def _matches_date_range(interview: Interview, range_start: datetime | None, rang
 def get_interviews(
     db: Session,
     skip: int = 0,
-    limit: int = 100,
+    limit: int | None = None,
     status: str = None,
     range_start: datetime | None = None,
     range_end: datetime | None = None,
@@ -667,27 +667,30 @@ def get_interviews(
     if current_user is not None and current_user.role == UserRole.HR:
         if range_end:
             query = query.filter(Interview.interview_time < _normalize_dt_utc(range_end))
-        interviews = query.order_by(Interview.interview_time.asc()).all()
+        interviews = query.order_by(Interview.interview_time.desc()).all()
         visible = [
             item
             for item in interviews
             if can_access_interview(db, item, current_user)
             and _matches_date_range(item, range_start, range_end)
         ]
-        return visible[skip: skip + limit]
+        return visible[skip:] if limit is None else visible[skip: skip + limit]
     if range_start is None and range_end is None:
-        return query.order_by(Interview.interview_time.asc()).offset(skip).limit(limit).all()
+        query = query.order_by(Interview.interview_time.desc()).offset(skip)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
     if range_end:
         query = query.filter(Interview.interview_time < _normalize_dt_utc(range_end))
-    interviews = query.order_by(Interview.interview_time.asc()).all()
+    interviews = query.order_by(Interview.interview_time.desc()).all()
     filtered = [item for item in interviews if _matches_date_range(item, range_start, range_end)]
-    return filtered[skip: skip + limit]
+    return filtered[skip:] if limit is None else filtered[skip: skip + limit]
 
 def get_interviews_for_interviewer(
     db: Session,
     interviewer_id: UUID,
     skip: int = 0,
-    limit: int = 100,
+    limit: int | None = None,
     range_start: datetime | None = None,
     range_end: datetime | None = None,
 ):
@@ -703,7 +706,7 @@ def get_interviews_for_interviewer(
         joinedload(Interview.resume),
         joinedload(Interview.position),
         joinedload(Interview.panels),
-    ).order_by(Interview.interview_time.asc()).all()
+    ).order_by(Interview.interview_time.desc()).all()
     
     filtered = []
     str_id = str(interviewer_id)
@@ -713,7 +716,7 @@ def get_interviews_for_interviewer(
             filtered.append(interview)
             
     # Apply skip/limit
-    return filtered[skip: skip + limit]
+    return filtered[skip:] if limit is None else filtered[skip: skip + limit]
 
 
 def get_visible_interviewer_options(db: Session, current_user: User) -> List[User]:

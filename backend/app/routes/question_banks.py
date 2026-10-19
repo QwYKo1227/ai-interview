@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.core.tenant_dependencies import get_tenant_db
 from app.schemas.question_bank import QuestionBankResponse, QuestionCategory, QuestionDifficulty, QuestionBankCreate, QuestionBankUpdate
@@ -41,7 +41,7 @@ def create_question_bank_route(
 @router.get("", response_model=List[QuestionBankResponse])
 def get_question_banks_route(
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user)
 ):

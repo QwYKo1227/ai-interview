@@ -85,8 +85,11 @@ def create_coding_test(db: Session, coding_test: CodingTestCreate, creator_id: U
     return db_test
 
 
-def list_coding_tests(db: Session, skip: int = 0, limit: int = 100) -> List[CodingTest]:
-    return db.query(CodingTest).order_by(CodingTest.created_at.desc()).offset(skip).limit(limit).all()
+def list_coding_tests(db: Session, skip: int = 0, limit: int | None = None) -> List[CodingTest]:
+    query = db.query(CodingTest).order_by(CodingTest.created_at.desc()).offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
 
 
 def get_coding_test(db: Session, coding_test_id: UUID) -> Optional[CodingTest]:
@@ -390,15 +393,16 @@ def get_public_submission(db: Session, token: str, submission_id: UUID) -> Optio
     return db.query(CodingSubmission).filter(CodingSubmission.id == submission_id, CodingSubmission.coding_test_id == db_test.id).first()
 
 
-def list_coding_test_submissions(db: Session, coding_test_id: UUID, skip: int = 0, limit: int = 100) -> List[CodingSubmission]:
-    return (
+def list_coding_test_submissions(db: Session, coding_test_id: UUID, skip: int = 0, limit: int | None = None) -> List[CodingSubmission]:
+    query = (
         db.query(CodingSubmission)
         .filter(CodingSubmission.coding_test_id == coding_test_id)
         .order_by(CodingSubmission.created_at.desc())
         .offset(skip)
-        .limit(limit)
-        .all()
     )
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
 
 
 def get_coding_submission(db: Session, submission_id: UUID) -> Optional[CodingSubmission]:

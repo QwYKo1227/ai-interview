@@ -20,6 +20,37 @@ from app.models.models import (
 from app.services.position_service import get_position_events
 
 
+def test_position_list_has_no_implicit_limit_but_honors_explicit_limit(
+    client: TestClient,
+    auth_headers: dict,
+    db: Session,
+    test_user: User,
+):
+    positions = [
+        Position(
+            id=uuid4(),
+            tenant_id=test_user.tenant_id,
+            title=f"Position {index}",
+            description="Description",
+            status=PositionStatus.OPEN,
+            hiring_manager_id=test_user.id,
+        )
+        for index in range(105)
+    ]
+    db.add_all(positions)
+    db.commit()
+
+    full_response = client.get("/api/positions", headers=auth_headers)
+    limited_response = client.get(
+        "/api/positions", params={"limit": 10}, headers=auth_headers
+    )
+
+    assert full_response.status_code == status.HTTP_200_OK
+    assert len(full_response.json()) == 105
+    assert limited_response.status_code == status.HTTP_200_OK
+    assert len(limited_response.json()) == 10
+
+
 def create_manager(
     db: Session, email: str, full_name: str, tenant_id
 ) -> User:

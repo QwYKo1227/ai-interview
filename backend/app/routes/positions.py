@@ -24,7 +24,7 @@ from app.core.security import check_roles
 from app.services.public_token_service import resolve_public_tenant
 from app.services.recruitment_access import is_admin, require_position_access
 from app.core.proxy import resolve_request_host
-from typing import List, Literal
+from typing import List, Literal, Optional
 from uuid import UUID
 
 router = APIRouter(
@@ -45,7 +45,7 @@ def create_position_route(
 @router.get("", response_model=List[PositionWithStats])
 def get_positions_route(
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     status: str = None,
     title: str = None,
     hiring_manager_id: UUID = None,
@@ -99,7 +99,7 @@ def get_public_positions_route(
     request: Request,
     tenant_code: str = None,
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_unscoped_db),
 ):
     resolve_public_tenant(
@@ -272,7 +272,7 @@ def restore_position_route(
 public_router = APIRouter(prefix="/public", tags=["public-positions"])
 
 
-def _public_positions(db: Session, request: Request, tenant_code: str | None, skip: int, limit: int):
+def _public_positions(db: Session, request: Request, tenant_code: str | None, skip: int, limit: int | None):
     resolve_public_tenant(
         db, request_host=resolve_request_host(request), tenant_code=tenant_code
     )
@@ -283,7 +283,7 @@ def _public_positions(db: Session, request: Request, tenant_code: str | None, sk
 def get_domain_public_positions(
     request: Request,
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_unscoped_db),
 ):
     return _public_positions(db, request, None, skip, limit)
@@ -307,7 +307,7 @@ def get_tenant_public_positions(
     tenant_code: str,
     request: Request,
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = Query(default=None, ge=1),
     db: Session = Depends(get_unscoped_db),
 ):
     return _public_positions(db, request, tenant_code, skip, limit)

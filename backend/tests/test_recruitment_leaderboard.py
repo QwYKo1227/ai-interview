@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.schemas.recruitment_performance import PerformanceOverview, PersonScore
 from app.services.recruitment_leaderboard_service import build_leaderboard
+from app.services.recruitment_performance_service import sync_position_slots
 
 
 def make_person(
@@ -26,7 +28,11 @@ def make_person(
     )
 
 
-def test_hr_can_view_minimal_leaderboard(client, auth_headers, test_user, test_position):
+def test_hr_can_view_minimal_leaderboard(client, db, auth_headers, test_user, test_position):
+    # The requested historical quarter must contain the position and its HC.
+    test_position.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    sync_position_slots(db, test_position, assigned_at=test_position.created_at)
+    db.commit()
     response = client.get(
         "/api/recruitment-performance/leaderboard?period=2026-Q3",
         headers=auth_headers,

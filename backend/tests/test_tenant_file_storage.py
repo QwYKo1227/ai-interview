@@ -996,6 +996,9 @@ def test_full_audio_uses_tenant_asr_config(
     captured = {}
 
     def transcribe(_path, *, config=None):
+        captured["path"] = Path(_path)
+        assert tmp_path in captured["path"].parents
+        assert captured["path"].read_bytes() == b"audio"
         captured["config"] = config
         return {"text": "ok", "segments": []}
 
@@ -1017,4 +1020,8 @@ def test_full_audio_uses_tenant_asr_config(
         "model": "local-whisper",
         "api_key": None,
     }
+    stored = scoped.query(StoredFile).one()
+    assert captured["path"] == resolve_object_path(tmp_path, tenant_a.id, stored.object_key)
+    assert stored.resource_id == test_interview.id
+    assert captured["path"].read_bytes() == b"audio"
     scoped.close()

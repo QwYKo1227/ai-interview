@@ -1187,12 +1187,12 @@ def upload_audio_route(
     stored = None
     try:
         stored = save_upload_file(
-            file, tenant_id, "interview_audio",
+            file, tenant_id, "interview_audio", root=UPLOAD_ROOT,
             resource_type="interview", resource_id=interview_id,
         )
         db.add(stored)
         transcript_data = transcribe_audio(
-            str(stored_file_path(stored)),
+            str(stored_file_path(stored, root=UPLOAD_ROOT)),
             config=get_transcription_config(db),
         )
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)
@@ -1363,12 +1363,12 @@ def upload_full_interview_audio(
     stored = None
     try:
         stored = save_upload_file(
-            file, tenant_id, "interview_audio",
+            file, tenant_id, "interview_audio", root=UPLOAD_ROOT,
             resource_type="interview", resource_id=interview_id,
         )
         db.add(stored)
         transcript_data = transcribe_audio(
-            str(stored_file_path(stored)),
+            str(stored_file_path(stored, root=UPLOAD_ROOT)),
             config=get_transcription_config(db),
         )
         transcript_text = transcript_data.get("text", "")
@@ -1555,12 +1555,12 @@ def submit_direct_evaluation_with_audio(
     background_payload = None
     try:
         stored = save_upload_file(
-            file, tenant_id, "interview_audio",
+            file, tenant_id, "interview_audio", root=UPLOAD_ROOT,
             resource_type="interview", resource_id=interview_id,
         )
         db.add(stored)
         transcript_data = transcribe_audio(
-            str(stored_file_path(stored)),
+            str(stored_file_path(stored, root=UPLOAD_ROOT)),
             config=get_transcription_config(db),
         )
         transcript = transcript_data.get("text", "") if isinstance(transcript_data, dict) else str(transcript_data)

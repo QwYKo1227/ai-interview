@@ -485,10 +485,23 @@ def test_zero_credit_at_first_handoff_expires_the_opportunity(
     assert all(not person.handoff_credits for person in overview.people)
 
 
-def test_admin_can_publish_next_quarter_config(client, admin_auth_headers):
+@pytest.mark.parametrize("now", [
+    datetime(2026, 8, 17, tzinfo=timezone.utc),
+    datetime(2026, 11, 17, tzinfo=timezone.utc),
+])
+def test_admin_can_publish_next_quarter_config(client, admin_auth_headers, monkeypatch, now):
+    from app.services import recruitment_performance_service
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(recruitment_performance_service, "datetime", FixedDateTime)
+    current_quarter = (now.month - 1) // 3 + 1
     payload = {
-            "effective_year": 2026,
-            "effective_quarter": 4,
+            "effective_year": now.year + (current_quarter == 4),
+            "effective_quarter": current_quarter % 4 + 1,
             "target_days": {
                 "campus": 30,
                 "domestic_functional": 45,
@@ -524,10 +537,19 @@ def test_admin_can_publish_next_quarter_config(client, admin_auth_headers):
     assert response.status_code == 200
     assert response.json()["status"] == "published"
     assert response.json()["version"] == 1
+    assert response.json()["effective_year"] == payload["effective_year"]
+    assert response.json()["effective_quarter"] == payload["effective_quarter"]
 
     revised = client.put("/api/recruitment-performance/config", headers=admin_auth_headers, json=payload)
     assert revised.status_code == 200
     assert revised.json()["version"] == 2
+
+    current = client.put(
+        "/api/recruitment-performance/config",
+        headers=admin_auth_headers,
+        json={**payload, "effective_year": now.year, "effective_quarter": current_quarter},
+    )
+    assert current.status_code == 409
 
 
 def test_owner_can_confirm_actual_onboarding(

@@ -8,6 +8,8 @@ import { getMaximizedPdfPreviewUrl } from '../../utils/pdfPreview';
 import { useAuthenticatedFileUrl } from '../../hooks/useAuthenticatedFileUrl';
 import { canRecordFullInterview } from './recordingControls';
 import RealtimeTranscriptPanel from './RealtimeTranscriptPanel';
+import InterviewGuidance from './InterviewGuidance';
+import './Score.css';
 import { getInterviewStartTiming } from './interviewTiming';
 import {
   RealtimeTranscriptionClient,
@@ -70,6 +72,7 @@ const InterviewScore: React.FC = () => {
   const realtimePersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [liveNotes, setLiveNotes] = useState('');
+  const [notesExpanded, setNotesExpanded] = useState(false);
   const [savingNotes, setSavingNotes] = useState(false);
   const notesLoadedRef = useRef(false);
 
@@ -976,7 +979,7 @@ const InterviewScore: React.FC = () => {
   );
 
   const headerExtra = (
-      <Space>
+      <Space wrap>
          <Tooltip title="返回面试列表">
            <Button icon={<LeftOutlined />} onClick={returnToList} />
          </Tooltip>
@@ -1036,9 +1039,14 @@ const InterviewScore: React.FC = () => {
   );
 
   return (
-    <div style={{ height: isFullscreen ? '100vh' : 'calc(100vh - 100px)', display: 'flex', gap: '24px' }}>
+    <div className={`interview-workspace${isFullscreen ? ' is-fullscreen' : ''}`}>
+      <div className="interview-workspace-header">
+        <Title level={4} style={{ margin: 0 }}>面试工作台</Title>
+        {headerExtra}
+      </div>
+      <div className="interview-workspace-body">
       {/* Left: Resume Preview */}
-      <div style={{ flex: 1, background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div className="interview-resume-pane">
         <div style={{ padding: '12px 24px', borderBottom: '1px solid #E2E8F0', background: '#F8FAFC', display: 'flex', justifyContent: 'space-between' }}>
           <Text strong>简历预览: {interview.resume?.candidate_name}</Text>
           <Button type="link" icon={<DownloadOutlined />} href={fileUrl} download>下载</Button>
@@ -1073,14 +1081,9 @@ const InterviewScore: React.FC = () => {
         )}
       </div>
 
-      {/* Right: Interview Questions & Scoring */}
-      <div id="questions-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ flexShrink: 0, paddingRight: '4px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <Title level={4} style={{ margin: 0 }}>面试题目 & 评分</Title>
-            {headerExtra}
-          </div>
-
+      {/* Right: Interview guidance, questions and compact notes */}
+      <div id="questions-container" className="interview-assistant-pane" role="complementary" aria-label="面试辅助">
+        <div className="interview-assistant-scroll">
           {interview?.lifecycle_state === 'scheduled' && (
             <Alert
               type="warning"
@@ -1095,8 +1098,11 @@ const InterviewScore: React.FC = () => {
             />
           )}
 
+          <InterviewGuidance resume={interview.resume} question={currentQuestion} />
+
           {/* Question Navigation */}
-          <div style={{ marginBottom: 16, overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: 8, paddingTop: 4, paddingLeft: 4 }}>
+          {!skippedAiQuestions && <div style={{ marginBottom: 12, overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: 8, paddingTop: 4, paddingLeft: 4 }}>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>面试题目</Text>
             <Space>
               {questions.map((_, index) => {
                 const isScored = scores[index] !== undefined;
@@ -1118,34 +1124,15 @@ const InterviewScore: React.FC = () => {
                 );
               })}
             </Space>
-          </div>
+          </div>}
 
-        </div>
-
-        <div style={{ flex: 1, overflow: 'hidden', paddingRight: '4px', paddingBottom: '4px', display: 'flex', flexDirection: 'column' }}>
           {skippedAiQuestions ? (
-            <Card
-              style={{ flex: 1, borderRadius: '12px', border: '1px solid #E2E8F0', overflow: 'auto' }}
-              title={<Text strong>实时面试笔记</Text>}
-            >
-              <Text type="secondary">本场面试未预生成题目。录音由“开始面试”自动启动，正式人工评价将在面试结束后的结果页填写。</Text>
-              <TextArea
-                rows={14}
-                style={{ marginTop: 20 }}
-                placeholder="记录现场观察；面试结束后笔记将冻结并向本场参与者公开。"
-                value={liveNotes}
-                onChange={(e) => setLiveNotes(e.target.value)}
-                onBlur={handleSaveNotes}
-              />
-              <Button icon={<SaveOutlined />} loading={savingNotes} onClick={handleSaveNotes} style={{ marginTop: 12 }}>
-                保存笔记
-              </Button>
-            </Card>
+            <Text type="secondary">本场未预生成题目，可参考上方评估与建议展开面试，也可通过顶部按钮添加题目。</Text>
           ) : currentQuestion && (
             <Card 
               key={currentQuestionIndex}
-              style={{ flex: 1, borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-              bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 0 }}
+              style={{ borderRadius: '12px', border: '1px solid #E2E8F0' }}
+              styles={{ body: { padding: 16, paddingBottom: 0 } }}
               title={
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Space>
@@ -1188,17 +1175,6 @@ const InterviewScore: React.FC = () => {
                     </Descriptions>
 
                     <div style={{ marginTop: 16 }}>
-                      {currentQuestion.follow_up && (
-                        <div style={{ marginBottom: 16, background: '#F0F9FF', padding: '12px 16px', borderRadius: 8, border: '1px solid #BAE6FD' }}>
-                          <Text strong style={{ color: '#0369A1', display: 'block', marginBottom: 8 }}>追问方向</Text>
-                          <ul style={{ paddingLeft: 20, margin: 0, color: '#0C4A6E' }}>
-                            {(Array.isArray(currentQuestion.follow_up) ? currentQuestion.follow_up : [currentQuestion.follow_up]).map((item: string, i: number) => (
-                              <li key={i}>{item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      
                       <Collapse
                         ghost
                         expandIcon={({ isActive }) => <CaretRightOutlined rotate={isActive ? 90 : 0} />}
@@ -1217,17 +1193,6 @@ const InterviewScore: React.FC = () => {
                       />
                     </div>
                   
-                    <div style={{ marginTop: 24, background: '#F8FAFC', padding: 16, borderRadius: 8 }}>
-                      <Text strong>我的实时面试笔记</Text>
-                      <TextArea
-                        rows={4}
-                        style={{ marginTop: 8 }}
-                        placeholder="记录现场观察；面试结束后笔记将冻结并向本场参与者公开。"
-                        value={liveNotes}
-                        onChange={(e) => setLiveNotes(e.target.value)}
-                        onBlur={handleSaveNotes}
-                      />
-                    </div>
                   </div>
                   
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, marginTop: 24, paddingTop: 16, borderTop: '1px solid #E2E8F0', flexShrink: 0 }}>
@@ -1239,26 +1204,47 @@ const InterviewScore: React.FC = () => {
                     >
                       上一题
                     </Button>
-                    {currentQuestionIndex < questions.length - 1 ? (
                       <Button 
                         type="primary" 
                         icon={<RightOutlined />} 
                         onClick={handleNextQuestion}
+                        disabled={currentQuestionIndex >= questions.length - 1}
                         style={{ paddingLeft: 24, paddingRight: 24}}
                       >
                         下一题
                       </Button>
-                    ) : (
-                      <Button icon={<SaveOutlined />} onClick={handleSaveNotes} loading={savingNotes}>
-                        保存笔记
-                      </Button>
-                    )}
                   </div>
                 </div>
               )}
             </Card>
           )}
         </div>
+        <section className="interview-notes" aria-label="实时面试笔记">
+          <div className="interview-notes-header">
+            <Text strong>实时面试笔记</Text>
+            <Space size={4}>
+              <Button size="small" type="text" aria-expanded={notesExpanded} onClick={() => setNotesExpanded(!notesExpanded)}>
+                {notesExpanded ? '收起笔记' : '展开笔记'}
+              </Button>
+              <Button size="small" icon={<SaveOutlined />} loading={savingNotes} onClick={handleSaveNotes}
+                disabled={interview.lifecycle_state !== 'in_progress'}>保存笔记</Button>
+            </Space>
+          </div>
+          <TextArea
+            aria-label="实时面试笔记"
+            rows={notesExpanded ? 7 : 2}
+            style={{ resize: 'none' }}
+            placeholder="记录回答要点、现场观察和待追问事项"
+            value={liveNotes}
+            onChange={(e) => setLiveNotes(e.target.value)}
+            onBlur={handleSaveNotes}
+            disabled={interview.lifecycle_state !== 'in_progress'}
+          />
+          <div className="interview-notes-hint">{interview.lifecycle_state === 'scheduled'
+            ? '开始面试后可记录笔记。'
+            : '离开输入框时自动保存；结束后笔记冻结并向本场参与者公开。'}</div>
+        </section>
+      </div>
       </div>
 
       {/* Add Question Modal */}

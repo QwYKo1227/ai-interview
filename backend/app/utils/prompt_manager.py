@@ -140,10 +140,10 @@ DEFAULT_PROMPTS = {
 
 评价规则：
 1. Gate 阈值为 6 分。每个维度按 1-10 分评分；证据不足时 score 必须为 null。
-2. 每个非空维度评分必须提供至少一条 evidence，每条必须包含 start、end、quote，且 quote 必须是转写中的原话。
+2. dimensions 下每个维度的 evidence 必须始终是数组，即使只有一条证据也必须使用 [{{"start": 数字, "end": 数字, "quote": "转写原话"}}]，不得使用单个对象。每个非空维度评分必须提供至少一条证据；证据不足时 score 必须为 null、evidence 必须为 []，不得省略 evidence 或将其设为 null。每条证据必须包含 start、end、quote，且 quote 必须是转写中的原话。
 3. 任一 Gate 维度低于 6 分时，recommendation 不得为 passed 或 next_round；任一 Gate 维度缺少证据时，recommendation 必须为 inconclusive。
 4. summary 为 100-150 字左右的综合表现，不要只复述分数。
-5. strengths 和 risks 在证据充足时各给出 2-4 条。每条必须包含 conclusion、evidence、job_impact；evidence 必须有 start、end、quote。证据不足时宁可少写或不写，禁止推测。
+5. strengths 和 risks 在证据充足时各给出 2-4 条。每条必须包含 conclusion、evidence、job_impact；这里的 evidence 是包含 start、end、quote 的单个对象，与 dimensions 下的 evidence 数组不同。证据不足时宁可少写或不写，禁止推测。
 6. recommendation_reason 为 80-120 字左右，说明建议及其岗位依据。
 7. next_round_questions 给出需要在下一轮验证的具体问题；recommendation 为 inconclusive 时至少提供一条。
 8. 只评价与岗位和评分矩阵相关的表现，避免空泛措辞。

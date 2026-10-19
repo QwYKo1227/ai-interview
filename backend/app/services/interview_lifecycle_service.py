@@ -635,6 +635,13 @@ def enforce_analysis_contract(value: dict, transcript_data: dict | None = None) 
             raise AnalysisContractError(f"AI 返回结果缺少评分维度 {key}")
         score = item.get("score")
         raw_evidence = item.get("evidence")
+        # Models may use the single-object finding format for a dimension,
+        # or return null/omit evidence when nothing supports the score.
+        # Normalize only the container; quotes still require verification below.
+        if raw_evidence is None:
+            raw_evidence = []
+        elif isinstance(raw_evidence, dict):
+            raw_evidence = [raw_evidence]
         if not isinstance(raw_evidence, list):
             raise AnalysisContractError(f"评分维度 {key} 的 evidence 必须是数组")
         evidence = [

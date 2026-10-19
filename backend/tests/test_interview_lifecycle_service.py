@@ -805,10 +805,12 @@ def test_async_asr_job_is_persisted_completed_and_deleted(
     assert analyzed == [(test_interview.tenant_id, test_interview.id)]
 
 
+@pytest.mark.parametrize("evidence_format", ["array", "object", "null", "missing"])
 def test_imported_transcript_is_analyzed_without_recording(
     db: Session,
     monkeypatch,
     test_interview: Interview,
+    evidence_format,
 ):
     segment = {
         "id": "import-1",
@@ -849,6 +851,13 @@ def test_imported_transcript_is_analyzed_without_recording(
         "recommendation_reason": "证据充分。",
         "next_round_questions": [],
     }
+    technical_fit = raw["dimensions"]["technical_fit"]
+    if evidence_format == "object":
+        technical_fit["evidence"] = technical_fit["evidence"][0]
+    elif evidence_format == "null":
+        technical_fit["evidence"] = None
+    elif evidence_format == "missing":
+        technical_fit.pop("evidence")
     monkeypatch.setattr(
         interview_lifecycle_service.prompt_manager,
         "get_prompt",
@@ -866,4 +875,15 @@ def test_imported_transcript_is_analyzed_without_recording(
     current = db.query(Interview).filter(Interview.id == test_interview.id).one()
     assert current.ai_analysis_status == "completed"
     assert current.ai_analysis["source"] == "imported_transcript"
-    assert current.ai_analysis["weighted_score"] == 8.0
+    assert current.ai_analysis_error is None
+    if evidence_format in {"null", "missing"}:
+        assert current.ai_analysis["weighted_score"] == 5.2
+        assert current.ai_analysis["recommendation"] == "inconclusive"
+        assert current.ai_analysis["dimensions"]["technical_fit"]["score"] is None
+        assert current.ai_analysis["dimensions"]["technical_fit"]["evidence"] == []
+    else:
+        assert current.ai_analysis["weighted_score"] == 8.0
+        assert current.ai_analysis["recommendation"] == "passed"
+        assert current.ai_analysis["dimensions"]["technical_fit"]["evidence"] == [
+            {"start": 10.0, "end": 12.0, "quote": segment["text"]},
+        ]

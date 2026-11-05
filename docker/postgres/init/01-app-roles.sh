@@ -101,6 +101,7 @@ WHERE schemaname = 'public'
     'offer_decision_audits',
     'recruitment_performance_configs', 'recruitment_hc_slots',
     'recruitment_pauses', 'resume_status_events', 'recruitment_settlements',
+    'recruitment_quality_policies', 'recruitment_quality_bindings', 'recruitment_quality_actions',
     'coding_tests', 'coding_submissions', 'system_configs', 'workflows',
     'workflow_nodes', 'workflow_edges', 'workflow_executions',
     'workflow_node_executions', 'stored_files', 'tenants', 'tenant_domains',
@@ -117,7 +118,8 @@ WHERE schemaname = 'public'
   AND tablename = ANY (ARRAY[
     'position_events', 'offer_decision_audits',
     'recruitment_performance_configs', 'resume_status_events',
-    'recruitment_settlements'
+    'recruitment_settlements',
+    'recruitment_quality_policies', 'recruitment_quality_bindings', 'recruitment_quality_actions'
   ])
 \gexec
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM app_runtime;

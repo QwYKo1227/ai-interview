@@ -51,11 +51,12 @@ def list_offers(
     status: Optional[str] = None,
     position_id: Optional[UUID] = None,
     search: Optional[str] = None,
+    resume_id: Optional[UUID] = None,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return offer_service.get_offers(
-        db, page, page_size, status, position_id, search, current_user
+        db, page, page_size, status, position_id, search, current_user, resume_id=resume_id
     )
 
 @router.get("/stats", response_model=OfferStats)

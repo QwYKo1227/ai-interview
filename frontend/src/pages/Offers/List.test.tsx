@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import request from '../../utils/request';
@@ -56,6 +56,51 @@ describe('OffersList editing', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('loads the exact linked Offer and opens its onboarding form without submitting', async () => {
+    window.history.replaceState(null, '', '/offers?offer_id=offer-1&resume_id=resume-1&position_id=position-1&action=onboarding');
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/offers/offer-1') return acceptedOffer;
+      if (url === '/offers/stats') return null;
+      return [];
+    });
+    render(<OffersList />);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('确认实际入职')).toBeInTheDocument();
+    expect(request.get).toHaveBeenCalledWith('/offers/offer-1');
+    expect(request.post).not.toHaveBeenCalled();
+  });
+
+  it('opens the linked draft at the send confirmation instead of the generic list', async () => {
+    window.history.replaceState(null, '', '/offers?offer_id=offer-1&action=send');
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url === '/offers/offer-1') return { ...acceptedOffer, status: 'draft' };
+      if (url === '/offers/stats') return null;
+      return [];
+    });
+    render(<OffersList />);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('变更Offer状态')).toBeInTheDocument();
+    expect(request.post).not.toHaveBeenCalled();
+  });
+
+  it('preselects the linked candidate when creating their first Offer', async () => {
+    window.history.replaceState(null, '', '/offers?resume_id=resume-1&position_id=position-1&action=create');
+    vi.mocked(request.get).mockImplementation(async (url: string) => {
+      if (url.startsWith('/offers?')) return { items: [], total: 0 };
+      if (url === '/offers/stats') return null;
+      if (url === '/resumes/resume-1') return { id: 'resume-1', position_id: 'position-1', status: 'interview_passed', candidate_name: '张三', email: 'zhangsan@example.com', position: { title: '研发工程师' } };
+      if (url.startsWith('/offer-templates')) return { items: [] };
+      return [];
+    });
+    render(<OffersList />);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('新建Offer')).toBeInTheDocument();
+    expect(within(dialog).getByRole('textbox', { name: '候选人姓名' })).toHaveValue('张三');
+    expect(within(dialog).getByRole('textbox', { name: '岗位名称' })).toHaveValue('研发工程师');
+    expect(request.get).toHaveBeenCalledWith(expect.stringContaining('resume_id=resume-1'));
+    expect(request.post).not.toHaveBeenCalled();
   });
 
   it('includes an eligible candidate after the first 500 resumes and fills their position', async () => {

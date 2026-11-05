@@ -31,6 +31,7 @@ import PlatformProtectedRoute from '../components/Platform/PlatformProtectedRout
 import PlatformLayout from '../components/Platform/PlatformLayout';
 import RoleProtectedRoute from '../components/RoleProtectedRoute';
 import RecruitmentPerformance from '../pages/RecruitmentPerformance';
+import RecruitmentQuality from '../pages/RecruitmentQuality';
 import { useAuth } from '../contexts/AuthContext';
 import { Spin } from 'antd';
 
@@ -116,6 +117,10 @@ const router = createBrowserRouter([
       {
         path: 'positions',
         element: <PositionsList />,
+      },
+      {
+        path: 'recruitment-quality',
+        element: <RecruitmentQuality />,
       },
       {
         path: 'positions/new',

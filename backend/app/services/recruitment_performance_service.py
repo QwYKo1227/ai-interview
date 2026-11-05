@@ -18,6 +18,7 @@ from app.models.models import (
     PositionCategory,
     PositionEvent,
     PositionEventType,
+    PositionStatus,
     RecruitmentHcSlot,
     RecruitmentPause,
     RecruitmentPerformanceConfig,
@@ -552,12 +553,78 @@ def _approved_pauses(db: Session, slot_id: UUID) -> list[RecruitmentPause]:
     return db.query(RecruitmentPause).filter(RecruitmentPause.slot_id == slot_id, RecruitmentPause.status == "approved").all()
 
 
-def _deducted_days(pauses: list[RecruitmentPause], start: datetime, end: datetime) -> int:
+def _position_status_timeline(
+    db: Session, position: Position, cutoff: datetime,
+) -> tuple[str, list[tuple[datetime, datetime]], datetime]:
+    """Reconstruct status and paused calendar days at the reporting cutoff."""
+    events = (
+        db.query(PositionEvent)
+        .filter(
+            PositionEvent.position_id == position.id,
+            PositionEvent.event_type.in_([
+                PositionEventType.INITIAL_STATUS,
+                PositionEventType.STATUS_BASELINE,
+                PositionEventType.STATUS_CHANGED,
+            ]),
+        )
+        .order_by(PositionEvent.occurred_at, PositionEvent.id)
+        .all()
+    )
+    # Legacy baselines store enum names in uppercase. With no baseline, the
+    # first transition's old value describes the state before that transition.
+    status = str(getattr(position.status, "value", position.status)).lower()
+    if events:
+        status = (events[0].old_value or events[0].new_value or status).lower()
+    status_since = _aware(position.created_at)
+    paused_since = _aware(position.created_at) if status == PositionStatus.PAUSED.value else None
+    pauses = []
+    for event in events:
+        occurred_at = _aware(event.occurred_at)
+        if occurred_at > cutoff:
+            break
+        next_status = (event.new_value or status).lower()
+        if status == PositionStatus.PAUSED.value and next_status != status:
+            # The resume date counts as an active day; pause dates are deducted
+            # through the preceding company calendar day.
+            resume_day_start = datetime.combine(
+                occurred_at.astimezone(COMPANY_TZ).date(), time.min, COMPANY_TZ,
+            )
+            pause_end = resume_day_start - timedelta(microseconds=1)
+            if paused_since is not None and paused_since <= pause_end:
+                pauses.append((paused_since, pause_end))
+            paused_since = None
+        elif next_status == PositionStatus.PAUSED.value and status != next_status:
+            paused_since = occurred_at
+        if next_status != status:
+            status_since = occurred_at
+        status = next_status
+    if paused_since is not None and paused_since <= cutoff:
+        pauses.append((paused_since, cutoff))
+    return status, pauses, status_since
+
+
+def _deducted_days(
+    pauses: list[tuple[datetime, Optional[datetime]]], start: datetime, end: datetime,
+) -> int:
+    # Merge calendar-day ranges so overlapping HC and position pauses are only
+    # deducted once, including ranges that overlap on a single calendar day.
+    ranges = []
+    for pause_start, pause_end in pauses:
+        clipped_start = max(pause_start, start)
+        clipped_end = min(pause_end or end, end)
+        if clipped_start <= clipped_end:
+            ranges.append((
+                clipped_start.astimezone(COMPANY_TZ).date(),
+                clipped_end.astimezone(COMPANY_TZ).date(),
+            ))
     total = 0
-    for pause in pauses:
-        pause_start = max(_aware(pause.start_at), start)
-        pause_end = min(_aware(pause.end_at) or end, end)
-        total += _day_count(pause_start, pause_end)
+    last_end = None
+    for first, last in sorted(ranges):
+        if last_end is not None:
+            first = max(first, last_end + timedelta(days=1))
+        if first <= last:
+            total += (last - first).days + 1
+        last_end = max(last_end, last) if last_end is not None else last
     return total
 
 
@@ -693,6 +760,15 @@ def _score_position(
 ) -> PositionScore:
     category = getattr(position.category, "value", position.category)
     target_days = int(config.target_days[category])
+    position_status, position_pauses, status_since = _position_status_timeline(db, position, cutoff)
+    cancelled = position_status == PositionStatus.CANCELLED.value
+    if cancelled:
+        # Retain the score earned at cancellation, including its result stage
+        # and time coefficient. Later days or candidate progress cannot add to it.
+        cutoff = min(cutoff, status_since)
+        candidates = _candidate_allocations_at(
+            db, [position], config.result_coefficients, cutoff,
+        ).get(position.id, [])
     slots = (
         db.query(RecruitmentHcSlot)
         .filter(RecruitmentHcSlot.position_id == position.id)
@@ -745,7 +821,10 @@ def _score_position(
         weight_end = min(value for value in [cutoff, accepted_at, onboarded_at] if value is not None)
         if weight_end < period_start:
             continue
-        pauses = _approved_pauses(db, slot.id)
+        pauses = position_pauses + [
+            (_aware(pause.start_at), _aware(pause.end_at))
+            for pause in _approved_pauses(db, slot.id)
+        ]
         score_intervals = holding_intervals
         if score_intervals is None:
             score_intervals = [(slot_start, weight_end)]
@@ -767,8 +846,9 @@ def _score_position(
         cycle_deducted = _deducted_days(pauses, cycle_start, cycle_end)
         actual_days = max(1, _day_count(cycle_start, cycle_end) - cycle_deducted)
         time_coefficient = _time_coefficient(actual_days, target_days, config.time_coefficients)
-        task_points = float(position.priority * effective_days)
-        score = task_points * time_coefficient * result_coefficient
+        earned_task_points = float(position.priority * effective_days)
+        score = earned_task_points * time_coefficient * result_coefficient
+        task_points = 0.0 if cancelled else earned_task_points
         hc_scores.append(HcScore(
             slot_id=slot.id,
             slot_number=slot.slot_number,
@@ -980,8 +1060,32 @@ def _handoff_credits_for_period(
             and detail.slots
             and not returned_to_recipient
         ):
+            position_status, _, _ = _position_status_timeline(
+                db, positions_by_id[event.position_id], cutoff,
+            )
+            if position_status == PositionStatus.CANCELLED.value:
+                # Keep earned handoff scores in the numerator while removing
+                # cancelled task points from the achievement-rate denominator.
+                detail = detail.model_copy(deep=True)
+                detail.task_points = 0
+                for slot in detail.slots:
+                    slot.task_points = 0
             result[recipient_id].append(detail)
     return result
+
+
+def _with_current_position_statuses(db: Session, overview: PerformanceOverview) -> PerformanceOverview:
+    # Enrich the response without changing scores or persisted settlement snapshots.
+    rows = [row for person in overview.people for row in [*person.positions, *person.handoff_credits]]
+    position_ids = {row.position_id for row in rows}
+    statuses = {
+        position_id: getattr(status, "value", status)
+        for position_id, status in db.query(Position.id, Position.status)
+        .filter(Position.id.in_(position_ids)).all()
+    } if position_ids else {}
+    for row in rows:
+        row.position_status = statuses.get(row.position_id)
+    return overview
 
 
 def calculate_overview(db: Session, period: str, *, user: Optional[User] = None, now: Optional[datetime] = None, use_settlement: bool = True) -> PerformanceOverview:
@@ -1003,7 +1107,7 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
         settled.people = [person for person in settled.people if person.user_id in visible_user_ids]
         if user is not None:
             settled.people = [person for person in settled.people if person.user_id == user.id]
-        return settled
+        return _with_current_position_statuses(db, settled)
 
     positions = db.query(Position).filter(Position.deleted_at.is_(None)).all()
     for position in positions:
@@ -1076,12 +1180,12 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
             handoff_credits=credits,
         ))
     result_people.sort(key=lambda person: person.name)
-    return PerformanceOverview(
+    return _with_current_position_statuses(db, PerformanceOverview(
         period=period,
         as_of=cutoff.astimezone(COMPANY_TZ).date(),
         status="trial" if period == "2026-Q3" else "live",
         people=result_people,
-    )
+    ))
 
 
 def settle_period(db: Session, actor: User, period: str, reason: Optional[str] = None) -> PerformanceOverview:

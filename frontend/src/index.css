@@ -468,6 +468,10 @@ code {
   transition: all 0.2s ease !important;
 }
 
+.app-sider .ant-menu-title-content .ant-badge {
+  color: inherit;
+}
+
 .ant-menu-item-selected {
   background-color: #EFF6FF !important; /* Blue 50 */
   color: var(--secondary-color) !important;

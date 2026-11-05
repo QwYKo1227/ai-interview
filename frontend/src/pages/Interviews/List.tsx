@@ -16,6 +16,7 @@ import {
 } from './interviewSchedule';
 import { PAGE_SIZE_OPTIONS, useListPageState, useListScrollRestoration, useNavigateFromList } from '../../hooks/useListPageState';
 import { getMyInterviewReviewStatus } from './interviewReviewStatus';
+import ScheduleInterviewModal from '../../components/ScheduleInterviewModal';
 
 export const SCHEDULABLE_RESUME_STATUSES = ['pending_interview', 'pending_next_interview'] as const;
 
@@ -96,6 +97,11 @@ const InterviewsList: React.FC = () => {
   const [calendarRange, setCalendarRange] = useState<{ start: Date; end: Date } | null>(null);
   const [calendarDraft, setCalendarDraft] = useState<{ date: dayjs.Dayjs; start: dayjs.Dayjs | null } | null>(null);
   const viewMode = searchParams.get('view') === 'calendar' ? 'calendar' : 'list';
+  const requestedAction = searchParams.get('action');
+  const targetInterviewId = searchParams.get('interview_id');
+  const targetCandidateId = searchParams.get('candidate');
+  const targetPositionId = searchParams.get('position');
+  const [businessScheduleResume, setBusinessScheduleResume] = useState<{ id: string; position_id: string } | null>(null);
   const filters = useMemo<InterviewListFilters>(() => ({
     candidateId: searchParams.get('candidate') || undefined,
     positionId: searchParams.get('position') || undefined,
@@ -146,7 +152,7 @@ const InterviewsList: React.FC = () => {
   // 判断是否可以删除面试（仅 HR/Admin 可见）
   const canDeleteInterview = user?.role === 'admin';
 
-  const handleOpenScheduleEdit = (record: any) => {
+  const handleOpenScheduleEdit = useCallback((record: any) => {
     setEditingInterview(record);
     setScheduleSaved(false);
     setNotificationFailures({});
@@ -161,7 +167,38 @@ const InterviewsList: React.FC = () => {
       meeting_link: record.meeting_link || undefined,
     });
     setScheduleModalVisible(true);
-  };
+  }, [scheduleForm]);
+
+  useEffect(() => {
+    if (!canCancelInterview) return;
+    let active = true;
+    const openBusinessForm = async () => {
+      try {
+        if (requestedAction === 'schedule' && targetCandidateId) {
+          const resume = await request.get(`/resumes/${targetCandidateId}`) as any;
+          if (!active) return;
+          if ((targetPositionId && resume.position_id !== targetPositionId) || !SCHEDULABLE_RESUME_STATUSES.includes(resume.status)) {
+            message.info('该候选人的岗位或流程状态已变化，请核对后安排面试。');
+            return;
+          }
+          setBusinessScheduleResume(resume);
+        } else if (requestedAction === 'edit' && targetInterviewId) {
+          const interview = await request.get(`/interviews/${targetInterviewId}`) as any;
+          if (!active) return;
+          if ((targetCandidateId && interview.resume_id !== targetCandidateId) || (targetPositionId && interview.position_id !== targetPositionId)) {
+            message.error('面试记录与所选节点不匹配');
+            return;
+          }
+          if (getInterviewProgress(interview) === 'scheduled') handleOpenScheduleEdit(interview);
+          else message.info('该场面试已结束或取消，请查看当前面试记录。');
+        }
+      } catch {
+        if (active) message.error('无法打开该节点的面试办理入口');
+      }
+    };
+    void openBusinessForm();
+    return () => { active = false; };
+  }, [requestedAction, targetCandidateId, targetPositionId, targetInterviewId, canCancelInterview, handleOpenScheduleEdit]);
 
   const handlePreviewScheduleEmails = async () => {
     if (!editingInterview) return;
@@ -348,13 +385,13 @@ const InterviewsList: React.FC = () => {
   })), [filterInterviewers]);
 
   const filteredData = useMemo(
-    () => (data as any[]).filter((interview) => matchesInterviewFilters(interview, filters, user?.id)),
-    [data, filters, user?.id],
+    () => (data as any[]).filter((interview) => (!targetInterviewId || interview.id === targetInterviewId) && matchesInterviewFilters(interview, filters, user?.id)),
+    [data, filters, user?.id, targetInterviewId],
   );
 
   const filteredCalendarData = useMemo(
-    () => calendarData.filter((interview) => matchesInterviewFilters(interview, filters, user?.id)),
-    [calendarData, filters, user?.id],
+    () => calendarData.filter((interview) => (!targetInterviewId || interview.id === targetInterviewId) && matchesInterviewFilters(interview, filters, user?.id)),
+    [calendarData, filters, user?.id, targetInterviewId],
   );
 
   const getInterviewerText = (record: any) => {
@@ -930,7 +967,7 @@ const InterviewsList: React.FC = () => {
             </>
           )}
           <Form.Item>
-            <Button onClick={() => setQuery({ candidate: undefined, position: undefined, interviewer: undefined, status: undefined, result: undefined, my_review: undefined, page: undefined })}>重置</Button>
+            <Button onClick={() => setQuery({ candidate: undefined, position: undefined, interviewer: undefined, status: undefined, result: undefined, my_review: undefined, interview_id: undefined, action: undefined, page: undefined })}>重置</Button>
           </Form.Item>
         </Form>
       </Card>
@@ -1533,6 +1570,7 @@ const InterviewsList: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+      {businessScheduleResume && <ScheduleInterviewModal open resume={businessScheduleResume} onClose={() => setBusinessScheduleResume(null)} />}
     </div>
   );
 };

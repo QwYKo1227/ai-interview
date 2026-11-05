@@ -33,6 +33,19 @@ const AppLayout: React.FC = () => {
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [pendingHrDecisionCount, setPendingHrDecisionCount] = useState(0);
   const [pendingInterviewReviewCount, setPendingInterviewReviewCount] = useState(0);
+  const [qualityIssueCount, setQualityIssueCount] = useState(0);
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    const refresh = () => request.get('/recruitment-quality/summary')
+      .then((data: { attention_count?: number }) => {
+        if (active) setQualityIssueCount(data.attention_count || 0);
+      }).catch(() => { if (active) setQualityIssueCount(0); });
+    void refresh();
+    window.addEventListener('recruitment-quality-updated', refresh);
+    return () => { active = false; window.removeEventListener('recruitment-quality-updated', refresh); };
+  }, [user, location.pathname]);
 
   useEffect(() => {
     if (!user || !['admin', 'hr'].includes(role)) {
@@ -184,6 +197,11 @@ const AppLayout: React.FC = () => {
       label: '用户管理',
       roles: ['admin'],
     },
+    {
+      key: '/recruitment-quality',
+      icon: badgeIcon(<AuditOutlined aria-hidden="true" />, qualityIssueCount),
+      label: badgeLabel('招聘过程质量', qualityIssueCount),
+    },
   ];
 
   const menuItems = rawMenuItems;
@@ -194,6 +212,7 @@ const AppLayout: React.FC = () => {
   });
 
   const plainPageTitles: Record<string, string> = {
+    '/recruitment-quality': '招聘过程质量',
     '/resumes': '简历管理',
     '/resumes/my-reviews': '我的评审',
     '/interviews': '面试管理',

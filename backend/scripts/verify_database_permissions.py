@@ -25,6 +25,9 @@ APPEND_ONLY_TABLES = {
     "recruitment_performance_configs",
     "resume_status_events",
     "recruitment_settlements",
+    "recruitment_quality_policies",
+    "recruitment_quality_bindings",
+    "recruitment_quality_actions",
 }
 EXPECTED_PUBLIC_TABLES = set(APPLICATION_TABLES) | {"alembic_version"}
 

@@ -2,7 +2,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 from datetime import datetime, timedelta
 
-from app.models.models import Offer, OfferDecisionAudit, OfferStatus, ResumeStatus
+from app.models.models import Offer, OfferDecisionAudit, OfferStatus, Resume, ResumeStatus
 
 
 def _sent_offer(db, position, resume, creator):
@@ -23,6 +23,22 @@ def _sent_offer(db, position, resume, creator):
     db.commit()
     db.refresh(offer)
     return offer
+
+
+def test_quality_offer_link_filters_by_resume_id_even_for_same_name_candidates(
+    client: TestClient, db, auth_headers, test_position, test_resume, test_user
+):
+    first = _sent_offer(db, test_position, test_resume, test_user)
+    other_resume = Resume(tenant_id=test_position.tenant_id, position_id=test_position.id,
+                          candidate_name=test_resume.candidate_name, email="other@example.com")
+    db.add(other_resume)
+    db.commit()
+    _sent_offer(db, test_position, other_resume, test_user)
+    response = client.get("/api/offers", headers=auth_headers,
+                          params={"resume_id": str(test_resume.id), "position_id": str(test_position.id)})
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["items"]] == [str(first.id)]
 
 
 def test_pending_confirmation_status_route_replaces_legacy_send_route(

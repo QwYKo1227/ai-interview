@@ -76,6 +76,7 @@ def test_rollout_scripts_are_directly_executable_from_backend_root():
             env=environ,
             capture_output=True,
             text=True,
+            input="",
             timeout=10,
             check=False,
         )
@@ -150,11 +151,11 @@ def _seed_two_tenants(connection):
     return tenant_a, tenant_b
 
 
-def test_catalog_is_the_authoritative_25_table_37_relation_contract():
-    assert len(TENANT_TABLES) == 25
-    assert len(COMPOSITE_TENANT_REFERENCES) == 37
-    assert len(set(TENANT_TABLES)) == 25
-    assert len(set(COMPOSITE_TENANT_REFERENCES)) == 37
+def test_catalog_is_the_authoritative_28_table_44_relation_contract():
+    assert len(TENANT_TABLES) == 28
+    assert len(COMPOSITE_TENANT_REFERENCES) == 44
+    assert len(set(TENANT_TABLES)) == 28
+    assert len(set(COMPOSITE_TENANT_REFERENCES)) == 44
 
     mapped_tables = {
         mapper.local_table.name
@@ -182,6 +183,9 @@ def test_catalog_is_the_authoritative_25_table_37_relation_contract():
             "recruitment_pauses",
             "resume_status_events",
             "recruitment_settlements",
+            "recruitment_quality_policies",
+            "recruitment_quality_bindings",
+            "recruitment_quality_actions",
         }
     )
     assert tuple(
@@ -196,6 +200,9 @@ def test_catalog_is_the_authoritative_25_table_37_relation_contract():
             "recruitment_hc_slots",
             "recruitment_pauses",
             "resume_status_events",
+            "recruitment_quality_policies",
+            "recruitment_quality_bindings",
+            "recruitment_quality_actions",
         }
         and relation != ("positions", "deleted_by", "users")
     )

@@ -528,6 +528,7 @@ class Offer(TenantScopedMixin, Base):
     sent_at = Column(DateTime)
     accepted_at = Column(DateTime)
     actual_onboarded_at = Column(DateTime(timezone=True), nullable=True)
+    onboarding_recorded_at = Column(DateTime(timezone=True), nullable=True)
     onboarding_confirmed_by = Column(UUID(as_uuid=True), nullable=True)
     departed_at = Column(DateTime(timezone=True), nullable=True)
     departure_recorded_by = Column(UUID(as_uuid=True), nullable=True)
@@ -826,3 +827,6 @@ class SystemConfig(TenantScopedMixin, Base):
     # 提示词配置（存储所有提示词的 JSON）
     prompt_configs = Column(JSON, default=dict)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# Register process-quality models and their shared transition guard.
+from app.models import recruitment_quality  # noqa: E402,F401

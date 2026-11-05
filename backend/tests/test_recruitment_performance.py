@@ -8,9 +8,13 @@ from app.models.models import (
     InterviewStatus,
     Offer,
     OfferStatus,
+    Position,
     PositionEvent,
     PositionEventType,
+    PositionStatus,
     RecruitmentHcSlot,
+    RecruitmentPause,
+    RecruitmentSettlement,
     Resume,
     ScreeningResult,
     ResumeStatusEvent,
@@ -25,6 +29,166 @@ from app.services.recruitment_performance_service import (
     sync_position_slots,
 )
 from app.services.position_service import get_position_stats
+
+
+@pytest.fixture
+def status_history(db, test_position):
+    test_position.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    sync_position_slots(db, test_position, assigned_at=test_position.created_at)
+
+    def record(changes, *, baseline="published"):
+        previous = baseline
+        db.add(PositionEvent(
+            tenant_id=test_position.tenant_id, position_id=test_position.id,
+            event_type=PositionEventType.STATUS_BASELINE,
+            new_value=baseline, occurred_at=test_position.created_at,
+        ))
+        for day, status in changes:
+            db.add(PositionEvent(
+                tenant_id=test_position.tenant_id, position_id=test_position.id,
+                event_type=PositionEventType.STATUS_CHANGED,
+                old_value=previous, new_value=status,
+                occurred_at=datetime(2026, 7, day, 12, tzinfo=timezone.utc),
+            ))
+            previous = status
+        test_position.status = PositionStatus(previous.lower())
+        db.commit()
+
+    return record
+
+
+@pytest.mark.parametrize("cutoff_day,deducted,effective", [(10, 6, 4), (20, 16, 4)])
+def test_paused_position_stops_accumulating_days_and_points(
+    db, test_position, test_user, status_history, cutoff_day, deducted, effective,
+):
+    status_history([(5, "paused")])
+    overview = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, cutoff_day, 13, tzinfo=timezone.utc), use_settlement=False,
+    )
+
+    person = overview.people[0]
+    position = person.positions[0]
+    assert {slot.deducted_days for slot in position.slots} == {deducted}
+    assert {slot.effective_held_days for slot in position.slots} == {effective}
+    assert {slot.actual_days for slot in position.slots} == {effective}
+    assert position.task_points == test_position.priority * effective * test_position.headcount
+    assert person.task_points == position.task_points
+
+
+@pytest.mark.parametrize("changes,cutoff_day,deducted,effective", [
+    ([(5, "paused"), (10, "published")], 12, 5, 7),
+    ([(5, "paused"), (10, "published"), (12, "paused")], 15, 9, 6),
+    ([(5, "paused"), (10, "published")], 7, 3, 4),
+    ([(15, "cancelled")], 10, 0, 10),
+])
+def test_position_status_history_is_clipped_to_scoring_cutoff(
+    db, test_position, test_user, status_history, changes, cutoff_day, deducted, effective,
+):
+    status_history(changes)
+    position = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, cutoff_day, 13, tzinfo=timezone.utc), use_settlement=False,
+    ).people[0].positions[0]
+
+    assert {slot.deducted_days for slot in position.slots} == {deducted}
+    assert {slot.effective_held_days for slot in position.slots} == {effective}
+    assert position.task_points == test_position.priority * effective * test_position.headcount
+
+
+def test_position_and_approved_hc_pauses_are_deducted_once(
+    db, test_position, test_user, status_history,
+):
+    status_history([(5, "paused"), (10, "published")])
+    slots = db.query(RecruitmentHcSlot).filter_by(position_id=test_position.id).all()
+    for status, first, last in [("approved", 7, 11), ("approved", 8, 10), ("pending", 1, 20)]:
+        db.add(RecruitmentPause(
+            tenant_id=test_position.tenant_id, slot_id=slots[0].id, status=status,
+            start_at=datetime(2026, 7, first, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, last, tzinfo=timezone.utc), reason="test",
+        ))
+    db.commit()
+
+    scores = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, 12, 13, tzinfo=timezone.utc), use_settlement=False,
+    ).people[0].positions[0].slots
+
+    by_id = {slot.slot_id: slot for slot in scores}
+    assert by_id[slots[0].id].deducted_days == 7
+    assert by_id[slots[0].id].effective_held_days == 5
+    assert by_id[slots[1].id].deducted_days == 5
+    assert by_id[slots[1].id].effective_held_days == 7
+
+
+@pytest.mark.parametrize("baseline", ["PAUSED", "paused"])
+def test_historical_paused_baseline_deducts_all_holding_days(
+    db, test_user, status_history, baseline,
+):
+    status_history([], baseline=baseline)
+    position = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, 10, 13, tzinfo=timezone.utc), use_settlement=False,
+    ).people[0].positions[0]
+
+    assert {slot.deducted_days for slot in position.slots} == {10}
+    assert {slot.effective_held_days for slot in position.slots} == {0}
+    assert position.task_points == 0
+
+
+def test_cancelled_position_keeps_earned_score_in_overall_achievement_rate(
+    db, test_position, test_resume, test_user, status_history,
+):
+    test_resume.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    test_resume.status = ResumeStatus.INTERVIEW_PASSED
+    db.add(ResumeStatusEvent(
+        tenant_id=test_position.tenant_id, resume_id=test_resume.id,
+        old_status=ResumeStatus.PENDING_INTERVIEW_RESULT.value,
+        new_status=ResumeStatus.INTERVIEW_PASSED.value, source="test",
+        occurred_at=datetime(2026, 7, 3, tzinfo=timezone.utc),
+    ))
+    status_history([(5, "cancelled")])
+    active = Position(
+        tenant_id=test_position.tenant_id, title="Active role", description="test",
+        category=test_position.category, priority=4, headcount=1,
+        status=PositionStatus.PUBLISHED, hiring_manager_id=test_user.id,
+        created_at=test_position.created_at,
+    )
+    db.add(active)
+    db.flush()
+    sync_position_slots(db, active, assigned_at=active.created_at)
+    db.commit()
+    person = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, 10, 13, tzinfo=timezone.utc), use_settlement=False,
+    ).people[0]
+
+    cancelled = next(row for row in person.positions if row.position_id == test_position.id)
+    assert cancelled.slots[0].result_coefficient == 0.6
+    assert all(slot.task_points == 0 for slot in cancelled.slots)
+    assert cancelled.score == pytest.approx(14.4)
+    assert cancelled.task_points == 0
+    assert cancelled.achievement_rate is None
+    assert person.task_points == 40
+    assert person.score == cancelled.score
+    assert person.achievement_rate == pytest.approx(14.4 / 40)
+
+    # Later candidate progress must not increase the retained cancelled score.
+    test_resume.status = ResumeStatus.COMPLETED
+    db.add(ResumeStatusEvent(
+        tenant_id=test_position.tenant_id, resume_id=test_resume.id,
+        old_status=ResumeStatus.INTERVIEW_PASSED.value,
+        new_status=ResumeStatus.COMPLETED.value, source="test",
+        occurred_at=datetime(2026, 7, 8, tzinfo=timezone.utc),
+    ))
+    db.commit()
+    later = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, 20, 13, tzinfo=timezone.utc), use_settlement=False,
+    ).people[0]
+    assert later.task_points == 80
+    assert later.score == person.score
+    assert later.achievement_rate == pytest.approx(14.4 / 80)
 
 
 def test_available_periods_span_position_history_through_current_quarter(db, test_position):
@@ -64,6 +228,47 @@ def test_hr_sees_only_own_performance(client, auth_headers, test_position):
     assert body["period"] == "2026-Q3"
     assert body["status"] == "trial"
     assert [person["user_id"] for person in body["people"]] == [str(test_position.hiring_manager_id)]
+
+
+@pytest.mark.parametrize("position_status", list(PositionStatus))
+def test_performance_includes_current_position_status(
+    client, db, auth_headers, test_position, position_status
+):
+    test_position.status = position_status
+    db.commit()
+
+    response = client.get("/api/recruitment-performance/me?period=2026-Q3", headers=auth_headers)
+
+    assert response.status_code == 200
+    position = response.json()["people"][0]["positions"][0]
+    assert position["position_status"] == position_status.value
+
+
+@pytest.mark.parametrize("stored_status", [None, "published"])
+def test_settled_performance_shows_current_status_without_changing_snapshot(
+    db, test_position, test_user, stored_status
+):
+    snapshot = calculate_overview(db, "2026-Q3", user=test_user, use_settlement=False).model_dump(mode="json")
+    snapshot["status"] = "settled"
+    snapshot["settlement_version"] = 1
+    scored_position = snapshot["people"][0]["positions"][0]
+    if stored_status is None:
+        scored_position.pop("position_status")
+    else:
+        scored_position["position_status"] = stored_status
+    settlement = RecruitmentSettlement(
+        tenant_id=test_user.tenant_id, period="2026-Q3", version=1, snapshot=snapshot,
+    )
+    db.add(settlement)
+    test_position.status = PositionStatus.CLOSED
+    db.commit()
+
+    result = calculate_overview(db, "2026-Q3", user=test_user)
+
+    assert result.people[0].positions[0].position_status == "closed"
+    assert result.people[0].positions[0].score == scored_position["score"]
+    db.refresh(settlement)
+    assert settlement.snapshot == snapshot
 
 
 def test_interviewer_cannot_access_performance(client, interviewer_auth_headers):
@@ -270,8 +475,9 @@ def test_reassigned_position_resets_effective_holding_but_keeps_full_cycle_days(
     assert {slot.effective_held_days for slot in slots} == {10}
 
 
-def test_first_decision_stage_owner_keeps_handoff_credit(
-    db, test_position, test_resume, test_user, test_admin
+@pytest.mark.parametrize("stored_credit", [False, True])
+def test_first_decision_stage_owner_keeps_handoff_credit_until_position_cancelled(
+    db, test_position, test_resume, test_user, test_admin, stored_credit,
 ):
     round_started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
     milestone_at = datetime(2026, 7, 8, tzinfo=timezone.utc)
@@ -335,6 +541,7 @@ def test_first_decision_stage_owner_keeps_handoff_credit(
     assert people[test_user.id].is_active is False
     credit = people[test_user.id].handoff_credits[0]
     assert credit.position_id == test_position.id
+    assert credit.position_status == test_position.status.value
     assert credit.transferred_at == owner_changed_at
     assert credit.task_points == 40
     assert credit.score == pytest.approx(28.8)
@@ -342,6 +549,35 @@ def test_first_decision_stage_owner_keeps_handoff_credit(
     assert credit.slots[0].candidate_name == test_resume.candidate_name
     assert people[test_user.id].task_points == credit.task_points
     assert people[test_user.id].score == credit.score
+
+    transfer = db.query(PositionEvent).filter_by(
+        position_id=test_position.id, event_type=PositionEventType.OWNER_CHANGED,
+    ).one()
+    if stored_credit:
+        transfer.event_metadata = {"handoff_credit": {
+            "recipient_user_id": str(test_user.id), "period": "2026-Q3",
+            "detail": credit.model_dump(mode="json"),
+        }}
+    original_metadata = transfer.event_metadata
+    test_position.status = PositionStatus.CANCELLED
+    db.add(PositionEvent(
+        tenant_id=test_position.tenant_id, position_id=test_position.id,
+        event_type=PositionEventType.STATUS_CHANGED,
+        old_value="published", new_value="cancelled",
+        occurred_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
+    ))
+    db.commit()
+
+    cancelled = calculate_overview(db, "2026-Q3", now=cutoff, use_settlement=False)
+
+    assert all(person.task_points == 0 and person.score > 0 for person in cancelled.people)
+    old_owner = next(person for person in cancelled.people if person.user_id == test_user.id)
+    cancelled_credit = old_owner.handoff_credits[0]
+    assert cancelled_credit.task_points == 0
+    assert cancelled_credit.score == credit.score
+    assert all(slot.task_points == 0 and slot.score > 0 for slot in cancelled_credit.slots)
+    db.refresh(transfer)
+    assert transfer.event_metadata == original_metadata
 
 
 def test_position_reassigned_back_to_same_owner_has_no_frozen_handoff_credit(
@@ -582,6 +818,8 @@ def test_owner_can_confirm_actual_onboarding(
     db.refresh(offer)
     assert test_resume.status == ResumeStatus.COMPLETED
     assert offer.actual_onboarded_at is not None
+    assert offer.onboarding_recorded_at is not None
+    assert response.json()["onboarding_recorded_at"] is not None
     assert db.query(RecruitmentHcSlot).filter(RecruitmentHcSlot.completed_at.isnot(None)).count() == 1
 
 

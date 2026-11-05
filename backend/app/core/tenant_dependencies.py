@@ -88,4 +88,5 @@ def get_current_user_dep(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账户已被禁用，请联系管理员",
         )
+    db.info["quality_actor_id"] = user.id
     return user

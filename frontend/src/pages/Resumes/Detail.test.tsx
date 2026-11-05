@@ -45,6 +45,25 @@ describe('ResumeDetail laptop layout', () => {
     vi.clearAllMocks()
   })
 
+  it('opens the linked screening decision form and ignores a stale position link', async () => {
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/resumes/resume-1' ? resume : [])
+    const view = render(
+      <MemoryRouter initialEntries={['/resumes/resume-1?section=screening&position_id=position-1&action=hr-decision']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('dialog', { name: 'HR决策' })).toBeInTheDocument()
+    expect(request.post).not.toHaveBeenCalled()
+    view.unmount()
+    render(
+      <MemoryRouter initialEntries={['/resumes/resume-1?section=screening&position_id=old-position&action=hr-decision']}>
+        <Routes><Route path="/resumes/:id" element={<ResumeDetail />} /></Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByText('冬云龙')
+    expect(screen.queryByRole('dialog', { name: 'HR决策' })).not.toBeInTheDocument()
+  })
+
   it('keeps two shrinkable panes and wraps actions inside the analysis pane', async () => {
     vi.mocked(request.get).mockImplementation(async (url: string) => {
       if (url === '/resumes/resume-1') return resume

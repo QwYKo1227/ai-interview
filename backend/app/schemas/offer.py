@@ -97,6 +97,7 @@ class OfferResponse(BaseModel):
     sent_at: Optional[datetime]
     accepted_at: Optional[datetime]
     actual_onboarded_at: Optional[datetime] = None
+    onboarding_recorded_at: Optional[datetime] = None
     onboarding_confirmed_by: Optional[UUID] = None
     departed_at: Optional[datetime] = None
     departure_recorded_by: Optional[UUID] = None
@@ -119,6 +120,7 @@ class OfferResponse(BaseModel):
         "sent_at",
         "accepted_at",
         "actual_onboarded_at",
+        "onboarding_recorded_at",
         "departed_at",
         "rejected_at",
         "created_at",

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Card, Table, Button, Space, Tag, Modal, Form, Input, InputNumber, DatePicker,
   Select, Switch, message, Popconfirm, Badge, Tooltip, Typography, Row, Col, Statistic,
@@ -134,6 +134,11 @@ const OffersList: React.FC = () => {
   const [stats, setStats] = useState<OfferStats | null>(null);
   const searchText = searchParams.get('search') || '';
   const statusFilter = searchParams.get('status');
+  const targetOfferId = searchParams.get('offer_id');
+  const targetResumeId = searchParams.get('resume_id');
+  const targetPositionId = searchParams.get('position_id');
+  const requestedAction = searchParams.get('action');
+  const handledOfferLink = useRef('');
   const [searchDraft, setSearchDraft] = useDebouncedQueryValue('search', searchText, setQuery);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   
@@ -200,21 +205,34 @@ const OffersList: React.FC = () => {
   const fetchOffers = useCallback(async () => {
     setLoading(true);
     try {
+      if (targetOfferId) {
+        const offer = await request.get(`/offers/${targetOfferId}`) as Offer;
+        if ((targetResumeId && offer.resume_id !== targetResumeId) || (targetPositionId && offer.position_id !== targetPositionId)) {
+          throw new Error('Offer does not match the selected node');
+        }
+        setOffers([offer]);
+        setTotal(1);
+        return;
+      }
       const params = new URLSearchParams();
       params.append('page', page.toString());
       params.append('page_size', pageSize.toString());
       if (statusFilter) params.append('status', statusFilter);
       if (searchText) params.append('search', searchText);
+      if (targetResumeId) params.append('resume_id', targetResumeId);
+      if (targetPositionId) params.append('position_id', targetPositionId);
 
       const response = await request.get(`/offers?${params.toString()}`);
       setOffers(response.items);
       setTotal(response.total);
     } catch (error) {
+      setOffers([]);
+      setTotal(0);
       message.error('获取Offer列表失败');
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, statusFilter, searchText]);
+  }, [page, pageSize, statusFilter, searchText, targetOfferId, targetResumeId, targetPositionId]);
 
   const fetchStats = async () => {
     try {
@@ -260,7 +278,7 @@ const OffersList: React.FC = () => {
     }
   };
 
-  const applyTemplate = (template: any) => {
+  const applyTemplate = useCallback((template: any) => {
     if (!template) return;
     createForm.setFieldsValue({
       salary_monthly: template.salary_monthly,
@@ -276,7 +294,7 @@ const OffersList: React.FC = () => {
       special_terms: template.special_terms,
       notes: template.notes,
     });
-  };
+  }, [createForm]);
 
   useEffect(() => {
     fetchOffers();
@@ -486,18 +504,80 @@ const OffersList: React.FC = () => {
     setEditModalVisible(true);
   };
 
-  const openDetailDrawer = async (offer: Offer) => {
+  const openDetailDrawer = (offer: Offer) => {
     setCurrentOffer(offer);
     setDetailDrawerVisible(true);
-    try {
-      const response = await request.get(`/offers/${offer.id}/decision-audits`);
-      setDecisionAudits(Array.isArray(response) ? response : []);
-    } catch {
-      setDecisionAudits([]);
-    }
   };
 
-  const columns = [
+  const detailOfferId = detailDrawerVisible ? currentOffer?.id : undefined;
+  useEffect(() => {
+    if (!detailOfferId) return;
+    let active = true;
+    setDecisionAudits([]);
+    request.get(`/offers/${detailOfferId}/decision-audits`)
+      .then(response => { if (active) setDecisionAudits(Array.isArray(response) ? response : []); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [detailOfferId]);
+
+  useEffect(() => {
+    const offer = offers.find(item => item.id === targetOfferId);
+    const key = `${targetOfferId}/${requestedAction}`;
+    if (!offer || handledOfferLink.current === key) return;
+    handledOfferLink.current = key;
+    setCurrentOffer(offer);
+    if (requestedAction === 'onboarding' && offer.can_decide && offer.status === 'accepted' && !offer.actual_onboarded_at) {
+      onboardingForm.setFieldsValue({ actual_onboard_date: dayjs() });
+      setOnboardingModalVisible(true);
+    } else if (requestedAction === 'send' && canManageOffer && ['draft', 'pending'].includes(offer.status)) {
+      setStatusModalVisible(true);
+    } else {
+      setDetailDrawerVisible(true);
+    }
+  }, [offers, targetOfferId, requestedAction, canManageOffer, onboardingForm]);
+
+  useEffect(() => {
+    if (requestedAction !== 'create' || !targetResumeId || !canManageOffer) return;
+    let active = true;
+    const prepareOffer = async () => {
+      try {
+        const resume = await request.get(`/resumes/${targetResumeId}`) as any;
+        if (!active) return;
+        if ((targetPositionId && resume.position_id !== targetPositionId) || !['interview_passed', 'offer_pending', 'completed'].includes(resume.status)) {
+          message.info('候选人的岗位或流程状态已变化，请核对后创建Offer。');
+          return;
+        }
+        setSelectedResume(resume);
+        setResumes(current => [...current.filter(item => item.id !== resume.id), resume]);
+        createForm.resetFields();
+        createForm.setFieldsValue({
+          resume_id: resume.id, candidate_name: resume.candidate_name, candidate_email: resume.email,
+          position_id: resume.position_id, position_title: resume.position?.title || '',
+          department: resume.position?.department || '', work_location: resume.position?.location || '',
+        });
+        setCreateModalVisible(true);
+        const [templatesResult, defaultResult] = await Promise.allSettled([
+          request.get(`/offer-templates?position_id=${resume.position_id}`),
+          request.get(`/offer-templates/default/${resume.position_id}`),
+        ]);
+        if (!active) return;
+        if (templatesResult.status === 'fulfilled') setTemplates(templatesResult.value.items || []);
+        if (defaultResult.status === 'fulfilled') applyTemplate(defaultResult.value);
+      } catch {
+        if (active) message.error('无法打开该候选人的Offer办理入口');
+      }
+    };
+    void prepareOffer();
+    return () => { active = false; };
+  }, [requestedAction, targetResumeId, targetPositionId, canManageOffer, createForm, applyTemplate]);
+
+  useEffect(() => {
+    if (!currentOffer) return;
+    const latest = offers.find(item => item.id === currentOffer.id);
+    if (latest && latest !== currentOffer) setCurrentOffer(latest);
+  }, [offers, currentOffer]);
+
+  const detailColumns = [
     {
       title: '候选人',
       dataIndex: 'candidate_name',
@@ -556,11 +636,12 @@ const OffersList: React.FC = () => {
       key: 'created_at',
       render: (date: string) => formatOfferDateTime(date),
     },
-    {
+  ];
+  const actionColumn = {
       title: '操作',
       key: 'action',
       render: (_: any, record: Offer) => (
-        <Space size="small">
+        <Space size="small" wrap>
           <Tooltip title="查看详情">
             <Button type="text" icon={<EyeOutlined />} onClick={() => openDetailDrawer(record)} />
           </Tooltip>
@@ -650,8 +731,8 @@ const OffersList: React.FC = () => {
           </Popconfirm>}
         </Space>
       ),
-    },
-  ];
+  };
+  const columns = [...detailColumns, actionColumn];
 
   return (
     <div>
@@ -693,6 +774,7 @@ const OffersList: React.FC = () => {
       <Card>
         <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
           <Space wrap>
+            {(targetOfferId || targetResumeId || targetPositionId) && <Button onClick={() => setQuery({ offer_id: undefined, resume_id: undefined, position_id: undefined, action: undefined, page: undefined })}>查看全部Offer</Button>}
             <Input.Search
               placeholder="搜索候选人/岗位"
               allowClear
@@ -1094,6 +1176,7 @@ const OffersList: React.FC = () => {
         width={600}
         onClose={() => setDetailDrawerVisible(false)}
         open={detailDrawerVisible}
+        footer={currentOffer && <Space orientation="vertical"><Text strong>办理操作</Text>{actionColumn.render(undefined, currentOffer)}</Space>}
       >
         {currentOffer && (
           <div>

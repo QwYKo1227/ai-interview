@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_, update, case
 from app.models.models import (
     Offer, OfferStatus, Resume, ResumeStatus, Position, PositionStatus, User,
-    UserRole, OfferDecisionAudit, RecruitmentHcSlot
+    UserRole, OfferDecisionAudit, RecruitmentHcSlot, ResumeStatusEvent
 )
 from app.schemas.offer import OfferCreate, OfferUpdate, OfferStats
 from datetime import date, datetime, time, timezone
@@ -104,6 +104,7 @@ def get_offers(
     position_id: Optional[UUID] = None,
     search: Optional[str] = None,
     current_user: Optional[User] = None,
+    resume_id: Optional[UUID] = None,
 ) -> Dict[str, Any]:
     query = _offer_access_query(db, current_user) if current_user else db.query(Offer)
     
@@ -112,6 +113,9 @@ def get_offers(
     
     if position_id:
         query = query.filter(Offer.position_id == position_id)
+
+    if resume_id:
+        query = query.filter(Offer.resume_id == resume_id)
     
     if search:
         query = query.filter(
@@ -168,6 +172,7 @@ def get_offers(
             "sent_at": offer.sent_at,
             "accepted_at": offer.accepted_at,
             "actual_onboarded_at": offer.actual_onboarded_at,
+            "onboarding_recorded_at": offer.onboarding_recorded_at,
             "onboarding_confirmed_by": str(offer.onboarding_confirmed_by) if offer.onboarding_confirmed_by else None,
             "departed_at": offer.departed_at,
             "departure_recorded_by": str(offer.departure_recorded_by) if offer.departure_recorded_by else None,
@@ -236,6 +241,7 @@ def get_offer(
         "sent_at": offer.sent_at,
         "accepted_at": offer.accepted_at,
         "actual_onboarded_at": offer.actual_onboarded_at,
+        "onboarding_recorded_at": offer.onboarding_recorded_at,
         "onboarding_confirmed_by": str(offer.onboarding_confirmed_by) if offer.onboarding_confirmed_by else None,
         "departed_at": offer.departed_at,
         "departure_recorded_by": str(offer.departure_recorded_by) if offer.departure_recorded_by else None,
@@ -436,6 +442,7 @@ def confirm_onboarding(db: Session, offer_id: UUID, actual_onboard_date: date, a
     old_status = resume.status
     resume.status = ResumeStatus.COMPLETED
     offer.actual_onboarded_at = onboarded_at
+    offer.onboarding_recorded_at = datetime.now(timezone.utc)
     offer.onboarding_confirmed_by = actor.id
     record_resume_status_event(
         db,
@@ -783,6 +790,28 @@ def confirm_offer_by_token(
             Resume.id == resume_id, Resume.tenant_id == tenant_id
         ).values(status=resume_status)
     )
+    # Public replies use atomic bulk updates, so explicitly retain the same
+    # actual-operation evidence that ORM paths collect in before_flush.
+    from app.models.recruitment_quality import QualityAction, QualityBinding
+    from app.services.recruitment_quality_service import subject
+    binding = db.query(QualityBinding).filter(
+        QualityBinding.subject_key == subject(offer.position_id, resume_id),
+        QualityBinding.tenant_id == tenant_id,
+    ).first()
+    if binding:
+        db.add(QualityAction(
+            tenant_id=tenant_id, binding_id=binding.id, node_key=f"offer:{offer_id}",
+            kind="offer_transition", actor_id=None, reason="候选人公开链接答复",
+            details={"offer_id": str(offer_id), "old_status": "sent", "new_status": resume_status.value.removeprefix("offer_"),
+                     "valid_until": offer.valid_until.isoformat() if offer.valid_until else None,
+                     "onboard_date": offer.onboard_date.isoformat() if offer.onboard_date else None},
+            occurred_at=datetime.now(timezone.utc),
+        ))
+    db.add(ResumeStatusEvent(
+        tenant_id=tenant_id, resume_id=resume_id, old_status=ResumeStatus.OFFER_PENDING.value,
+        new_status=resume_status.value, source="offer_public_response", source_id=offer_id,
+        occurred_at=datetime.now(timezone.utc),
+    ))
     revoke_public_tokens(db, tenant_id, "offer", offer_id)
     db.commit()
     return {"success": True, "action": action_name, "message": "Offer response recorded"}

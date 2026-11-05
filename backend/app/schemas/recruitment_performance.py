@@ -92,6 +92,7 @@ class HcScore(BaseModel):
 class PositionScore(BaseModel):
     position_id: UUID
     title: str
+    position_status: Optional[str] = None
     category: str
     priority: int
     hc_count: int
@@ -110,6 +111,7 @@ class PositionScore(BaseModel):
 class HandoffCredit(BaseModel):
     position_id: UUID
     position_title: str
+    position_status: Optional[str] = None
     transferred_at: datetime
     milestone_at: datetime
     task_points: float

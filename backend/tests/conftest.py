@@ -34,6 +34,7 @@ from app.models.tenant_models import (
     PlatformAuditLog, PlatformUser, PublicAccessToken, Tenant, TenantDomain, TenantStatus
 )
 from app.models.file_models import StoredFile
+from app.models.recruitment_quality import QualityPolicy, QualityBinding, QualityAction
 from app.config import database as database_config
 from app.config.database import get_db
 from app.config.tenant_session import TenantCapableSession
@@ -97,6 +98,9 @@ def db() -> Generator[Session, None, None]:
         RecruitmentPause.__table__,
         ResumeStatusEvent.__table__,
         RecruitmentSettlement.__table__,
+        QualityPolicy.__table__,
+        QualityBinding.__table__,
+        QualityAction.__table__,
     ]
 
     for table in tables_to_create:
@@ -135,6 +139,7 @@ def client(db: Session) -> Generator[TestClient, None, None]:
         resumes,
         settings,
         recruitment_performance,
+        recruitment_quality,
     )
 
     # 创建测试应用（不导入 question_banks 路由，因为它使用了 ARRAY 类型）
@@ -151,6 +156,7 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     test_app.include_router(offers.router, prefix="/api")
     test_app.include_router(offer_templates.router, prefix="/api")
     test_app.include_router(recruitment_performance.router, prefix="/api")
+    test_app.include_router(recruitment_quality.router, prefix="/api")
 
     # 正确覆盖 get_db 依赖
     def override_get_db():

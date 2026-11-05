@@ -943,6 +943,9 @@ def submit_public_department_review(
     resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if resume is None:
         raise HTTPException(status_code=404, detail="Public resource not found")
+    from app.services.recruitment_quality_service import validate_public_review
+    validate_public_review(db, resume, review, recommendation=recommendation,
+                           comment=comment, overall_score=overall_score)
     transition = db.execute(
         update(DepartmentReview).where(
             DepartmentReview.id == review_id,

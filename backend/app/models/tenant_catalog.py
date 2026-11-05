@@ -32,6 +32,9 @@ TENANT_TABLES = (
     "workflow_executions",
     "workflow_node_executions",
     "stored_files",
+    "recruitment_quality_policies",
+    "recruitment_quality_bindings",
+    "recruitment_quality_actions",
 )
 
 GLOBAL_TABLES = (
@@ -81,4 +84,11 @@ COMPOSITE_TENANT_REFERENCES = (
     ("workflow_executions", "workflow_id", "workflows"),
     ("workflow_executions", "triggered_by", "users"),
     ("workflow_node_executions", "execution_id", "workflow_executions"),
+    ("recruitment_quality_policies", "position_id", "positions"),
+    ("recruitment_quality_policies", "created_by", "users"),
+    ("recruitment_quality_bindings", "position_id", "positions"),
+    ("recruitment_quality_bindings", "resume_id", "resumes"),
+    ("recruitment_quality_bindings", "policy_id", "recruitment_quality_policies"),
+    ("recruitment_quality_actions", "binding_id", "recruitment_quality_bindings"),
+    ("recruitment_quality_actions", "actor_id", "users"),
 )

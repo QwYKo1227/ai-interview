@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Card, Checkbox, Descriptions, Tag, Button, Row, Col, Typography, message, Divider, Spin, Progress, Modal, Form, Input, Space, Select, Rate, List, Avatar, Statistic, Empty, Tabs, Tooltip } from 'antd';
 import { useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
@@ -67,6 +67,10 @@ const ResumeDetail: React.FC = () => {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const selectedReviewId = searchParams.get('review_id');
+  const requestedAction = searchParams.get('action');
+  const requestedSection = searchParams.get('section');
+  const requestedPosition = searchParams.get('position_id');
+  const handledBusinessLink = useRef('');
   const { user } = useAuth();
   const [resume, setResume] = useState<any>(null);
   const [hrReview, setHrReview] = useState('');
@@ -220,6 +224,25 @@ const ResumeDetail: React.FC = () => {
     hrDecisionForm.setFieldsValue({ hr_comment: resume.hr_review || '' });
     setIsHRDecisionModalVisible(true);
   };
+
+  useEffect(() => {
+    if (!resume || loading || resume.id !== id) return;
+    const linkKey = `${id}/${requestedPosition}/${requestedSection}/${requestedAction}`;
+    if (handledBusinessLink.current === linkKey) return;
+    handledBusinessLink.current = linkKey;
+    if (requestedPosition && requestedPosition !== resume.position_id) {
+      message.info('该节点属于历史岗位，当前候选人已转岗，请核对岗位后办理。');
+      return;
+    }
+    if (requestedSection) document.getElementById(`resume-${requestedSection}`)?.scrollIntoView?.({ block: 'start' });
+    if (!isManagementMode) return;
+    if (requestedAction === 'assign-reviewers' && ['pending_review', 'pending_dept_review', 'pending_hr_decision'].includes(resume.status)) {
+      setIsAssignReviewerModalVisible(true);
+    } else if (requestedAction === 'hr-decision' && ['pending_review', 'pending_hr_decision'].includes(resume.status)) {
+      hrDecisionForm.setFieldsValue({ hr_comment: resume.hr_review || '' });
+      setIsHRDecisionModalVisible(true);
+    }
+  }, [resume, loading, id, requestedPosition, requestedSection, requestedAction, isManagementMode, hrDecisionForm]);
 
   const getStatusInfo = (status: string, parseStatus?: string) => {
       if (parseStatus === 'failed') return { text: '解析失败', color: 'error' };
@@ -836,7 +859,7 @@ const ResumeDetail: React.FC = () => {
 
   // 渲染部门评审区域
   const renderDepartmentReviewSection = () => {
-    if (!['pending_review', 'pending_dept_review', 'pending_hr_decision', 'rejected', 'completed', 'departed', 'waitlist', 'pending_interview'].includes(resume.status)) {
+    if (requestedSection !== 'department' && !['pending_review', 'pending_dept_review', 'pending_hr_decision', 'rejected', 'completed', 'departed', 'waitlist', 'pending_interview'].includes(resume.status)) {
       return null;
     }
 
@@ -1042,7 +1065,7 @@ const ResumeDetail: React.FC = () => {
       </div>
 
       {/* Right: AI Analysis & Details */}
-      <div className="resume-detail-pane resume-analysis-pane" style={{ flex: '1 1 0px', overflowY: 'auto', paddingRight: '4px' }}>
+      <div id="resume-screening" className="resume-detail-pane resume-analysis-pane" style={{ flex: '1 1 0px', overflowY: 'auto', paddingRight: '4px' }}>
         <Card
           bordered={false}
           style={{ borderRadius: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', border: '1px solid #E2E8F0' }}
@@ -1268,7 +1291,7 @@ const ResumeDetail: React.FC = () => {
         </Card>
 
         {/* 部门评审区域 */}
-        {renderDepartmentReviewSection()}
+        <div id="resume-department">{renderDepartmentReviewSection()}</div>
       </div>
       </div>
 

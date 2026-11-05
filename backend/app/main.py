@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import auth, positions, question_banks, resumes, interviews, dashboard, coding_tests, settings, offers, offer_templates, platform, public_review, workflows, files, recruitment_performance
 from app.routes.offers import router as offers_router, public_router as offers_public_router
+from app.routes import recruitment_quality
 from app.config.database import SessionLocal
 from app.config.tenant_session import tenant_session
 from app.models.models import User, UserRole
@@ -113,6 +114,7 @@ app.include_router(workflows.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(files.public_router, prefix="/api")
 app.include_router(recruitment_performance.router, prefix="/api")
+app.include_router(recruitment_quality.router, prefix="/api")
 
 
 def init_builtin_workflows_on_startup():

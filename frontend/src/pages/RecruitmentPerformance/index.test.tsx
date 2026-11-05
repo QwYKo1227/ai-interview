@@ -33,6 +33,7 @@ const overview = {
     achievement_rate: 0.6,
     positions: [{
       position_id: 'p-1', title: '后端工程师', category: 'domestic_rd', priority: 4,
+      position_status: 'published',
       hc_count: 1, onboarded_count: 0, current_employed_count: 1,
       cumulative_onboarded_count: 2, departed_count: 1, excluded_count: 0, task_points: 100,
       score: 60, achievement_rate: 0.6, highest_result_stage: '面试通过，进入录用决策', slots: [],
@@ -67,6 +68,30 @@ const mockRequests = (responseOverview = overview, responseLeaderboard = leaderb
 describe('RecruitmentPerformance', () => {
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
+  it.each([
+    ['open', '待发布'],
+    ['published', '招聘中'],
+    ['paused', '暂停'],
+    ['closed', '已关闭'],
+    ['cancelled', '已取消'],
+  ])('shows the %s position status next to its name', async (status, label) => {
+    authState.role = 'hr';
+    mockRequests({
+      ...overview,
+      people: [{
+        ...overview.people[0],
+        positions: [{ ...overview.people[0].positions[0], position_status: status }],
+      }],
+    });
+
+    render(<RecruitmentPerformance />);
+
+    const badge = await screen.findByLabelText(`岗位状态：${label}`);
+    expect(badge).toHaveTextContent(label);
+    expect(badge.closest('td')).toHaveTextContent('后端工程师');
+    expect(badge).toHaveAttribute('title', '当前岗位状态');
+  });
+
   it('shows the dashboard-style loading animation while data is loading', async () => {
     authState.role = 'hr';
     mockRequests();
@@ -76,6 +101,30 @@ describe('RecruitmentPerformance', () => {
     expect(screen.getByText('正在加载数据...')).toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: '招聘绩效' })).toBeInTheDocument();
     expect(screen.queryByText('正在加载数据...')).not.toBeInTheDocument();
+  });
+
+  it('shows a dash for a cancelled position while retaining its score in the total rate', async () => {
+    authState.role = 'hr';
+    mockRequests({
+      ...overview,
+      people: [{
+        ...overview.people[0], task_points: 100, score: 84.48, achievement_rate: 0.8448,
+        positions: [overview.people[0].positions[0], {
+          ...overview.people[0].positions[0], position_id: 'cancelled-role',
+          title: '已取消市场岗位', position_status: 'cancelled',
+          task_points: 0, score: 24.48, achievement_rate: 0.24,
+        }],
+      }],
+    });
+
+    render(<RecruitmentPerformance />);
+
+    const row = (await screen.findByText('已取消市场岗位')).closest('tr')!;
+    expect(within(row).getByText('0.00')).toBeInTheDocument();
+    expect(within(row).getByText('24.48')).toBeInTheDocument();
+    expect(within(row).getByText('-')).toBeInTheDocument();
+    expect(within(row).queryByText('24.00%')).not.toBeInTheDocument();
+    expect(screen.getByText('平均达成率').closest('.ant-statistic')).toHaveTextContent('84.48');
   });
 
   it('shows an HR only their read-only position ledger', async () => {

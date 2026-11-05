@@ -186,6 +186,8 @@
 }
 
 .performance-ledger {
+  /* Keep nested (including empty) tables out of the parent table's width calculation. */
+  contain: inline-size;
   padding: 12px;
   border-left: 3px solid #14b8a6;
   background: #f8fafc;

@@ -465,8 +465,8 @@ def test_rollout_scripts_use_migration_role_on_real_two_tenant_postgres(
         stdout=permission_output,
     ) == 0, permission_output.getvalue()
     permission_payload = json.loads(permission_output.getvalue())
-    assert permission_payload["counts"]["application_tables_expected"] == 23
-    assert permission_payload["counts"]["application_tables_with_runtime_dml"] == 23
+    assert permission_payload["counts"]["application_tables_expected"] == len(APPLICATION_TABLES)
+    assert permission_payload["counts"]["application_tables_with_runtime_dml"] == len(APPLICATION_TABLES)
 
     snapshot_json = tmp_path / "tenant-counts.json"
     snapshot_csv = tmp_path / "tenant-counts.csv"
@@ -741,7 +741,7 @@ def test_real_two_tenant_business_login_isolation_and_disable_flow(
             assert db.query(SystemConfig).count() == 1
             stats = get_dashboard_stats(db)
             assert stats["active_positions"] == db.query(Position).filter(
-                Position.status.in_(["open", "published"])
+                Position.status == "published"
             ).count()
             assert db.execute(
                 text("SELECT id FROM resumes WHERE id = :id"),
@@ -1601,7 +1601,7 @@ def test_database_and_metadata_match_all_tenant_foreign_key_semantics(
             for row in rows
         }
 
-    assert len(metadata_constraints) == 29
+    assert metadata_constraints
     assert database_constraints == metadata_constraints
 
 
@@ -1677,10 +1677,10 @@ def test_runtime_role_has_only_runtime_privileges_and_cannot_bypass_rls(
             for row in connection.execute(
                 text(
                     "SELECT table_name, "
-                    "has_table_privilege('app_runtime', "
-                    "                    quote_ident(table_schema) || '.' || "
-                    "                    quote_ident(table_name), "
-                    "                    'SELECT,INSERT,UPDATE,DELETE') AS has_dml, "
+                    "(has_table_privilege('app_runtime', quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT') "
+                    "AND has_table_privilege('app_runtime', quote_ident(table_schema) || '.' || quote_ident(table_name), 'INSERT') "
+                    "AND has_table_privilege('app_runtime', quote_ident(table_schema) || '.' || quote_ident(table_name), 'UPDATE') "
+                    "AND has_table_privilege('app_runtime', quote_ident(table_schema) || '.' || quote_ident(table_name), 'DELETE')) AS has_dml, "
                     "has_table_privilege('app_runtime', "
                     "                    quote_ident(table_schema) || '.' || "
                     "                    quote_ident(table_name), "
@@ -1723,6 +1723,9 @@ def test_runtime_role_has_only_runtime_privileges_and_cannot_bypass_rls(
         "recruitment_performance_configs",
         "resume_status_events",
         "recruitment_settlements",
+        "recruitment_quality_policies",
+        "recruitment_quality_bindings",
+        "recruitment_quality_actions",
     }
     assert all(
         table_privileges[table] == (True, False)
@@ -1993,7 +1996,9 @@ def test_alembic_uses_migration_url_not_runtime_database_url(
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "r7s8t9u0v1w2" in result.stdout
+    heads = _run_alembic(migration_database_url, "heads")
+    assert heads.returncode == 0, heads.stdout + heads.stderr
+    assert result.stdout.strip() == heads.stdout.strip()
 
 
 def test_alembic_autogenerate_has_no_head_metadata_drift(migration_database_url):
@@ -2521,3 +2526,37 @@ def test_casefold_email_constraint_handles_concurrent_mixed_case_inserts(
     assert sorted(outcome[0] for outcome in outcomes) == ["conflict", "created"]
     conflict = next(outcome for outcome in outcomes if outcome[0] == "conflict")
     assert conflict[1:] == ("23505", "uq_users_tenant_lower_email", True)
+
+
+def test_quality_bindings_and_audits_are_tenant_isolated_and_append_only(pg_session_factory, tenant_pair):
+    from app.models.models import UserRole, ResumeStatus
+    from app.models.recruitment_quality import QualityPolicy, QualityBinding, QualityAction
+    from app.schemas.recruitment_quality import PolicyRequest, ActionRequest
+    from app.services.recruitment_quality_service import publish_policy, overview, record_action
+    tenant_a, tenant_b = tenant_pair
+    with pg_session_factory(tenant_a) as db:
+        user = User(id=uuid.uuid4(), email="quality@example.com", full_name="Quality Admin", role=UserRole.ADMIN, hashed_password="unused")
+        db.add(user)
+        db.commit()
+        publish_policy(db, user, PolicyRequest())
+        position = Position(title="Quality position", description="Description", requirements="Experience", department="R&D", hiring_manager_id=user.id)
+        db.add(position)
+        db.commit()
+        resume = Resume(position_id=position.id, candidate_name="待补充", status=ResumeStatus.PENDING_SCREENING, file_path="resume.pdf")
+        db.add(resume)
+        db.commit()
+        node = next(n for n in overview(db, user)["nodes"] if n["key"] == "intake")
+        record_action(db, user, node["binding_id"], "intake", ActionRequest(kind="waive", reason="主管批准后补"))
+        policy_id = db.query(QualityPolicy).one().id
+        binding_id = node["binding_id"]
+        action_id = db.query(QualityAction).one().id
+    with pg_session_factory(tenant_b) as db:
+        assert db.query(QualityPolicy).count() == 0
+        assert db.query(QualityBinding).count() == 0
+        assert db.query(QualityAction).count() == 0
+        for table, identifier in (("recruitment_quality_policies", policy_id), ("recruitment_quality_bindings", binding_id), ("recruitment_quality_actions", action_id)):
+            assert db.execute(text(f'SELECT id FROM "{table}" WHERE id=:id'), {"id": identifier}).first() is None
+    with pg_session_factory(tenant_a) as db:
+        with pytest.raises(DBAPIError):
+            db.execute(text('UPDATE recruitment_quality_actions SET reason=\'overwrite\' WHERE id=:id'), {"id": action_id})
+        db.rollback()

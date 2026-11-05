@@ -30,6 +30,7 @@ import {
 import dayjs from 'dayjs';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
+import { getStatusOption } from '../Positions/options';
 import './performance.css';
 import { useListPageState, useListScrollRestoration } from '../../hooks/useListPageState';
 
@@ -57,6 +58,7 @@ type HcScore = {
 type PositionScore = {
   position_id: string;
   title: string;
+  position_status?: string | null;
   category: string;
   priority: number;
   hc_count: number;
@@ -75,6 +77,7 @@ type PositionScore = {
 type HandoffCredit = {
   position_id: string;
   position_title: string;
+  position_status?: string | null;
   transferred_at: string;
   milestone_at: string;
   task_points: number;
@@ -293,6 +296,16 @@ const SlotLedger = ({ slots }: { slots: HcScore[] }) => (
 
 type RememberedSortOrder = 'ascend' | 'descend' | null;
 
+const PositionName = ({ title, status }: { title: string; status?: string | null }) => {
+  const option = getStatusOption(status || '状态未知');
+  return (
+    <Space size={[6, 4]} wrap>
+      <Text strong>{title}</Text>
+      <Tag color={option.color} title="当前岗位状态" aria-label={`岗位状态：${option.label}`}>{option.label}</Tag>
+    </Space>
+  );
+};
+
 const PositionTable = ({
   positions,
   sortField,
@@ -311,12 +324,12 @@ const PositionTable = ({
     dataSource={positions}
     expandable={{ expandedRowRender: row => <SlotLedger slots={row.slots} /> }}
     columns={[
-      { title: '岗位', dataIndex: 'title', render: (value, row) => <div><Text strong>{value}</Text><div><Text type="secondary">{categoryLabels[row.category] || row.category} · P{row.priority}</Text></div></div> },
+      { title: '岗位', dataIndex: 'title', render: (value, row) => <div><PositionName title={value} status={row.position_status} /><div><Text type="secondary">{categoryLabels[row.category] || row.category} · P{row.priority}</Text></div></div> },
       { title: 'HC', dataIndex: 'hc_count', render: (value, row) => `${value}（在职 ${row.current_employed_count ?? row.onboarded_count}／累计入职 ${row.cumulative_onboarded_count ?? row.onboarded_count}／离职 ${row.departed_count ?? 0}）` },
       { title: '最高阶段', dataIndex: 'highest_result_stage', render: value => <Tag>{value}</Tag> },
       { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, sortOrder: sortField === 'task_points' ? sortOrder : null, render: formatScore },
       { title: '得分', dataIndex: 'score', sorter: (a, b) => a.score - b.score, sortOrder: sortField === 'score' ? sortOrder : null, render: (value) => <Text strong>{formatScore(value)}</Text> },
-      { title: '达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), sortOrder: sortField === 'achievement_rate' ? sortOrder : null, render: value => formatRate(value) },
+      { title: '达成率', dataIndex: 'achievement_rate', sorter: (a, b) => (a.achievement_rate || 0) - (b.achievement_rate || 0), sortOrder: sortField === 'achievement_rate' ? sortOrder : null, render: (value, row) => row.position_status === 'cancelled' ? '-' : formatRate(value) },
     ]}
     onChange={(_pagination, _filters, sorter) => {
       const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
@@ -341,7 +354,7 @@ const HandoffCreditTable = ({ credits }: { credits: HandoffCredit[] }) => {
         dataSource={credits}
         expandable={{ expandedRowRender: row => <SlotLedger slots={row.slots} /> }}
         columns={[
-          { title: '岗位', dataIndex: 'position_title', render: value => <Text strong>{value}</Text> },
+          { title: '岗位', dataIndex: 'position_title', render: (value, row) => <PositionName title={value} status={row.position_status} /> },
           { title: '首次达到录用阶段', dataIndex: 'milestone_at', render: value => dayjs(value).format('YYYY-MM-DD HH:mm') },
           { title: '岗位转交时间', dataIndex: 'transferred_at', render: value => dayjs(value).format('YYYY-MM-DD HH:mm') },
           { title: '合格 HC', dataIndex: 'slots', render: value => value.length },

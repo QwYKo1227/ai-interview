@@ -87,6 +87,7 @@ class HcScore(BaseModel):
     status: str
     departed_at: Optional[datetime] = None
     departure_released_hc: Optional[bool] = None
+    retained_after_offer_rejection: bool = False
 
 
 class PositionScore(BaseModel):

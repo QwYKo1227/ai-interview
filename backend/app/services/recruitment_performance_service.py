@@ -56,7 +56,6 @@ RESULT_LABELS = {
 EXCLUDED_RESUME_STATUSES = {
     ResumeStatus.REJECTED,
     ResumeStatus.INTERVIEW_FAILED,
-    ResumeStatus.OFFER_REJECTED,
     ResumeStatus.DEPARTED,
 }
 HANDOFF_CREDIT_STATUSES = {
@@ -311,6 +310,8 @@ def _departed_result_stage(offer: Offer) -> tuple[str, datetime]:
 def _result_stage(db: Session, resume: Resume) -> tuple[str, datetime]:
     now = datetime.now(timezone.utc)
     status = resume.status
+    if status == ResumeStatus.OFFER_REJECTED:
+        return "offer_pending", _offer_issued_at(db, resume, now)
     if status == ResumeStatus.DEPARTED:
         offer = (
             db.query(Offer)
@@ -396,21 +397,40 @@ def _candidate_allocations(db: Session, positions: Iterable[Position], result_co
         key = _candidate_identity_key(resume)
         candidates.append((key, rank, achieved_at, resume, stage))
     chosen = {}
-    for item in sorted(candidates, key=lambda row: (-row[1], row[2], str(row[3].id))):
+    for item in sorted(candidates, key=lambda row: (
+        -row[1], row[3].status == ResumeStatus.OFFER_REJECTED, row[2], str(row[3].id),
+    )):
         chosen.setdefault(item[0], item)
     grouped = defaultdict(list)
     for _, _, achieved_at, resume, stage in chosen.values():
         grouped[resume.position_id].append((resume, stage, achieved_at))
     for items in grouped.values():
-        items.sort(key=lambda row: (-float(result_coefficients.get(row[1], 0)), row[2], str(row[0].id)))
+        items.sort(key=lambda row: (
+            -float(result_coefficients.get(row[1], 0)),
+            row[0].status == ResumeStatus.OFFER_REJECTED, row[2], str(row[0].id),
+        ))
     return grouped
 
 
-def _historical_result_stage(
+def _offer_issued_at(db: Session, resume: Resume, cutoff: datetime) -> datetime:
+    """Keep the issued-Offer milestone after rejection, without acceptance credit."""
+    sent_at = db.query(func.min(Offer.sent_at)).filter(
+        Offer.resume_id == resume.id, Offer.sent_at <= cutoff,
+    ).scalar()
+    event_at = db.query(func.min(ResumeStatusEvent.occurred_at)).filter(
+        ResumeStatusEvent.resume_id == resume.id,
+        ResumeStatusEvent.new_status == ResumeStatus.OFFER_PENDING.value,
+        ResumeStatusEvent.occurred_at <= cutoff,
+    ).scalar()
+    evidence = [_aware(value) for value in (sent_at, event_at) if value is not None]
+    return min(evidence) if evidence else _aware(resume.created_at)
+
+
+def _resume_status_at(
     db: Session,
     resume: Resume,
     cutoff: datetime,
-) -> Optional[tuple[str, datetime]]:
+) -> Optional[tuple[ResumeStatus, datetime]]:
     latest_occurred_at = (
         db.query(func.max(ResumeStatusEvent.occurred_at))
         .filter(
@@ -453,6 +473,20 @@ def _historical_result_stage(
         except ValueError:
             return None
         achieved_at = _aware(event.occurred_at)
+    return status, achieved_at
+
+
+def _historical_result_stage(
+    db: Session,
+    resume: Resume,
+    cutoff: datetime,
+) -> Optional[tuple[str, datetime]]:
+    historical_status = _resume_status_at(db, resume, cutoff)
+    if historical_status is None:
+        return None
+    status, achieved_at = historical_status
+    if status == ResumeStatus.OFFER_REJECTED:
+        return "offer_pending", _offer_issued_at(db, resume, cutoff)
     if status == ResumeStatus.DEPARTED:
         offer = (
             db.query(Offer)
@@ -520,6 +554,7 @@ def _candidate_allocations_at(
         ).all()
     }
     candidates = []
+    rejected_resume_ids = set()
     for resume in db.query(Resume).filter(Resume.position_id.in_(position_ids)).all():
         if resume.id in departed_resume_ids:
             continue
@@ -527,17 +562,26 @@ def _candidate_allocations_at(
         if result is None:
             continue
         stage, achieved_at = result
+        if stage == "offer_pending":
+            historical_status = _resume_status_at(db, resume, cutoff)
+            if historical_status and historical_status[0] == ResumeStatus.OFFER_REJECTED:
+                rejected_resume_ids.add(resume.id)
         rank = float(result_coefficients.get(stage, 0))
         key = _candidate_identity_key(resume)
         candidates.append((key, rank, achieved_at, resume, stage))
     chosen = {}
-    for item in sorted(candidates, key=lambda row: (-row[1], row[2], str(row[3].id))):
+    for item in sorted(candidates, key=lambda row: (
+        -row[1], row[3].id in rejected_resume_ids, row[2], str(row[3].id),
+    )):
         chosen.setdefault(item[0], item)
     grouped = defaultdict(list)
     for _, _, achieved_at, resume, stage in chosen.values():
         grouped[resume.position_id].append((resume, stage, achieved_at))
     for items in grouped.values():
-        items.sort(key=lambda row: (-float(result_coefficients.get(row[1], 0)), row[2], str(row[0].id)))
+        items.sort(key=lambda row: (
+            -float(result_coefficients.get(row[1], 0)),
+            row[0].id in rejected_resume_ids, row[2], str(row[0].id),
+        ))
     return grouped
 
 
@@ -794,6 +838,10 @@ def _score_position(
         if eligible_only and stage not in HANDOFF_CREDIT_STAGES:
             continue
         result_coefficient = float(config.result_coefficients[stage])
+        historical_status = _resume_status_at(db, resume, cutoff) if resume and stage == "offer_pending" else None
+        retained_after_offer_rejection = bool(
+            historical_status and historical_status[0] == ResumeStatus.OFFER_REJECTED
+        )
         offer = None
         if resume is not None:
             offer = db.query(Offer).filter(Offer.resume_id == resume.id).order_by(Offer.updated_at.desc()).first()
@@ -854,7 +902,8 @@ def _score_position(
             slot_number=slot.slot_number,
             recruitment_round=slot.recruitment_round,
             candidate_name=resume.candidate_name if resume else None,
-            result_stage=RESULT_LABELS[stage],
+            result_stage="Offer已发出" if retained_after_offer_rejection else RESULT_LABELS[stage],
+            retained_after_offer_rejection=retained_after_offer_rejection,
             result_coefficient=result_coefficient,
             target_days=target_days,
             actual_days=actual_days,

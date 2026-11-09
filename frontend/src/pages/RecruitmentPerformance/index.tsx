@@ -53,6 +53,7 @@ type HcScore = {
   status: string;
   departed_at?: string;
   departure_released_hc?: boolean;
+  retained_after_offer_rejection?: boolean;
 };
 
 type PositionScore = {
@@ -271,6 +272,7 @@ const SlotLedger = ({ slots }: { slots: HcScore[] }) => (
           render: (value, row) => value ? (
             <Space size={[4, 4]} wrap>
               <Text>{value}</Text>
+              {row.retained_after_offer_rejection && <Tag color="orange">已拒绝 Offer，保留阶段</Tag>}
               {row.departed_at && <Tag color="purple">已离职</Tag>}
               {row.departed_at && (
                 <Tag color={row.departure_released_hc ? 'green' : 'orange'}>

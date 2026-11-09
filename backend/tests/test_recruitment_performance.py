@@ -22,6 +22,7 @@ from app.models.models import (
 )
 from app.services.recruitment_performance_service import (
     _candidate_allocations,
+    _candidate_allocations_at,
     _result_stage,
     available_periods,
     calculate_overview,
@@ -431,6 +432,135 @@ def test_interview_passed_uses_status_event_time(db, test_resume):
 
     assert stage == "interview_passed"
     assert achieved_at == passed_at
+
+
+@pytest.mark.parametrize("replacement_status,expected_names,expected_coefficients", [
+    (ResumeStatus.INTERVIEW_PASSED, {"原候选人1", "原候选人2"}, [0.8, 0.8]),
+    (ResumeStatus.OFFER_PENDING, {"新候选人", "原候选人1"}, [0.8, 0.8]),
+    (ResumeStatus.OFFER_ACCEPTED, {"新候选人", "原候选人1"}, [0.8, 0.9]),
+])
+def test_rejected_offers_keep_two_hc_milestones_until_replacements_reach_offer(
+    db, test_position, test_user, replacement_status, expected_names, expected_coefficients,
+):
+    started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    sent_at = datetime(2026, 7, 5, tzinfo=timezone.utc)
+    test_position.created_at = started_at
+    sync_position_slots(db, test_position, assigned_at=started_at)
+    for index, (name, status) in enumerate([
+        ("原候选人1", ResumeStatus.OFFER_REJECTED),
+        ("原候选人2", ResumeStatus.OFFER_REJECTED),
+        ("新候选人", replacement_status),
+        ("另一位备选", ResumeStatus.INTERVIEW_PASSED),
+    ]):
+        resume = Resume(
+            tenant_id=test_position.tenant_id, position_id=test_position.id,
+            candidate_name=name, email=f"candidate{index}@example.com",
+            file_path="/test.pdf", status=status, created_at=started_at,
+        )
+        db.add(resume)
+        db.flush()
+        if status == ResumeStatus.OFFER_REJECTED:
+            db.add_all([
+                Offer(
+                    tenant_id=test_position.tenant_id, position_id=test_position.id,
+                    resume_id=resume.id, candidate_name=name,
+                    candidate_email=resume.email, position_title=test_position.title,
+                    status=OfferStatus.REJECTED, sent_at=sent_at + timedelta(hours=index),
+                    rejected_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+                ),
+                ResumeStatusEvent(
+                    tenant_id=test_position.tenant_id, resume_id=resume.id,
+                    old_status=ResumeStatus.OFFER_PENDING.value,
+                    new_status=status.value, source="test",
+                    occurred_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+                ),
+            ])
+    db.commit()
+
+    person = calculate_overview(
+        db, "2026-Q3", user=test_user,
+        now=datetime(2026, 7, 10, 12, tzinfo=timezone.utc), use_settlement=False,
+    ).people[0]
+    slots = person.positions[0].slots
+
+    assert len(slots) == 2
+    assert {slot.candidate_name for slot in slots} == expected_names
+    assert sorted(slot.result_coefficient for slot in slots) == expected_coefficients
+    for slot in slots:
+        retained = slot.candidate_name.startswith("原候选人")
+        assert slot.retained_after_offer_rejection is retained
+        if retained:
+            assert slot.result_stage == "Offer已发出"
+        assert slot.score == pytest.approx(slot.task_points * slot.time_coefficient * slot.result_coefficient)
+    assert person.score == pytest.approx(sum(slot.score for slot in slots))
+    assert person.onboarded_count == 0
+    assert db.query(RecruitmentHcSlot).filter(
+        RecruitmentHcSlot.candidate_resume_id.isnot(None),
+    ).count() == 0
+
+
+def test_rejected_offer_retention_uses_sent_event_without_offer_record(db, test_resume):
+    sent_at = datetime(2026, 7, 5, tzinfo=timezone.utc)
+    test_resume.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    test_resume.status = ResumeStatus.OFFER_REJECTED
+    db.add(ResumeStatusEvent(
+        tenant_id=test_resume.tenant_id, resume_id=test_resume.id,
+        old_status=ResumeStatus.INTERVIEW_PASSED.value,
+        new_status=ResumeStatus.OFFER_PENDING.value, source="test", occurred_at=sent_at,
+    ))
+    db.commit()
+
+    assert _result_stage(db, test_resume) == ("offer_pending", sent_at)
+
+
+def test_historical_offer_replacement_uses_rejection_as_of_cutoff(
+    db, test_position, test_resume,
+):
+    test_resume.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    test_resume.status = ResumeStatus.OFFER_REJECTED
+    another = Resume(
+        tenant_id=test_position.tenant_id, position_id=test_position.id,
+        candidate_name="替补", email="replacement@example.com", file_path="/test.pdf",
+        status=ResumeStatus.OFFER_PENDING,
+        created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    db.add(another)
+    db.flush()
+    for resume, day in [(test_resume, 5), (another, 6)]:
+        db.add(ResumeStatusEvent(
+            tenant_id=resume.tenant_id, resume_id=resume.id,
+            old_status=ResumeStatus.INTERVIEW_PASSED.value,
+            new_status=ResumeStatus.OFFER_PENDING.value, source="test",
+            occurred_at=datetime(2026, 7, day, tzinfo=timezone.utc),
+        ))
+    db.add(ResumeStatusEvent(
+        tenant_id=test_resume.tenant_id, resume_id=test_resume.id,
+        old_status=ResumeStatus.OFFER_PENDING.value,
+        new_status=ResumeStatus.OFFER_REJECTED.value, source="test",
+        occurred_at=datetime(2026, 7, 8, tzinfo=timezone.utc),
+    ))
+    db.commit()
+    coefficients = get_config(db, "2026-Q3").result_coefficients
+
+    before = _candidate_allocations_at(
+        db, [test_position], coefficients, datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )[test_position.id]
+    after = _candidate_allocations_at(
+        db, [test_position], coefficients, datetime(2026, 7, 9, tzinfo=timezone.utc),
+    )[test_position.id]
+
+    assert [row[0].id for row in before] == [test_resume.id, another.id]
+    assert [row[0].id for row in after] == [another.id, test_resume.id]
+    assert {row[1] for row in after} == {"offer_pending"}
+
+
+@pytest.mark.parametrize("status", [ResumeStatus.REJECTED, ResumeStatus.INTERVIEW_FAILED])
+def test_other_rejections_remain_excluded(db, test_position, test_resume, status):
+    test_resume.status = status
+    db.commit()
+    assert not _candidate_allocations(
+        db, [test_position], get_config(db, "2026-Q3").result_coefficients,
+    ).get(test_position.id)
 
 
 def test_reassigned_position_resets_effective_holding_but_keeps_full_cycle_days(

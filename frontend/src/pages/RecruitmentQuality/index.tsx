@@ -55,7 +55,6 @@ export default function RecruitmentQuality() {
   const [mine, setMine] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
   const [selection, setSelection] = useState<{ flow: FlowView; step: FlowStep }>();
-  const [flowSelections, setFlowSelections] = useState<Record<string, string>>({});
   const [candidatePage, setCandidatePage] = useState(1);
   const [candidatePageSize, setCandidatePageSize] = useState(10);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -97,7 +96,7 @@ export default function RecruitmentQuality() {
   const selectedStep = selectedFlow && selection && flowSteps(selectedFlow).find(s => s.id === selection.step.id);
   const selectedNodes = selectedStep ? [...selectedStep.nodes, ...selectedStep.exceptions] : [];
   const selected = report?.nodes.find(n => n.id === selectedId) ?? selectedNodes[0];
-  const resetCandidates = () => { setCandidatePage(1); setFlowSelections({}); };
+  const resetCandidates = () => { setCandidatePage(1); };
   const selectStep = (flow: FlowView, step: FlowStep) => {
     const choices = [...step.nodes, ...step.exceptions].sort((a, b) => Number(b.overdue) - Number(a.overdue));
     const chosen = choices.find(n => nodeMatches(n, filters)) ?? choices[0];
@@ -142,7 +141,12 @@ export default function RecruitmentQuality() {
   const columns = [
     { title: '跟进负责人', dataIndex: 'name', render: (name: string, p: Person) => <Button type="link" onClick={() => { setOwner(ownerKey(p.user_id)); resetCandidates(); }}>{name}</Button> },
     { title: '在招岗位 / 在办候选人', render: (_: unknown, p: Person) => `${p.open_position_count} / ${p.active_candidate_count}` },
-    { title: '流程完整率', render: (_: unknown, p: Metrics) => ratio(p.process_rate, p.completed_nodes, p.required_nodes) },
+    { title: '流程完整率', render: (_: unknown, p: Metrics) => <Space orientation="vertical" size={2}>
+      {ratio(p.process_rate, p.completed_nodes, p.required_nodes)}
+      {p.business_completed_nodes !== undefined && <Text type="secondary">
+        业务已完成 {p.business_completed_nodes} 项 · 待处理 {p.business_pending_nodes ?? 0} 项 · 已终止 {p.business_terminated_nodes ?? 0} 项
+      </Text>}
+    </Space> },
   ];
   return <div className="quality-page">
     <header className="quality-heading">
@@ -154,7 +158,7 @@ export default function RecruitmentQuality() {
       {report && !report.enabled ? <div className="quality-panel"><Empty description={admin ? '启用后按已有操作记录核算流程完整率。' : '管理员尚未启用过程质量检查。'}>{admin && <Button type="primary" onClick={openRules}>启用标准流程</Button>}</Empty></div> : report && <>
         <div className="quality-summary">
           <div className="quality-signal"><CheckCircleOutlined /><span>流程完整率{ratio(report.summary.process_rate, report.summary.completed_nodes, report.summary.required_nodes)}</span></div>
-          <Text type="secondary">按业务阶段统计结果登记和后续推进；未到期事项暂不考核，逾期补齐仍保留逾期。备选暂停，恢复后重新给完整期限。</Text>
+          <Text type="secondary">按当前岗位负责人汇总候选人。业务状态展示实际完成结果；完整率按有时间依据的阶段核算，缺少时间记录不表示业务未完成。</Text>
         </div>
         <div className="quality-panel">
           <div className="quality-section-heading quality-overview-heading">
@@ -200,8 +204,8 @@ export default function RecruitmentQuality() {
           </div>
           <div className="quality-candidate-list" aria-label="候选人流程列表">
             {pageCandidates.map(({ candidate, preferred }) => <CandidateFlowCard key={candidate.id}
-              candidate={candidate} flow={candidate.flows.find(f => f.id === flowSelections[candidate.id]) ?? preferred}
-              filters={filters} onFlowChange={id => setFlowSelections(current => ({ ...current, [candidate.id]: id }))}
+              candidate={candidate} flow={preferred}
+              filters={filters}
               onSelect={selectStep} />)}
             {!pageCandidates.length && <Empty description="当前筛选下没有候选人，可调整阶段或问题类型" />}
           </div>
@@ -230,10 +234,16 @@ export default function RecruitmentQuality() {
       {selected && <Space orientation="vertical" size="large" style={{ width: '100%' }}>
         <Descriptions column={1} items={[
           { key: 'candidate', label: '候选人 / 岗位', children: `${selected.candidate_name ?? '岗位公共资料'} / ${selected.position_title}` },
-          { key: 'owner', label: '跟进负责人', children: selected.owner_name }, { key: 'executor', label: '当前待办执行人', children: selected.executor_name },
+          { key: 'owner', label: '跟进负责人', children: selected.current_owner_name ?? selectedFlow?.owner_name ?? selected.owner_name }, { key: 'executor', label: '当前待办执行人', children: selected.executor_name },
           { key: 'template', label: '适用流程', children: `${selected.policy_name} v${selected.policy_version}` },
           { key: 'due', label: '办理期限', children: time(selected.due_at) },
-          { key: 'state', label: '检查结果', children: <Tag color={statuses[selected.status]?.color}>{statuses[selected.status]?.label}</Tag> },
+          ...(selected.business_status ? [
+            { key: 'business-state', label: '业务状态', children: <Tag color={statuses[selected.business_status]?.color}>{statuses[selected.business_status]?.label}</Tag> },
+            { key: 'business-result', label: '业务结果', children: selected.business_result || '以业务记录为准' },
+          ] : []),
+          { key: 'state', label: '时效判定', children: <Tag color={statuses[selected.timeliness_status ?? selected.status]?.color}>
+            {selected.timeliness_status === 'not_applicable' ? '无需时效考核' : statuses[selected.timeliness_status ?? selected.status]?.label}
+          </Tag> },
         ]} />
         {selected.historical && <Alert type="info" showIcon title="历史记录缺少证据时只能标记为无法核实，不代表当时未执行。" />}
         <div>

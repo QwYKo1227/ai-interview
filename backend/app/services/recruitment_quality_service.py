@@ -44,7 +44,7 @@ def bind(db, position, resume, policy, *, started_at=None):
     row = row or db.query(QualityBinding).filter(QualityBinding.tenant_id == position.tenant_id, QualityBinding.subject_key == key).first()
     if row:
         return row
-    row = QualityBinding(id=uuid4(), tenant_id=position.tenant_id, subject_key=key, position_id=position.id,
+    row = QualityBinding(id=uuid4(), tenant_id=position.tenant_id, subject_key=key, position_id=position.id, resume=resume,
                          resume_id=resume.id if resume else None, policy_id=policy.id,
                          started_at=utc(started_at or (resume.created_at if resume else position.created_at)) or now_utc())
     db.add(row)
@@ -80,6 +80,9 @@ def metrics(nodes):
             "missing_count": sum(n["status"] in {"missing", "late"} for n in nodes),
             "unknown_count": sum(n["status"] == "unknown" for n in nodes),
             "historical_count": len({n["binding_id"] for n in nodes if n["historical"]}),
+            "business_completed_nodes": sum(n.get("business_status") == "completed" for n in nodes),
+            "business_pending_nodes": sum(n.get("business_status") in {"pending", "paused"} for n in nodes),
+            "business_terminated_nodes": sum(n.get("business_status") == "terminated" for n in nodes),
             "longest_overdue_hours": max((n["overdue_hours"] for n in nodes), default=0)}
 
 
@@ -89,8 +92,10 @@ def overview(db, user, *, cohort="all", scope_owner=True, start_date=None, end_d
     ps = policies(db, user.tenant_id)
     if not ps:
         return {"enabled": False, "as_of": now_utc(), "rollout_at": None, "summary": metrics([]), "people": [], "nodes": [], "positions": [], "flows": []}
-    # Scope after reconstructing ownership: past obligations stay with the old HR.
-    positions = {p.id: p for p in db.query(Position).filter(Position.tenant_id == user.tenant_id, Position.deleted_at.is_(None)).all()}
+    position_query = db.query(Position).filter(Position.tenant_id == user.tenant_id, Position.deleted_at.is_(None))
+    if scope_owner and is_recruiter(user):
+        position_query = position_query.filter(Position.hiring_manager_id == user.id)
+    positions = {p.id: p for p in position_query.all()}
     bindings = db.query(QualityBinding).filter(QualityBinding.position_id.in_(list(positions)), QualityBinding.resume_id.isnot(None)).all() if positions else []
     ids = {b.resume_id for b in bindings}
     resumes = {r.id: r for r in db.query(Resume).filter(Resume.id.in_(ids)).all()} if ids else {}
@@ -126,6 +131,10 @@ def overview(db, user, *, cohort="all", scope_owner=True, start_date=None, end_d
             nodes.extend(build_candidate_nodes(b, positions[b.position_id], r, ps, actions[b.id],
                                               interviews[(r.id, b.position_id)], reviews[r.id],
                                               offers[(r.id, b.position_id)], events[r.id], now, flow_contexts=flow_contexts))
+    # Keep audit history in storage/the engine, but expose only the current
+    # application round at its current position in this operational report.
+    flow_contexts = {fid: context for fid, context in flow_contexts.items() if context["is_current"]}
+    nodes = [n for n in nodes if n["flow_id"] in flow_contexts]
     if start_date or end_date:
         # Select entire application rounds so their stage evidence stays intact.
         flow_contexts = {fid: context for fid, context in flow_contexts.items()
@@ -133,7 +142,7 @@ def overview(db, user, *, cohort="all", scope_owner=True, start_date=None, end_d
                          and (not end_date or utc(context["started_at"]).astimezone(COMPANY_TZ).date() <= end_date)}
         nodes = [n for n in nodes if n["flow_id"] in flow_contexts]
     if scope_owner and is_recruiter(user):
-        nodes = [n for n in nodes if n["owner_id"] == user.id or n["executor_id"] == user.id]
+        nodes = [n for n in nodes if positions[n["position_id"]].hiring_manager_id == user.id]
     elif scope_owner and not is_admin(user):
         nodes = [n for n in nodes if n["executor_id"] == user.id]
     if cohort != "all":
@@ -146,34 +155,43 @@ def overview(db, user, *, cohort="all", scope_owner=True, start_date=None, end_d
              and (cohort == "all" or (utc(context["started_at"]) < utc(ps[0].created_at)) == (cohort == "historical"))}
     for n in nodes:
         n.pop("_flow")
-    if scope_owner and not is_admin(user):
-        # Historical score ownership must not expose later rounds that belong
-        # to another HR. Keep only the business records visible in this report.
-        for flow in flows.values():
-            if positions[flow["position_id"]].hiring_manager_id != user.id:
-                visible_keys = {n["key"].split("/")[-1] for n in nodes if n["flow_id"] == flow["id"]}
-                flow["interviews"] = [i for i in flow["interviews"] if f'interview:{i["id"]}' in visible_keys]
-                flow["is_current"] = False
-                flow["status"] = "historical"
-                flow["previous_status"] = None
-                flow["department_required"] = any(n["stage"] == "department" for n in nodes if n["flow_id"] == flow["id"])
     grouped = defaultdict(list)
+    current_positions, current_candidates = defaultdict(set), defaultdict(set)
     for n in nodes:
         n["owner_name"] = users.get(n["owner_id"], "未分配负责人")
         n["executor_name"] = users.get(n["executor_id"], "待指派")
         for action in n["actions"]:
             action["actor_name"] = users.get(action["actor_id"], "系统处理")
-        if not is_recruiter(user) or n["owner_id"] == user.id:
-            grouped[n["owner_id"]].append(n)
-    people = [{"user_id": owner, "name": users.get(owner, "未分配负责人"),
-               "position_count": len({n["position_id"] for n in items}),
-               "candidate_count": len({n["resume_id"] for n in items}),
-               "open_position_count": len({n["position_id"] for n in items if val(positions[n["position_id"]].status) not in {"closed", "cancelled"}}),
-               "active_candidate_count": len({n["resume_id"] for n in items if val(resumes[n["resume_id"]].status) not in {"rejected", "interview_failed", "offer_rejected", "completed", "departed", "waitlist"}}),
-               **metrics(items)} for owner, items in grouped.items() if owner in users]
+        position = positions[n["position_id"]]
+        current_owner = position.hiring_manager_id
+        n["current_owner_id"] = current_owner
+        n["current_owner_name"] = users.get(current_owner, "未分配负责人")
+        # This report describes the candidates currently assigned to the HR.
+        # Historical operation ownership remains in the underlying audit data.
+        if not is_recruiter(user) or current_owner == user.id:
+            grouped[current_owner].append(n)
+        if not is_recruiter(user) or current_owner == user.id:
+            current_positions[current_owner].add(position.id)
+            resume = resumes[n["resume_id"]]
+            if resume.position_id == position.id:
+                current_candidates[current_owner].add(resume.id)
+    people = []
+    current_statuses = {flow["resume_id"]: flow["status"] for flow in flows.values()}
+    for owner in set(grouped) | set(current_positions):
+        if owner not in users:
+            continue
+        items = grouped[owner]
+        people.append({
+            "user_id": owner, "name": users[owner],
+            "position_count": len({n["position_id"] for n in items} | current_positions[owner]),
+            "candidate_count": len({n["resume_id"] for n in items} | current_candidates[owner]),
+            "open_position_count": sum(val(positions[pid].status) not in {"closed", "cancelled"} for pid in current_positions[owner]),
+            "active_candidate_count": sum(current_statuses.get(rid, val(resumes[rid].status)) not in {"rejected", "interview_failed", "offer_rejected", "completed", "departed", "waitlist"} for rid in current_candidates[owner]),
+            **metrics(items),
+        })
     people.sort(key=lambda p: (p["process_rate"] is None, p["process_rate"] or 0, p["name"]))
-    visible = {n["position_id"] for n in nodes} | {p.id for p in positions.values() if is_admin(user) or p.hiring_manager_id == user.id}
-    scored_nodes = [n for n in nodes if n["owner_id"] == user.id] if is_recruiter(user) else nodes
+    visible = {flow["position_id"] for flow in flows.values()}
+    scored_nodes = [n for items in grouped.values() for n in items]
     return {"enabled": True, "as_of": now, "rollout_at": ps[0].created_at, "summary": metrics(scored_nodes),
             "people": people, "nodes": nodes, "flows": list(flows.values()),
             "positions": [{"id": p.id, "title": p.title} for p in positions.values() if p.id in visible] if is_admin(user) or is_recruiter(user) else []}
@@ -189,7 +207,7 @@ def record_action(db, user, binding_id, node_key, payload):
     node = next((n for n in overview(db, user, scope_owner=False)["nodes"] if n["binding_id"] == binding_id and n["key"] == node_key), None)
     if node is None:
         raise HTTPException(404, "流程节点不存在")
-    action = QualityAction(id=uuid4(), tenant_id=user.tenant_id, binding_id=binding.id, node_key=node_key,
+    action = QualityAction(id=uuid4(), tenant_id=user.tenant_id, binding=binding, node_key=node_key,
                            kind=payload.kind, actor_id=user.id, reason=payload.reason, details={}, occurred_at=now_utc())
     db.add(action)
     db.commit()
@@ -237,11 +255,11 @@ def guard_changes(db):
                 old_id = state.attrs.position_id.history.deleted
                 old_binding = db.query(QualityBinding).filter(QualityBinding.subject_key == subject(old_id[0], resume.id)).first() if old_id else None
                 if old_binding:
-                    db.add(QualityAction(tenant_id=tenant_id, binding_id=old_binding.id, node_key="process", kind="transferred",
+                    db.add(QualityAction(tenant_id=tenant_id, binding=old_binding, node_key="process", kind="transferred",
                                          actor_id=db.info.get("quality_actor_id"), reason="简历转岗", details={}, occurred_at=now_utc()))
             binding = bind(db, position, resume, policy, started_at=now_utc() if transferred else None)
             def audit(key, kind, details):
-                db.add(QualityAction(tenant_id=tenant_id, binding_id=binding.id, node_key=key, kind=kind,
+                db.add(QualityAction(tenant_id=tenant_id, binding=binding, node_key=key, kind=kind,
                                      actor_id=db.info.get("quality_actor_id"), reason="业务操作", details=details, occurred_at=now_utc()))
             if isinstance(obj, Resume) and (state.attrs.status.history.has_changes() or transferred):
                 old = state.attrs.status.history.deleted

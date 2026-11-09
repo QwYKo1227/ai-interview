@@ -28,7 +28,7 @@ button.quality-signal { cursor: pointer; }
 .quality-track-legend { display: flex; flex-wrap: wrap; gap: 9px 18px; padding: 0 0 16px; color: #617585; font-size: 12px; }
 .quality-track-legend > span { display: inline-flex; align-items: center; gap: 7px; }
 .quality-track-legend > span::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--step-color); }
-.is-complete { --step-color: #389e0d; --step-tint: #f0faeb; }
+.is-complete, .is-completed { --step-color: #389e0d; --step-tint: #f0faeb; }
 .is-pending { --step-color: #1677ff; --step-tint: #edf5ff; }
 .is-missing { --step-color: #cf3d30; --step-tint: #fff1ed; }
 .is-late, .is-paused { --step-color: #b7790e; --step-tint: #fff8e7; }

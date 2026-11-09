@@ -31,6 +31,8 @@ def business_href(key, stage, pending_rules, *, resume_id, position_id, intervie
             return link("/interviews", candidate=resume_id, position=position_id, interview_id=resource_id,
                         action="edit" if kind == "attendance" and actionable else None)
         status = getattr(interview, "status", None)
+        if interview and (interview.cancelled_at or getattr(status, "value", status) == "cancelled"):
+            return schedule()
         ended = interview and (interview.ended_at or interview.final_decision_at
                                or getattr(status, "value", status) == "completed")
         return f"/interviews/{resource_id}/{'result' if ended else 'score'}"

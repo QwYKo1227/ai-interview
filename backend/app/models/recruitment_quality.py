@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Integer, JSON, String, Text, UniqueConstraint, event
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, relationship
 
 from app.models.base import Base
 from app.models.tenant_models import TenantScopedMixin
@@ -49,6 +49,13 @@ class QualityBinding(TenantScopedMixin, Base):
     started_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
+    # Declare the dependency so a new resume is inserted before its binding.
+    resume = relationship(
+        "Resume",
+        primaryjoin="and_(QualityBinding.tenant_id == Resume.tenant_id, QualityBinding.resume_id == Resume.id)",
+        foreign_keys=[resume_id],
+    )
+
 
 class QualityAction(TenantScopedMixin, Base):
     __tablename__ = "recruitment_quality_actions"
@@ -65,6 +72,12 @@ class QualityAction(TenantScopedMixin, Base):
     reason = Column(Text, nullable=False)
     details = Column(JSON, nullable=False, default=dict)
     occurred_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    binding = relationship(
+        "QualityBinding",
+        primaryjoin="and_(QualityAction.tenant_id == QualityBinding.tenant_id, QualityAction.binding_id == QualityBinding.id)",
+        foreign_keys=[binding_id],
+    )
 
 
 def immutable(mapper, connection, target):

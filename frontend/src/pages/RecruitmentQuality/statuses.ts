@@ -1,4 +1,6 @@
 export const statuses = {
+  completed: { label: '已完成', color: 'success', description: '业务已完成，结果以实际业务记录为准；是否按时需另核对时间依据。' },
+  terminated: { label: '已终止', color: 'default', description: '该事项已随淘汰、取消或流程结束停止，不再等待办理。' },
   complete: { label: '按时完成', color: 'success', description: '所需事项均已在规定时间内完成。' },
   not_applicable: { label: '无需处理', color: 'default', description: '当前流程不要求处理这项事项。' },
   pending: { label: '进行中', color: 'processing', description: '仍有事项待完成，目前未逾期。' },
@@ -16,4 +18,4 @@ export const statusFilters = [
   ...Object.entries(statuses).filter(([value]) => value !== 'future').map(([value, status]) => ({ value, ...status })),
 ];
 
-export const legendStates = ['complete', 'pending', 'missing', 'late', 'paused', 'unknown'] as const;
+export const legendStates = ['completed', 'pending', 'terminated', 'missing', 'late', 'paused', 'unknown'] as const;

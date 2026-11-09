@@ -91,6 +91,56 @@ describe('RecruitmentQuality', () => {
     }));
   }, 15000);
 
+  it('shows the current HR in the card and drawer without a historical flow selector', async () => {
+    const current: NonNullable<Report['flows']>[number] = {
+      id: 'current-flow', binding_id: 'binding', resume_id: 'resume', position_id: 'position',
+      position_title: '工程师', candidate_name: '张三', owner_id: 'current-hr', owner_name: '现任HR',
+      started_at: '2026-11-01T00:00:00Z', is_current: true, status: 'pending_interview_result',
+      previous_status: null, department_required: false, interviews: [],
+    };
+    vi.mocked(request.get).mockImplementation(async (url: string) => url.endsWith('/config') ? settings : {
+      ...report, nodes: [{ ...report.nodes[0], flow_id: current.id, owner_name: '原负责人',
+        current_owner_id: current.owner_id, current_owner_name: current.owner_name }],
+      flows: [current, { ...current, id: 'old-flow', is_current: false, position_title: '历史岗位' }],
+    });
+    const user = userEvent.setup();
+    render(<RecruitmentQuality />);
+    expect(await screen.findByText('HR：现任HR')).toBeInTheDocument();
+    expect(screen.queryByText('历史岗位')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: '张三的流程记录' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /一面.*查看依据/ }));
+    const drawer = await screen.findByRole('dialog');
+    expect(within(drawer).getByText('现任HR')).toBeInTheDocument();
+    expect(within(drawer).queryByText('原负责人')).not.toBeInTheDocument();
+  });
+
+  it('shows actual recommended department completion separately from unknown timeliness and final rejection', async () => {
+    const current: NonNullable<Report['flows']>[number] = {
+      id: 'liu-flow', binding_id: 'binding', resume_id: 'resume', position_id: 'position',
+      position_title: '工程师', candidate_name: '刘卓', owner_id: 'hr', owner_name: '冯丹茹',
+      started_at: '2026-08-06T00:00:00Z', is_current: true, status: 'rejected',
+      previous_status: 'pending_dept_review', department_required: true, interviews: [],
+    };
+    vi.mocked(request.get).mockImplementation(async (url: string) => url.endsWith('/config') ? settings : {
+      ...report, people: [{ ...report.people[0], business_completed_nodes: 2, business_pending_nodes: 0, business_terminated_nodes: 0 }],
+      flows: [current], nodes: [{ ...report.nodes[0], flow_id: current.id, key: 'department', stage: 'department',
+        candidate_name: '刘卓', label: '部门评审', business_status: 'completed', business_result: '推荐',
+        status: 'unknown', timeliness_status: 'unknown', eligible: false, complete: false, overdue: false, historical: true,
+        fields: [{ label: '部门评审意见', valid: false, business_completed: true, status: '已完成（缺少时间记录）' }] }],
+    });
+    const user = userEvent.setup();
+    render(<RecruitmentQuality />);
+    expect(await screen.findByText('刘卓')).toBeInTheDocument();
+    expect(screen.getByText('业务已完成 2 项 · 待处理 0 项 · 已终止 0 项')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /部门评审.*已完成.*查看依据/ }));
+    const drawer = await screen.findByRole('dialog');
+    expect(within(drawer).getByText('推荐')).toBeInTheDocument();
+    expect(within(drawer).getByText('业务状态')).toBeInTheDocument();
+    expect(within(drawer).getByText('时效判定')).toBeInTheDocument();
+    expect(within(drawer).getByText('缺少时间记录')).toBeInTheDocument();
+    expect(within(drawer).queryByText('进行中')).not.toBeInTheDocument();
+  });
+
   it('does not offer configuration or exception controls to an interviewer', async () => {
     mocks.role = 'interviewer';
     const user = userEvent.setup();
@@ -108,7 +158,7 @@ describe('RecruitmentQuality', () => {
     expect(screen.queryByText('66.7%')).not.toBeInTheDocument();
   });
 
-  it('includes historical evidence by default and shows only the completeness metric', async () => {
+  it('shows an empty current-owner report without fabricated completeness scores', async () => {
     vi.mocked(request.get).mockImplementation(async (url: string) => url.endsWith('/config') ? settings : {
       ...report, people: [], nodes: [], summary: { ...metrics, process_rate: null,
         completed_nodes: 0, required_nodes: 0,

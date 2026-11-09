@@ -1,4 +1,4 @@
-import { Button, Select, Tag, Tooltip } from 'antd';
+import { Button, Tag, Tooltip } from 'antd';
 import { CheckOutlined, ClockCircleOutlined, ExclamationOutlined, PauseOutlined, QuestionOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { CSSProperties } from 'react';
@@ -8,9 +8,9 @@ import { statuses } from './statuses';
 
 interface Props {
   candidate: CandidateView; flow: FlowView; filters: CandidateFilters;
-  onFlowChange: (id: string) => void; onSelect: (flow: FlowView, step: FlowStep) => void;
+  onSelect: (flow: FlowView, step: FlowStep) => void;
 }
-export default function CandidateFlowCard({ candidate, flow, filters, onFlowChange, onSelect }: Props) {
+export default function CandidateFlowCard({ candidate, flow, filters, onSelect }: Props) {
   const steps = flowSteps(flow);
   const task = nextTask(flow);
   const highlight = filters.problem !== 'all' || filters.stage === 'exception' || !!filters.search.trim() || !!filters.owner || filters.mine || !!filters.position;
@@ -34,11 +34,6 @@ export default function CandidateFlowCard({ candidate, flow, filters, onFlowChan
         {issueCount > 0 && <Tag color="error">存在逾期</Tag>}
         {ended ? <span className={`quality-ended-status${flow.status === 'completed' ? ' is-onboarded' : ''}`}>{currentLabel(flow)}</span>
           : <span className={flow.status === 'waitlist' ? 'is-paused' : ''}>{flow.is_current ? '当前' : '历史进度'}：{currentLabel(flow)}</span>}
-        {candidate.flows.length > 1 && <Select
-          aria-label={`${candidate.name}的流程记录`} value={flow.id} onChange={onFlowChange}
-          options={candidate.flows.map(f => ({ value: f.id,
-            label: `${f.is_current ? '当前流程' : '历史流程'} · ${f.position_title}${f.started_at ? ` · ${dayjs(f.started_at).format('YYYY-MM-DD HH:mm')}` : ''}` }))}
-        />}
       </div>
     </div>
     <ol className="quality-candidate-track" style={trackStyle} aria-label={`${candidate.name}的流程节点`}>
@@ -47,15 +42,17 @@ export default function CandidateFlowCard({ candidate, flow, filters, onFlowChan
         const matched = highlight && nodes.some(n => nodeMatches(n, filters) && (filters.stage !== 'exception' || n.stage === 'exception'));
         const paused = flow.status === 'waitlist' && step.current || nodes.some(n => n.paused);
         const icons = {
+          completed: <CheckOutlined />, terminated: <StopOutlined />,
           complete: <CheckOutlined />, pending: <ClockCircleOutlined />, missing: <ExclamationOutlined />,
           late: <ExclamationOutlined />, paused: <PauseOutlined />, unknown: <QuestionOutlined />, future: null,
         };
-        const state = paused && !['missing', 'late'].includes(step.state) ? 'paused' : step.state;
+        const state = paused && !['missing', 'late', 'completed', 'terminated', 'complete'].includes(step.state) ? 'paused' : step.state;
         const detail = nodes.find(n => n.overdue) ?? nodes[0];
         return <li key={step.id} className={`quality-track-step is-${state}${step.reached ? ' is-reached' : ''}${steps[index + 1]?.reached || (rejected && index === steps.length - 1) ? ' is-joined' : ''}${step.current && !ended ? ' is-current' : ''}${matched ? ' is-match' : ''}`}>
           <Tooltip title={<>
             <div>{step.label} · {stepLabels[state]}</div>
             <div>{statuses[state].description}</div>
+            {step.result && <div>业务结果：{step.result}</div>}
             {detail?.due_at && <div>期限：{dayjs(detail.due_at).format('YYYY-MM-DD HH:mm')}</div>}
             {step.interview?.scheduled_at && <div>面试时间：{dayjs(step.interview.scheduled_at).format('MM-DD HH:mm')}</div>}
           </>}>
@@ -65,6 +62,7 @@ export default function CandidateFlowCard({ candidate, flow, filters, onFlowChan
               <span className="quality-track-dot">{icons[state]}</span>
               <span className="quality-track-label">{step.label}</span>
               <span className="quality-track-caption">{stepLabels[state]}</span>
+              {step.result && <span className="quality-track-caption">{step.result}</span>}
             </button>
           </Tooltip>
           {step.exceptions.length > 0 && <Button type="text" size="small" className="quality-step-exceptions"
@@ -82,7 +80,6 @@ export default function CandidateFlowCard({ candidate, flow, filters, onFlowChan
     <div className="quality-candidate-task">
       <span>{task.label}</span>
       {task.due && <time dateTime={task.due}>截止 {dayjs(task.due).format('MM-DD HH:mm')}</time>}
-      {!flow.is_current && <span className="quality-history-note">正在查看历史流程</span>}
     </div>
   </article>;
 }

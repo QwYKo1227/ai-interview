@@ -14,6 +14,7 @@ export interface Metrics {
   completed_nodes: number; required_nodes: number; process_rate: number | null;
   overdue_count: number; missing_count: number; unknown_count: number;
   historical_count: number; longest_overdue_hours: number;
+  business_completed_nodes?: number; business_pending_nodes?: number; business_terminated_nodes?: number;
 }
 export interface Person extends Metrics {
   user_id: string | null; name: string; position_count: number; candidate_count: number;
@@ -23,9 +24,12 @@ export interface QualityNode {
   flow_id?: string;
   id: string; binding_id: string; key: string; position_id: string; position_title: string;
   resume_id: string | null; candidate_name: string | null; owner_id: string | null; owner_name: string;
+  current_owner_id?: string | null; current_owner_name?: string;
   executor_id: string | null; executor_name: string; stage: string; label: string;
   status: string; eligible: boolean; complete: boolean; historical: boolean;
-  fields: { label: string; valid: boolean; status?: string; started_at?: string | null; completed_at?: string | null; due_at?: string | null; late_due_at?: string | null; policy_version?: number | null }[]; missing: string[];
+  business_status?: 'completed' | 'pending' | 'terminated' | 'paused'; business_result?: string;
+  timeliness_status?: string;
+  fields: { label: string; valid: boolean; status?: string; started_at?: string | null; completed_at?: string | null; due_at?: string | null; late_due_at?: string | null; policy_version?: number | null; business_completed?: boolean; business_stopped?: boolean }[]; missing: string[];
   due_at: string | null; paused: boolean; overdue: boolean; overdue_hours: number;
   href: string; policy_id: string; policy_name: string; policy_version: number; evidence: string[];
   actions: { kind: string; reason: string; actor_id: string | null; actor_name?: string;

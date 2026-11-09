@@ -309,6 +309,159 @@ def test_unknown_calendar_year_is_not_guessed(flow):
     assert not n["eligible"]
 
 
+@pytest.mark.parametrize("recommendation,label", [("recommend", "推荐"), ("not_recommend", "不推荐"), ("pending", "待定")])
+def test_completed_legacy_department_review_preserves_result_after_rejection(flow, recommendation, label):
+    flow.resume.status = "rejected"
+    reviews = [NS(id=uuid4(), reviewed_position_id=flow.position.id, created_at=at(2),
+                  is_completed=True, recommendation=recommendation, completed_at=None)]
+    rows = flow.report(now=at(10), reviews=reviews)
+    department = node(rows, "department")
+    assert department["business_status"] == "completed"
+    assert department["business_result"] == label
+    assert department["status"] == "unknown"
+    assert not department["eligible"] and not department["overdue"]
+    assert any(f["business_completed"] and f["completed_at"] is None for f in department["fields"])
+    assert all(n["business_status"] not in {"pending", "paused"} for n in rows)
+
+
+@pytest.mark.parametrize("status,expected", [("pending_dept_review", "pending"), ("rejected", "terminated")])
+def test_partial_department_reviews_wait_only_while_application_is_active(flow, status, expected):
+    flow.resume.status = status
+    reviews = [NS(id=uuid4(), reviewed_position_id=flow.position.id, created_at=at(2),
+                  is_completed=done, recommendation="recommend" if done else None, completed_at=None)
+               for done in (True, False)]
+    department = node(flow.report(now=at(10), reviews=reviews), "department")
+    assert department["business_status"] == expected
+    assert "1/2" in department["business_result"]
+    assert not department["eligible"]
+
+
+def test_completed_department_opinions_do_not_claim_hr_has_decided(flow):
+    flow.resume.status = "pending_hr_decision"
+    reviews = [NS(id=uuid4(), reviewed_position_id=flow.position.id, created_at=at(2),
+                  is_completed=True, recommendation="recommend", completed_at=None)]
+    department = node(flow.report(now=at(10), reviews=reviews), "department")
+    assert department["business_status"] == "completed"
+    assert department["business_result"] == "推荐；待HR决策"
+    assert not department["eligible"]
+    assert department["_flow"]["status"] == "pending_hr_decision"
+
+
+@pytest.mark.parametrize("status", ["pending_screening", "pending_review", "auto_rejected_pending_review"])
+def test_early_ai_or_pending_states_are_not_final_manual_rejections(flow, status):
+    flow.resume.status = status
+    n = node(flow.report(now=at(3)), "screening")
+    assert n["business_status"] == "pending"
+    assert n["_flow"]["status"] == status
+
+
+@pytest.mark.parametrize("result,expected", [
+    ("passed", "interview_passed"), ("next_round", "pending_next_interview"), ("rejected", "interview_failed"),
+])
+def test_actual_final_interview_results_correct_stale_waiting_labels(flow, result, expected):
+    flow.resume.status = "pending_interview_result"
+    i = interview(result=result, status="completed", ended_at=None, panels=[])
+    rows = flow.report(now=at(10), interviews=[i])
+    assert rows[0]["_flow"]["status"] == expected
+    assert node(rows, f"interview:{i.id}")["business_status"] == "completed"
+
+
+def test_actual_interview_end_does_not_leave_recording_shown_in_progress(flow):
+    flow.resume.status = "interview_in_progress"
+    i = interview(result="pending", status="completed", ended_at=None, panels=[])
+    rows = flow.report(now=at(10), interviews=[i])
+    assert rows[0]["_flow"]["status"] == "pending_interview_result"
+    assert node(rows, f"interview:{i.id}")["business_status"] == "pending"
+
+
+@pytest.mark.parametrize("offer_status,expected", [("accepted", "offer_accepted"), ("rejected", "offer_rejected")])
+def test_actual_offer_reply_corrects_stale_waiting_state_without_a_timestamp(flow, offer_status, expected):
+    flow.resume.status = "offer_pending"
+    rows = flow.report(now=at(10), offers=[offer(status=offer_status)])
+    assert rows[0]["_flow"]["status"] == expected
+
+
+def test_final_hr_rejection_is_not_overwritten_by_a_recommended_review_or_passed_interview(flow):
+    flow.resume.status = "rejected"
+    reviews = [NS(id=uuid4(), reviewed_position_id=flow.position.id, created_at=at(2),
+                  is_completed=True, recommendation="recommend", completed_at=None)]
+    rows = flow.report(now=at(10), reviews=reviews, interviews=[interview(result="passed")])
+    assert rows[0]["_flow"]["status"] == "rejected"
+    assert node(rows, "department")["business_result"] == "推荐"
+    assert all(n["business_status"] not in {"pending", "paused"} for n in rows)
+
+
+@pytest.mark.parametrize("result,resume_status,label", [
+    ("passed", "interview_passed", "通过"), ("next_round", "pending_next_interview", "进入下一轮"),
+    ("rejected", "interview_failed", "不通过"), ("waitlist", "waitlist", "备选"),
+])
+def test_interview_decision_without_operation_times_is_completed_but_not_scored(flow, result, resume_status, label):
+    flow.resume.status = resume_status
+    i = interview(result=result, ended_at=None, panels=[], final_decision_at=None, decision_history=[], status="completed")
+    rows = flow.report(now=at(10), interviews=[i])
+    decision = node(rows, f"interview:{i.id}")
+    assert decision["business_status"] == "completed"
+    assert decision["business_result"] == label
+    assert not decision["eligible"] and not decision["overdue"]
+    assert all(not n["overdue"] for n in rows if n["key"].startswith("attendance:"))
+
+
+def test_cancelled_interview_without_cancel_time_never_stays_in_progress(flow):
+    flow.resume.status = "pending_interview"
+    i = interview(result="pending", ended_at=None, panels=[], status="cancelled")
+    decision = node(flow.report(now=at(10), interviews=[i]), f"interview:{i.id}")
+    assert decision["business_status"] == "terminated"
+    assert decision["business_result"] == "已取消"
+    assert not decision["eligible"]
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("draft", "pending"), ("sent", "pending"), ("accepted", "completed"),
+    ("rejected", "completed"), ("withdrawn", "completed"), ("expired", "completed"),
+])
+def test_offer_status_is_authoritative_without_legacy_reply_times(flow, status, expected):
+    flow.resume.status = "offer_pending"
+    o = offer(status=status, sent_at=None, accepted_at=None, rejected_at=None)
+    n = node(flow.report(now=at(10), offers=[o]), f"offer:{o.id}")
+    assert n["business_status"] == expected
+    assert not n["eligible"]
+
+
+def test_expired_response_deadline_does_not_fabricate_an_offer_reply(flow):
+    flow.resume.status = "offer_pending"
+    o = offer(status="sent", sent_at=at(2), valid_until=at(3))
+    n = node(flow.report(now=at(10), offers=[o]), f"offer:{o.id}")
+    assert n["business_status"] == "pending"
+    assert n["business_result"] == "已到期，待处理"
+
+
+def test_actual_onboarding_without_registration_time_is_completed_with_unknown_timeliness(flow):
+    flow.resume.status = "completed"
+    o = offer(status="accepted", actual_onboarded_at=at(3), onboarding_recorded_at=None)
+    n = node(flow.report(now=at(10), offers=[o]), f"onboarding:{o.id}")
+    assert n["business_status"] == "completed" and n["business_result"] == "已入职"
+    assert not n["eligible"] and n["status"] == "unknown"
+
+
+@pytest.mark.parametrize("status,result", [("completed", "已入职"), ("departed", "已离职")])
+def test_final_onboarding_state_is_not_treated_as_an_unfinished_registration_when_old_dates_are_missing(flow, status, result):
+    flow.resume.status = status
+    o = offer(status="accepted", accepted_at=at(3), onboard_date=at(4), actual_onboarded_at=None, onboarding_recorded_at=None)
+    n = node(flow.report(now=at(10), offers=[o]), f"onboarding:{o.id}")
+    assert n["business_status"] == "completed" and n["business_result"] == result
+    assert not n["eligible"]
+
+
+@pytest.mark.parametrize("status", ["rejected", "interview_failed", "offer_rejected", "completed", "departed"])
+def test_all_terminal_outcomes_stop_unfinished_business_waits_without_inventing_dates(flow, status):
+    flow.resume.status = status
+    reviews = [NS(id=uuid4(), reviewed_position_id=flow.position.id, created_at=at(2),
+                  is_completed=False, recommendation=None, completed_at=None)]
+    rows = flow.report(now=at(10), reviews=reviews, offers=[offer(status="sent", sent_at=at(2))])
+    assert all(n["business_status"] in {"completed", "terminated"} for n in rows)
+    assert not any(n["business_status"] == "terminated" and n["overdue"] for n in rows)
+
+
 def candidate(db, owner, when):
     p = Position(tenant_id=owner.tenant_id, title="工程师", description="岗位描述", hiring_manager_id=owner.id)
     db.info["quality_actor_id"] = owner.id
@@ -449,11 +602,62 @@ def test_current_hr_can_note_work_whose_lateness_stays_with_previous_hr(db, test
     binding = db.query(QualityBinding).filter(QualityBinding.resume_id == r.id).one()
     result = service.record_action(db, successor, binding.id, "screening", ActionRequest(kind="note", reason="接手后已联系候选人"))
     assert result["id"]
-    assert node(service.overview(db, test_user)["nodes"], "screening")["overdue"]
     report = service.overview(db, successor)
-    assert report["summary"]["required_nodes"] == 0
+    assert report["summary"]["required_nodes"] == 1
     assert report["nodes"][0]["owner_id"] == test_user.id
     assert report["nodes"][0]["executor_id"] == successor.id
+    assert report["nodes"][0]["current_owner_id"] == successor.id
+    assert report["nodes"][0]["current_owner_name"] == successor.full_name
+    old_report = service.overview(db, test_user)
+    assert old_report["people"] == old_report["nodes"] == old_report["flows"] == old_report["positions"] == []
+    assert old_report["summary"]["required_nodes"] == 0
+    assert report["people"][0]["user_id"] == successor.id
+    assert report["people"][0]["open_position_count"] == 1
+    assert report["people"][0]["active_candidate_count"] == 1
+
+
+def test_current_work_counts_follow_handoff_without_moving_historical_quality(
+    db, test_admin, test_user, monkeypatch,
+):
+    clock = [at(2)]
+    monkeypatch.setattr(service, "now_utc", lambda: clock[0])
+    service.publish_policy(db, test_admin, PolicyRequest())
+    position, resume = candidate(db, test_admin, at(2))
+    clock[0] = at(6)
+    position.hiring_manager_id = test_user.id
+    db.commit()
+    clock[0] = at(9)
+
+    report = service.overview(db, test_admin)
+    people = {p["user_id"]: p for p in report["people"]}
+    assert test_admin.id not in people
+    assert people[test_user.id]["open_position_count"] == 1
+    assert people[test_user.id]["active_candidate_count"] == 1
+    assert people[test_user.id]["required_nodes"] == 1
+    assert people[test_user.id]["position_count"] == 1
+    assert people[test_user.id]["candidate_count"] == 1
+    screening = node(report["nodes"], "screening")
+    assert screening["owner_id"] == test_admin.id
+    assert screening["executor_id"] == test_user.id
+    assert screening["current_owner_id"] == test_user.id
+    assert all(f["is_current"] for f in report["flows"])
+
+    # Each HR sees their own row, including a successor with no scored nodes.
+    own_report = service.overview(db, test_user)
+    assert [p["user_id"] for p in own_report["people"]] == [test_user.id]
+    assert own_report["people"][0]["open_position_count"] == 1
+    assert own_report["summary"]["required_nodes"] == 1
+    assert service.overview(db, test_admin, start_date=at(10).date())["people"] == []
+
+    # Closed positions and terminal candidates do not count as current work.
+    from app.models.models import PositionStatus
+    position.status = PositionStatus.CLOSED
+    resume.status = ResumeStatus.REJECTED
+    db.commit()
+    people = {p["user_id"]: p for p in service.overview(db, test_admin)["people"]}
+    assert test_admin.id not in people
+    assert people[test_user.id]["open_position_count"] == 0
+    assert people[test_user.id]["active_candidate_count"] == 0
 
 
 def offer_action(o, when, status, old=None, **details):
@@ -468,6 +672,19 @@ def test_withdrawing_offer_stops_its_feedback_wait(flow):
                NS(id=uuid4(), kind="resolve", node_key=f"offer_exception:{o.id}:withdrawn", occurred_at=at(3, 2),
                   actor_id=None, reason="已关闭招聘流程", details={})]
     assert node(flow.report(now=at(10), offers=[o], actions=actions), f"offer:{o.id}")["complete"]
+
+
+@pytest.mark.parametrize("withdraw_day,late", [(3, False), (6, True)])
+def test_withdrawing_unsent_offer_stops_future_send_tasks_and_preserves_prior_lateness(flow, withdraw_day, late):
+    flow.resume.status = "interview_passed"
+    i = interview(decided=at(2, 6))
+    o = offer(status="withdrawn")
+    rows = flow.report(now=at(10), interviews=[i], offers=[o],
+                       actions=[offer_action(o, at(withdraw_day), "withdrawn", "draft")])
+    n = node(rows, f"interview:{i.id}")
+    assert n["business_status"] == "completed"
+    assert n["overdue"] == late
+    assert any(f["business_stopped"] and "发送Offer" in f["label"] for f in n["fields"])
 
 
 def test_resent_offer_waits_without_periodic_followup_scoring(flow):
@@ -625,11 +842,17 @@ def test_return_to_position_with_unchanged_screening_status_creates_a_cycle(db, 
     r.position_id = first.id
     db.commit()
     clock[0] = at(9)
-    rows = service.overview(db, test_user)["nodes"]
+    report = service.overview(db, test_user)
+    rows = report["nodes"]
     restored = next(n for n in rows if n["position_id"] == first.id)
     assert restored["key"].startswith("cycle:")
     assert restored["due_at"] == at(10)
     assert not restored["overdue"]
+    assert len(report["flows"]) == 1
+    assert report["flows"][0]["is_current"]
+    assert report["flows"][0]["position_id"] == first.id
+    assert {p["id"] for p in report["positions"]} == {first.id}
+    assert {n["flow_id"] for n in rows} == {report["flows"][0]["id"]}
 
 
 def test_public_offer_response_keeps_audit_in_the_atomic_bulk_update_path(db, test_admin, test_user):
@@ -682,7 +905,7 @@ def test_final_interview_decision_is_sufficient_without_individual_review_fields
 
 def test_flow_context_includes_scheduled_rounds_without_adding_scored_nodes(flow):
     first = interview(decided=at(2, 6), result="next_round")
-    second = interview(created=at(3), round=2, panels=[], ended_at=None,
+    second = interview(created=at(3), round=2, panels=[], ended_at=None, result="pending",
                        interview_time=at(6), interview_end_time=at(6, 2))
     rows = flow.report(now=at(4), interviews=[first, second])
     assert all(n["flow_id"] == rows[0]["flow_id"] for n in rows)

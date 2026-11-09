@@ -4,7 +4,7 @@ export function stepBusinessHref(flow: FlowView, step: FlowStep): string {
   const params = new URLSearchParams({ position_id: flow.position_id });
   if (step.stage === 'interview') {
     const interview = step.interview;
-    if (interview && !interview.cancelled_at) {
+    if (interview && !interview.cancelled_at && interview.status !== 'cancelled') {
       return `/interviews/${interview.id}/${interview.ended_at || interview.status === 'completed' ? 'result' : 'score'}`;
     }
     const query = new URLSearchParams({ candidate: flow.resume_id, position: flow.position_id });

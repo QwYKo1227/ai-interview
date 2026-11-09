@@ -1,17 +1,19 @@
 import type { QualityFlow, QualityNode, Report } from './types';
 import { statuses } from './statuses';
 
-export type StepState = 'complete' | 'pending' | 'missing' | 'late' | 'paused' | 'unknown' | 'future';
+export type StepState = 'complete' | 'completed' | 'terminated' | 'pending' | 'missing' | 'late' | 'paused' | 'unknown' | 'future';
 export interface FlowView extends QualityFlow { nodes: QualityNode[] }
 export interface CandidateView { id: string; name: string; flows: FlowView[]; current: FlowView }
 export interface FlowStep {
   id: string; stage: string; label: string; state: StepState; reached: boolean; current: boolean;
+  result?: string;
   nodes: QualityNode[]; exceptions: QualityNode[]; interview?: QualityFlow['interviews'][number];
 }
 export interface CandidateFilters {
   owner?: string; position?: string; stage?: string; problem: string; search: string; mine: boolean; userId?: string;
 }
 export const stepLabels: Record<StepState, string> = {
+  completed: statuses.completed.label, terminated: statuses.terminated.label,
   complete: statuses.complete.label, pending: statuses.pending.label, missing: statuses.missing.label, late: statuses.late.label,
   paused: statuses.paused.label, unknown: statuses.unknown.label, future: statuses.future.label,
 };
@@ -21,6 +23,10 @@ export const isTerminal = (status: string) => ['rejected', 'interview_failed', '
 export const roundLabel = (round: number) => ['一面', '二面', '三面'][round - 1] ?? `第${round}轮面试`;
 const stamp = (value?: string) => value ? Date.parse(value) || 0 : 0;
 const roundOf = (n: QualityNode) => Number(n.label.match(/第(\d+)轮/)?.[1] ?? 1);
+const latestOfferNode = (flow: FlowView) => {
+  const nodes = flow.nodes.filter(n => n.stage === 'offer');
+  return nodes.filter(n => n.key.split('/').at(-1)?.startsWith('offer:') || n.key === 'offer').at(-1) ?? nodes.at(-1);
+};
 
 export function groupCandidates(report: Report): CandidateView[] {
   const contexts = new Map((report.flows ?? []).map(flow => [flow.id, flow]));
@@ -29,12 +35,14 @@ export function groupCandidates(report: Report): CandidateView[] {
     if (!n.resume_id) continue;
     const epoch = n.key.match(/^cycle:[^/]+\//)?.[0] ?? '';
     const flowId = n.flow_id ?? `${n.binding_id}/${epoch || 'initial'}`;
+    if (contexts.get(flowId)?.is_current === false) continue;
     if (!candidates.has(n.resume_id)) candidates.set(n.resume_id, new Map());
     const flows = candidates.get(n.resume_id)!;
     if (!flows.has(flowId)) {
       const fallback: QualityFlow = {
         id: flowId, binding_id: n.binding_id, resume_id: n.resume_id, position_id: n.position_id,
-        position_title: n.position_title, owner_id: n.executor_id, owner_name: n.owner_name,
+        position_title: n.position_title, owner_id: n.current_owner_id === undefined ? n.owner_id : n.current_owner_id,
+        owner_name: n.current_owner_name ?? n.owner_name,
         started_at: '', is_current: true, status: '', previous_status: null, department_required: false, interviews: [],
       };
       flows.set(flowId, { ...(contexts.get(flowId) ?? fallback), nodes: [] });
@@ -42,6 +50,7 @@ export function groupCandidates(report: Report): CandidateView[] {
     flows.get(flowId)!.nodes.push(n);
   }
   for (const flow of report.flows ?? []) {
+    if (!flow.is_current) continue;
     if (!candidates.has(flow.resume_id)) candidates.set(flow.resume_id, new Map());
     const flows = candidates.get(flow.resume_id)!;
     if (!flows.has(flow.id)) flows.set(flow.id, { ...flow, nodes: [] });
@@ -55,6 +64,7 @@ export function groupCandidates(report: Report): CandidateView[] {
 function knownStage(flow: FlowView, status: string): string {
   if (early.includes(status)) return 'screening';
   if (['pending_dept_review', 'pending_hr_decision'].includes(status)) return 'department';
+  if (status === 'interview_passed') return 'offer';
   if (status.startsWith('interview_') || ['pending_interview', 'pending_interview_result', 'pending_next_interview'].includes(status)) return 'interview';
   if (['offer_pending', 'offer_rejected'].includes(status)) return 'offer';
   if (['offer_accepted', 'onboarding', 'completed', 'departed'].includes(status)) return 'onboarding';
@@ -67,6 +77,10 @@ export function currentStage(flow: FlowView): string {
 
 export function currentLabel(flow: FlowView): string {
   if (flow.ended_at && !isTerminal(flow.status)) return flow.end_reason === 'restart' ? '历史流程已重新启动' : '已转岗';
+  const offerResult = latestOfferNode(flow)?.business_result;
+  if (flow.status === 'offer_pending' && offerResult === '已撤回') return 'Offer已撤回';
+  if (flow.status === 'offer_pending' && ['待发送', '草稿，待发送'].includes(offerResult ?? '')) return 'Offer待发送';
+  if (flow.status === 'offer_pending' && offerResult?.startsWith('已到期')) return 'Offer已到期，待处理';
   const labels: Record<string, string> = {
     pending_screening: '待初筛', pending_review: '待初筛', auto_rejected_pending_review: '待人工确认初筛',
     pending_dept_review: '等待部门评审', pending_hr_decision: '待HR决策', pending_interview: '待安排面试',
@@ -83,14 +97,18 @@ export function currentLabel(flow: FlowView): string {
 }
 
 export function nodeMatches(n: QualityNode, filters: CandidateFilters): boolean {
-  if (filters.owner && n.owner_id !== filters.owner) return false;
+  if (filters.owner && (n.current_owner_id === undefined ? n.owner_id : n.current_owner_id) !== filters.owner) return false;
   if (filters.mine && n.executor_id !== filters.userId) return false;
   if (filters.position && n.position_id !== filters.position) return false;
   const query = filters.search.trim().toLowerCase();
-  if (query && !`${n.candidate_name} ${n.position_title} ${n.label} ${n.owner_name} ${n.executor_name}`.toLowerCase().includes(query)) return false;
+  if (query && !`${n.candidate_name} ${n.position_title} ${n.label} ${n.current_owner_name ?? n.owner_name} ${n.executor_name}`.toLowerCase().includes(query)) return false;
   switch (filters.problem) {
     case 'all': return true;
-    case 'attention': return !n.complete && n.status !== 'not_applicable' && (n.eligible || n.overdue || n.historical || n.paused || n.status === 'unknown');
+    case 'attention': return n.overdue || (!['completed', 'terminated'].includes(n.business_status ?? '') && !n.complete && n.status !== 'not_applicable' && (n.eligible || n.historical || n.paused || n.status === 'unknown'));
+    case 'completed': return n.business_status === 'completed' || (!n.business_status && n.complete);
+    case 'terminated': return n.business_status === 'terminated';
+    case 'pending': return n.business_status ? n.business_status === 'pending' : n.status === 'pending';
+    case 'paused': return n.business_status ? n.business_status === 'paused' : n.paused;
     case 'overdue': return n.overdue;
     case 'missing': return n.status === 'missing';
     default: return n.status === filters.problem;
@@ -109,6 +127,13 @@ export function matchingFlows(candidate: CandidateView, filters: CandidateFilter
 }
 
 function stateOf(nodes: QualityNode[], reached: boolean, current: boolean): StepState {
+  const business = nodes.some(n => n.stage !== 'exception') ? nodes.filter(n => n.stage !== 'exception') : nodes;
+  if (business.length && business.every(n => n.business_status)) {
+    if (business.every(n => n.business_status === 'completed')) return 'completed';
+    if (business.every(n => ['completed', 'terminated'].includes(n.business_status!))) return 'terminated';
+    if (business.some(n => n.business_status === 'paused')) return 'paused';
+    if (business.some(n => n.business_status === 'pending')) return 'pending';
+  }
   if (nodes.some(n => n.overdue && n.status !== 'late')) return 'missing';
   if (nodes.some(n => n.status === 'late')) return 'late';
   if (nodes.some(n => n.paused)) return 'paused';
@@ -140,12 +165,19 @@ export function flowSteps(flow: FlowView): FlowStep[] {
   const steps: FlowStep[] = definitions.map(def => {
     const round = 'round' in def ? def.round : null;
     const interviews = round ? flow.interviews.filter(i => i.round === round) : [];
-    const nodes = flow.nodes.filter(n => n.stage === def.stage && (round === null || roundOf(n) === round));
+    let nodes = flow.nodes.filter(n => n.stage === def.stage && (round === null || roundOf(n) === round));
+    const latestInterview = interviews.at(-1);
+    if (latestInterview) nodes = nodes.filter(n => n.key.split('/').at(-1) === `interview:${latestInterview.id}`);
+    if (['offer', 'onboarding'].includes(def.stage)) {
+      const records = nodes.filter(n => n.key.split('/').at(-1)?.startsWith(`${def.stage}:`) || n.key === def.stage);
+      if (records.length) nodes = records.slice(-1);
+    }
     const current = stage === def.stage && (round === null || round === activeRound);
     const reached = nodes.length > 0 || interviews.length > 0 || order.indexOf(def.stage) < order.indexOf(stage)
       || (def.stage === stage && (round === null || round <= activeRound));
-    return { ...def, current, reached, state: stateOf(nodes, reached, current), nodes, exceptions: [],
-             interview: interviews.at(-1) };
+    return { ...def, current, reached, state: stateOf(nodes, reached, current),
+             result: [...new Set(nodes.map(n => n.business_result).filter(Boolean))].join('；'), nodes, exceptions: [],
+             interview: latestInterview };
   });
   for (const exception of flow.nodes.filter(n => n.stage === 'exception')) {
     const interview = flow.interviews.find(i => exception.key.includes(i.id));
@@ -168,10 +200,11 @@ export function nextTask(flow: FlowView): { label: string; due: string | null } 
   if (flow.ended_at) return { label: '历史流程已结束，可点击节点查看记录', due: null };
   if (flow.status === 'waitlist') return { label: '备选暂停，恢复后重新计时', due: null };
   if (isTerminal(flow.status)) return { label: '流程已结束，可点击节点查看记录', due: null };
-  const tasks = flow.nodes.filter(n => n.stage === currentStage(flow) || n.stage === 'exception')
-    .flatMap(n => n.fields).filter(f => !f.valid && !f.completed_at && f.due_at && f.status !== '缺少可追溯时间')
+  if (latestOfferNode(flow)?.business_result === '已撤回') return { label: 'Offer已撤回，可在Offer管理中重新开启', due: null };
+  const tasks = flow.nodes.filter(n => n.business_status !== 'terminated')
+    .flatMap(n => n.fields).filter(f => !f.valid && !f.business_completed && !f.business_stopped && !f.completed_at && f.due_at && f.status !== '缺少可追溯时间')
     .sort((a, b) => stamp(a.due_at!) - stamp(b.due_at!));
   return tasks.length ? { label: tasks[0].label, due: tasks[0].due_at! } :
-    { label: flow.interviews.some(i => i.scheduled_at && !i.ended_at && !i.cancelled_at)
+    { label: flow.status === 'pending_hr_decision' ? '部门意见已提交，待HR决策' : flow.status === 'pending_interview' ? '待安排面试' : flow.status === 'pending_next_interview' ? '待安排下一轮面试' : flow.interviews.some(i => i.scheduled_at && !i.ended_at && !i.cancelled_at && i.status !== 'cancelled')
         ? '面试已安排，等待举行及结果更新' : '按当前进度办理，点击节点查看依据', due: null };
 }

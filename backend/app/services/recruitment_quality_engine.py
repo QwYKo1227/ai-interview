@@ -187,27 +187,30 @@ class CandidateFlow:
                 continue
             late = [r for r in reqs if r.get("late")]
             unknown = any(r["unknown"] for r in reqs)
-            pending = [r for r in reqs if not r.get("done") and not r.get("stopped")]
+            pending = [r for r in reqs if not r.get("done") and not r.get("stopped")
+                       and not r.get("business_completed") and not r.get("business_stopped")]
             paused = any(r.get("paused") for r in pending)
             complete = not late and not unknown and not pending
-            eligible = bool(late or (complete and any(not r.get("informational") for r in reqs)))
+            eligible = bool(late or (complete and any(not r.get("informational") and not r.get("business_stopped") for r in reqs)))
             status = "late" if late and not pending else "missing" if late else "unknown" if unknown else "paused" if paused else "complete" if complete else "pending"
             failure_due = min((r["failure_due"] for r in late), default=None)
             due = failure_due or min((r["due"] for r in pending if r.get("due")), default=None)
             # A completed node freezes on completion; an overdue node freezes
             # on the first missed deadline; open work follows the current HR.
-            frozen_at = failure_due or (max(r["done"] for r in reqs if r.get("done")) if complete else self.now)
+            frozen_at = failure_due or (max((r["done"] for r in reqs if r.get("done")), default=self.now) if complete else self.now)
             owner = owner_at(self.position, frozen_at)
             policy = next((r["policy"] for r in reqs if r.get("policy")), self.policies[0])
             evidence = []
             fields = []
             for r in reqs:
                 valid = bool(r.get("done") and not r.get("late") and not r["unknown"])
-                detail = "缺少可追溯时间" if r["unknown"] else "逾期" if r.get("late") else "已完成" if valid and r.get("informational") else "按期完成" if valid else "备选暂停" if r.get("paused") else "等待办理"
+                detail = "已完成（缺少时间记录）" if r.get("business_completed") else "已终止" if r.get("business_stopped") else "缺少可追溯时间" if r["unknown"] else "逾期" if r.get("late") else "已完成" if valid and r.get("informational") else "按期完成" if valid else "备选暂停" if r.get("paused") else "等待办理"
                 fields.append({"label": r["label"], "valid": valid, "status": detail,
                                "started_at": r.get("start"), "completed_at": r.get("done"), "due_at": r.get("due"),
                                "late_due_at": r.get("failure_due"),
-                               "policy_version": r["policy"].version if r.get("policy") else None})
+                               "policy_version": r["policy"].version if r.get("policy") else None,
+                               "business_completed": bool(r.get("business_completed")),
+                               "business_stopped": bool(r.get("business_stopped"))})
                 if r.get("calendar_error"):
                     evidence.append("该年度工作日历尚未覆盖，暂不据此判定逾期")
                 if r.get("done"):
@@ -218,6 +221,9 @@ class CandidateFlow:
                            "resume_id": self.resume.id, "candidate_name": self.resume.candidate_name or "姓名待补齐",
                            "owner_id": owner, "executor_id": self.position.hiring_manager_id, "stage": group["stage"], "label": group["label"],
                            "status": status, "eligible": eligible, "complete": complete,
+                           "timeliness_status": "not_applicable" if all(r.get("informational") for r in reqs) and not unknown else status,
+                           "business_status": group.get("business_status", "completed" if not pending else "pending"),
+                           "business_result": group.get("business_result", ""),
                            "historical": self.start < utc(self.policies[0].created_at), "fields": fields,
                            "missing": list(dict.fromkeys(f["label"] for f in fields if not f["valid"])),
                            "due_at": due, "paused": paused, "overdue": bool(late),
@@ -274,6 +280,8 @@ def build_cycle_nodes(binding, position, resume, policies, actions, interviews, 
     interviews = sorted([i for i in interviews if utc(i.created_at) >= flow.start], key=lambda i: utc(i.created_at))
     reviews = [r for r in reviews if r.reviewed_position_id in {None, position.id} and utc(r.created_at) >= flow.start]
     offers = sorted([o for o in offers if utc(o.created_at) >= flow.start], key=lambda o: utc(o.created_at))
+    from app.services.recruitment_quality_state import current_business_status, project_business_facts
+    flow.business_status = current_business_status(resume, reviews, interviews, offers)
     valid_interviews = [i for i in interviews if valid_schedule(i)]
     def scheduled_at(interview):
         return min((utc(a.occurred_at) for a in actions if a.kind == "schedule_saved"
@@ -450,9 +458,10 @@ def build_cycle_nodes(binding, position, resume, policies, actions, interviews, 
                     flow.requirement(onkey, "onboarding", "入职结果登记", "及时确认入职、调整入职日期或变更Offer状态",
                                      anchor, done, "result_update_days", stop_at=stop,
                                      unknown=bool(offer.actual_onboarded_at and not recorded))
+    project_business_facts(flow, reviews, interviews, offers)
     nodes = flow.nodes()
     is_current = flow.cutoff is None and getattr(resume, "position_id", position.id) == position.id
-    flow_status = val(resume.status) if is_current else (
+    flow_status = flow.business_status if is_current else (
         flow.transitions[-1]["new_status"] if flow.transitions else "historical")
     previous_status = next((t.get("old_status") for t in reversed(flow.transitions)
                             if t["new_status"] == flow_status and t.get("old_status")), None)
@@ -481,11 +490,12 @@ def build_cycle_nodes(binding, position, resume, policies, actions, interviews, 
         flow_contexts[context["id"]] = context
     for row in nodes:
         pending_rules = {r["rule"] for r in flow.groups[row["key"]]["requirements"]
-                         if not r.get("done") and not r.get("stopped")}
+                         if not r.get("done") and not r.get("stopped")
+                         and not r.get("business_completed") and not r.get("business_stopped")}
         row["href"] = business_href(
             row["key"], row["stage"], pending_rules, resume_id=resume.id, position_id=position.id,
             interviews=interviews, offers=offers,
-            actionable=is_current and not row["paused"] and val(resume.status) not in TERMINAL | {"waitlist"})
+            actionable=is_current and not row["paused"] and flow_status not in TERMINAL | {"waitlist"})
         row["flow_id"] = context["id"]
         row["_flow"] = context
     return nodes

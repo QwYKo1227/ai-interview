@@ -2545,11 +2545,12 @@ def test_quality_bindings_and_audits_are_tenant_isolated_and_append_only(pg_sess
         resume = Resume(position_id=position.id, candidate_name="待补充", status=ResumeStatus.PENDING_SCREENING, file_path="resume.pdf")
         db.add(resume)
         db.commit()
-        node = next(n for n in overview(db, user)["nodes"] if n["key"] == "intake")
-        record_action(db, user, node["binding_id"], "intake", ActionRequest(kind="waive", reason="主管批准后补"))
+        node = next(n for n in overview(db, user)["nodes"] if n["key"] == "screening")
+        assert db.query(QualityAction).filter(QualityAction.kind == "transition").count() == 1
+        record_action(db, user, node["binding_id"], "screening", ActionRequest(kind="note", reason="已联系候选人"))
         policy_id = db.query(QualityPolicy).one().id
         binding_id = node["binding_id"]
-        action_id = db.query(QualityAction).one().id
+        action_id = db.query(QualityAction).filter(QualityAction.kind == "note").one().id
     with pg_session_factory(tenant_b) as db:
         assert db.query(QualityPolicy).count() == 0
         assert db.query(QualityBinding).count() == 0

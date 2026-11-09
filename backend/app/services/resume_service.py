@@ -64,6 +64,10 @@ INVALID_EXTRACTED_IDENTITY_VALUES = {
     "candidate",
     "candidate name",
     "姓名",
+    "解析中",
+    "解析中...",
+    "解析中…",
+    "解析失败",
 }
 
 
@@ -157,12 +161,18 @@ def _resolve_resume_identity(
         email = _unique_document_email(content)
 
     supplied = user_identity or {}
-    if "candidate_name" in supplied:
-        candidate_name = _normalize_candidate_name(supplied["candidate_name"])
-    if "contact" in supplied:
-        contact = _normalize_contact(supplied["contact"])
-    if "email" in supplied:
-        email = _normalize_email(supplied["email"])
+    # Reparse payloads from older versions protect every field, including empty
+    # values and the upload placeholder. Only usable identities may override
+    # the freshly extracted values.
+    supplied_name = _normalize_candidate_name(supplied.get("candidate_name"))
+    supplied_contact = _normalize_contact(supplied.get("contact"))
+    supplied_email = _normalize_email(supplied.get("email"))
+    if supplied_name:
+        candidate_name = supplied_name
+    if supplied_contact:
+        contact = supplied_contact
+    if supplied_email:
+        email = supplied_email
 
     return {
         "candidate_name": candidate_name,
@@ -315,10 +325,9 @@ def _process_resume_task(
 
         # 解析 AI 返回结果，兼容多种格式
         if not parsed_data:
-            resume.parse_status = "failed"
-            resume.parse_error = "AI 解析失败"
-            db.commit()
-            return
+            # Propagate failure so TaskQueue performs its bounded retries and
+            # marks the record failed only after those attempts are exhausted.
+            raise RuntimeError("AI analysis failed")
 
         # 提取 match_score（可能在顶层或在 main_job_evaluation/main_position_match 中）
         match_score = parsed_data.get("match_score")
@@ -580,6 +589,15 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
         raise HTTPException(status_code=400, detail="Resume missing position_id")
 
     preserve_workflow_state = not _can_refresh_ai_screening(db, resume)
+    protected_identity_fields = [
+        field
+        for field, normalize in (
+            ("candidate_name", _normalize_candidate_name),
+            ("contact", _normalize_contact),
+            ("email", _normalize_email),
+        )
+        if normalize(getattr(resume, field))
+    ]
 
     resume.parse_status = "processing"
     resume.parse_error = None
@@ -595,7 +613,7 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
         resume.tenant_id,
         resume.id,
         resume.position_id,
-        ["candidate_name", "contact", "email"],
+        protected_identity_fields,
         preserve_workflow_state,
     )
     return resume

@@ -351,6 +351,60 @@ def test_reparse_preserves_workflow_and_identity_while_queued(
     assert queued_call.args[4] is True
 
 
+@pytest.mark.parametrize("placeholder", ["解析中...", "解析中", "解析中…", "未识别"])
+def test_reparse_recovers_identity_instead_of_protecting_placeholders(
+    db, tenant_a, test_position, test_resume, monkeypatch, placeholder
+):
+    test_resume.candidate_name = placeholder
+    test_resume.contact = None
+    test_resume.email = None
+    db.commit()
+    tasks = BackgroundTasks()
+    resume_service.reparse_resume(db, test_resume.id, tasks)
+    assert tasks.tasks[0].args[3] == []
+
+    monkeypatch.setattr(
+        resume_service, "extract_document_text",
+        lambda _path: "张三\n13800138000\ncandidate@example.com",
+    )
+    monkeypatch.setattr(
+        resume_service, "analyze_resume",
+        lambda *_args, **_kwargs: {"candidate_name": "张三", "match_score": 75},
+    )
+    # Also handle work already queued by a version that protected all fields.
+    resume_service._process_resume_task(
+        db, tenant_a.id, test_resume.id,
+        {
+            "position_id": test_position.id,
+            "protected_identity_fields": ["candidate_name", "contact", "email"],
+        },
+    )
+    db.refresh(test_resume)
+    assert test_resume.parse_status == "success"
+    assert test_resume.candidate_name == "张三"
+    assert test_resume.contact == "13800138000"
+    assert test_resume.email == "candidate@example.com"
+    assert test_resume.parsed_data["candidate_name"] == "张三"
+
+
+def test_resume_ai_failure_propagates_for_queue_retry(
+    db, tenant_a, test_position, test_resume, monkeypatch
+):
+    monkeypatch.setattr(
+        resume_service, "extract_document_text", lambda _path: "Candidate resume"
+    )
+    monkeypatch.setattr(resume_service, "analyze_resume", lambda *_args, **_kwargs: {})
+    with pytest.raises(RuntimeError, match="resume parsing failed"):
+        resume_service._process_resume_task(
+            db, tenant_a.id, test_resume.id, {"position_id": test_position.id}
+        )
+    db.refresh(test_resume)
+    assert test_resume.parse_status == "processing"
+    resume_service._on_resume_parse_failure(db, test_resume.id, "RuntimeError")
+    db.refresh(test_resume)
+    assert test_resume.parse_status == "failed"
+
+
 def test_reparse_worker_does_not_overwrite_interview_passed_state(
     db, tenant_a, test_position, test_resume, monkeypatch
 ):

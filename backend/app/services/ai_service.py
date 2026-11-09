@@ -2,6 +2,7 @@ from openai import OpenAI
 import os
 from typing import Dict, Any, List
 import json
+import logging
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from app.schemas.position import JDChatMessage
@@ -9,6 +10,7 @@ from app.utils.prompt_manager import prompt_manager
 from app.services.system_config_service import get_system_config
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 _DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "dashscope")
 _DEFAULT_BASE_URL = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -97,7 +99,13 @@ def analyze_resume(
         result = json.loads(completion.choices[0].message.content)
         return result
     except Exception as e:
-        print("AI analysis failed")
+        # Keep enough diagnostic detail to distinguish provider failures from
+        # invalid JSON without logging credentials or candidate content.
+        logger.warning(
+            "AI resume analysis failed (exception_type=%s, provider_status=%s)",
+            type(e).__name__,
+            getattr(e, "status_code", None),
+        )
         return {}
 
 def generate_resume_markdown(resume_text: str, *, db: Session | None = None) -> str:

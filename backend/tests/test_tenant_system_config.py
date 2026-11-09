@@ -122,7 +122,7 @@ def test_secret_values_are_not_logged_on_smtp_failure(monkeypatch, caplog):
     assert "TOP-SECRET-SMTP-PASSWORD" not in caplog.text
 
 
-def test_llm_exception_does_not_print_secret(monkeypatch, capsys):
+def test_llm_exception_does_not_print_secret(monkeypatch, capsys, caplog):
     secret = "TOP-SECRET-LLM-KEY"
     monkeypatch.setattr(
         ai_service.prompt_manager,
@@ -147,6 +147,8 @@ def test_llm_exception_does_not_print_secret(monkeypatch, capsys):
 
     assert ai_service.analyze_resume("resume", "position", db=MagicMock()) == {}
     assert secret not in capsys.readouterr().out
+    assert secret not in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
 
 
 def test_all_stream_failures_hide_exception_secrets(monkeypatch, capsys):

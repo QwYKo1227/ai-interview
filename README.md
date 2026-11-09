@@ -134,6 +134,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 后端 API 文档：<http://localhost:8000/docs>
 
+外部系统接入：[API 接入文档](docs/api-calling-guide.md) · [离线接口手册](docs/external-api/index.html) · [交付包](docs/ai-interview-api-v1.0.0.zip)。
+
 ### 4. 启动前端
 
 ```bash

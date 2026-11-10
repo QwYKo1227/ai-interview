@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { Modal } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PositionsList from './List'
@@ -62,9 +63,39 @@ describe('PositionsList responsive table', () => {
   })
 
   afterEach(() => {
-    getComputedStyleSpy.mockRestore()
     cleanup()
+    getComputedStyleSpy.mockRestore()
+    vi.restoreAllMocks()
     vi.clearAllMocks()
+  })
+
+  it.each(['correction', 'new_cycle'])('sends the selected %s mode when reopening in batch', async (mode) => {
+    const user = userEvent.setup()
+    // Exercise our confirmation content and submission without JSDOM's
+    // unsupported Ant Design modal exit animations.
+    vi.spyOn(Modal, 'confirm').mockImplementation(config => {
+      render(<div>{config.content}<button onClick={() => void config.onOk?.()}>确认</button></div>)
+      return { destroy: () => undefined, update: () => undefined }
+    })
+    const closedPosition = { ...position, status: 'closed' }
+    vi.mocked(request.get).mockImplementation(async (url: string) => url === '/positions' ? [closedPosition] : [])
+    vi.mocked(request.post).mockResolvedValue({ updated_count: 1 })
+    render(<MemoryRouter><PositionsList /></MemoryRouter>)
+    await screen.findByText(position.title)
+    await user.click(screen.getByRole('checkbox', { name: 'Select all' }))
+    await user.click(screen.getByRole('button', { name: '批量发布' }))
+    const selector = await screen.findByRole('combobox', { name: '重开方式' })
+    if (mode === 'new_cycle') {
+      await user.click(selector)
+      await user.click(await screen.findByText('新增招聘需求：新建轮次、新 HC，绩效重新起算'))
+    } else {
+      expect(screen.getByText('纠正误操作：继续原轮次，保留原 HC 和绩效')).toBeInTheDocument()
+    }
+    await user.type(screen.getByPlaceholderText('变更原因（必填）'), '恢复招聘')
+    await user.click(screen.getByRole('button', { name: /^确\s*认$/ }))
+    await waitFor(() => expect(request.post).toHaveBeenCalledWith('/positions/batch-status', {
+      position_ids: [position.id], status: 'published', reason: '恢复招聘', reopen_mode: mode,
+    }))
   })
 
   it('contains horizontal overflow and fixes the action column to the right', async () => {

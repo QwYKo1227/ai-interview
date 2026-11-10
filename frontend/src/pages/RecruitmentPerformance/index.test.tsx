@@ -34,6 +34,7 @@ const overview = {
     positions: [{
       position_id: 'p-1', title: '后端工程师', category: 'domestic_rd', priority: 4,
       position_status: 'published',
+      recruitment_cycle: 1,
       hc_count: 1, onboarded_count: 0, current_employed_count: 1,
       cumulative_onboarded_count: 2, departed_count: 1, excluded_count: 0, task_points: 100,
       score: 60, achievement_rate: 0.6, highest_result_stage: '面试通过，进入录用决策', slots: [],
@@ -67,6 +68,25 @@ const mockRequests = (responseOverview = overview, responseLeaderboard = leaderb
 
 describe('RecruitmentPerformance', () => {
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+  it('shows separate recruitment cycles for a reopened position', async () => {
+    authState.role = 'hr';
+    const person = overview.people[0];
+    mockRequests({
+      ...overview,
+      people: [{
+        ...person,
+        positions: [
+          { ...person.positions[0], recruitment_cycle: 1 },
+          { ...person.positions[0], recruitment_cycle: 2 },
+        ],
+      }],
+    });
+    render(<RecruitmentPerformance />);
+    expect(await screen.findByText(/第1轮招聘/)).toBeTruthy();
+    expect(await screen.findByText(/第2轮招聘/)).toBeTruthy();
+    expect(screen.getAllByText('后端工程师')).toHaveLength(2);
+  });
 
   it.each([
     ['open', '待发布'],

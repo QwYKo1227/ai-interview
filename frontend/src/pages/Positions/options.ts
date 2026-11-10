@@ -24,6 +24,16 @@ export const normalizePositionClassification = <T extends Record<string, unknown
 
 export type PositionStatus = 'open' | 'published' | 'paused' | 'closed' | 'cancelled';
 
+export type ReopenMode = 'correction' | 'new_cycle';
+export const REOPEN_MODE_OPTIONS = [
+  { value: 'correction', label: '纠正误操作：继续原轮次，保留原 HC 和绩效' },
+  { value: 'new_cycle', label: '新增招聘需求：新建轮次、新 HC，绩效重新起算' },
+];
+
+export const isPositionReopening = (current?: PositionStatus, target?: PositionStatus) => (
+  Boolean(current && target && ['closed', 'cancelled'].includes(current) && ['open', 'published'].includes(target))
+);
+
 export const POSITION_STATUS_OPTIONS: Array<{ value: PositionStatus; label: string; color: string }> = [
   { value: 'open', label: '待发布', color: 'warning' },
   { value: 'published', label: '招聘中', color: 'processing' },

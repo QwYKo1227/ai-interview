@@ -12,6 +12,8 @@ import {
   POSITION_CATEGORY_OPTIONS,
   PRIORITY_OPTIONS,
   statusChangeRequiresReason,
+  isPositionReopening,
+  REOPEN_MODE_OPTIONS,
   type PositionStatus,
 } from './options';
 
@@ -234,6 +236,12 @@ const PositionForm: React.FC = () => {
             rules={[{ required: statusChangeRequiresReason(originalPosition.status, selectedStatus), message: '请填写状态变更原因' }]}
           >
             <Input.TextArea rows={3} maxLength={1000} placeholder="请说明本次状态变更原因" />
+          </Form.Item>}
+          {isPositionReopening(originalPosition?.status, selectedStatus) && <Form.Item
+            name="reopen_mode" label="重开方式" initialValue="correction" preserve={false}
+            rules={[{ required: true, message: '请选择重开方式' }]}
+          >
+            <Select options={REOPEN_MODE_OPTIONS} />
           </Form.Item>}
 
           {originalPosition && isAdmin && selectedOwnerId !== originalPosition.hiring_manager_id && <Form.Item

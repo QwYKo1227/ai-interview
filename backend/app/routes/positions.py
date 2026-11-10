@@ -170,6 +170,7 @@ def batch_update_position_status_route(
         request.status,
         reason=request.reason,
         actor=current_user,
+        reopen_mode=request.reopen_mode,
     )
     return PositionBatchStatusResponse(updated_count=count)
 
@@ -265,7 +266,7 @@ def restore_position_route(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(check_roles([UserRole.ADMIN])),
 ):
-    db_position = restore_position(db, position_id, actor=current_user, reason=request.reason)
+    db_position = restore_position(db, position_id, actor=current_user, reason=request.reason, reopen_mode=request.reopen_mode)
     if not db_position:
         raise HTTPException(status_code=404, detail="Position not found")
     return db_position

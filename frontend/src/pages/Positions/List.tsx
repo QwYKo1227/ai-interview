@@ -23,6 +23,9 @@ import {
   getStatusOption,
   POSITION_STATUS_OPTIONS,
   statusChangeRequiresReason,
+  isPositionReopening,
+  REOPEN_MODE_OPTIONS,
+  type ReopenMode,
   type PositionStatus,
 } from './options';
 
@@ -263,6 +266,7 @@ const PositionsList: React.FC = () => {
     try {
       const res = await request.get(`/positions/${record.id}`);
       setEditingRecord(res);
+      form.resetFields();
       form.setFieldsValue(res);
       setIsModalVisible(true);
     } catch {
@@ -313,10 +317,12 @@ const PositionsList: React.FC = () => {
     }
     const target = getStatusOption(targetStatus);
     let reason = '';
-    const reasonRequired = ['paused', 'cancelled'].includes(targetStatus);
+    let reopenMode: ReopenMode = 'correction';
+    const reopening = data.some(row => selectedRowKeys.includes(row.id) && isPositionReopening(row.status, targetStatus));
+    const reasonRequired = reopening || ['paused', 'cancelled'].includes(targetStatus);
     Modal.confirm({
       title: `确认批量变更为“${target.label}”`,
-      content: <div><div style={{ marginBottom: 12 }}>将统一变更选中的 {selectedRowKeys.length} 个岗位。</div><Input.TextArea rows={3} maxLength={1000} placeholder={`变更原因${reasonRequired ? '（必填）' : '（选填）'}`} onChange={(event) => { reason = event.target.value; }} /></div>,
+      content: <div><div style={{ marginBottom: 12 }}>将统一变更选中的 {selectedRowKeys.length} 个岗位。</div>{reopening && <Select<ReopenMode> aria-label="重开方式" defaultValue="correction" options={REOPEN_MODE_OPTIONS} style={{ width: '100%', marginBottom: 12 }} onChange={value => { reopenMode = value; }} />}<Input.TextArea rows={3} maxLength={1000} placeholder={`变更原因${reasonRequired ? '（必填）' : '（选填）'}`} onChange={(event) => { reason = event.target.value; }} /></div>,
       okText: '确认',
       cancelText: '取消',
       onOk: async () => {
@@ -329,6 +335,7 @@ const PositionsList: React.FC = () => {
             position_ids: selectedRowKeys,
             status: targetStatus,
             reason: reason.trim() || undefined,
+            ...(reopening ? { reopen_mode: reopenMode } : {}),
           });
           message.success(`已批量变更为“${target.label}”`);
           setSelectedRowKeys([]);
@@ -342,15 +349,16 @@ const PositionsList: React.FC = () => {
 
   const handleRestore = (id: string) => {
     let reason = '';
+    let reopenMode: ReopenMode = 'correction';
     Modal.confirm({
       title: '恢复岗位为待发布',
-      content: <Input.TextArea rows={3} maxLength={1000} placeholder="请填写恢复原因（必填）" onChange={(event) => { reason = event.target.value; }} />,
+      content: <div><Select<ReopenMode> aria-label="恢复方式" defaultValue="correction" options={REOPEN_MODE_OPTIONS} style={{ width: '100%', marginBottom: 12 }} onChange={value => { reopenMode = value; }} /><Input.TextArea rows={3} maxLength={1000} placeholder="请填写恢复原因（必填）" onChange={(event) => { reason = event.target.value; }} /></div>,
       onOk: async () => {
         if (!reason.trim()) {
           message.error('请填写恢复原因');
           return Promise.reject();
         }
-        await request.post(`/positions/${id}/restore`, { reason: reason.trim() });
+        await request.post(`/positions/${id}/restore`, { reason: reason.trim(), reopen_mode: reopenMode });
         message.success('岗位已恢复为待发布');
         void fetchPositions();
       },
@@ -899,6 +907,12 @@ const PositionsList: React.FC = () => {
             rules={[{ required: statusChangeRequiresReason(editingRecord.status, selectedStatus), message: '请填写状态变更原因' }]}
           >
             <Input.TextArea rows={3} maxLength={1000} placeholder="请说明本次状态变更原因" />
+          </Form.Item>}
+          {isPositionReopening(editingRecord?.status, selectedStatus) && <Form.Item
+            name="reopen_mode" label="重开方式" initialValue="correction" preserve={false}
+            rules={[{ required: true, message: '请选择重开方式' }]}
+          >
+            <Select options={REOPEN_MODE_OPTIONS} />
           </Form.Item>}
           {editingRecord && isAdmin && selectedOwnerId !== editingRecord.hiring_manager_id && <Form.Item
             name="owner_change_reason"

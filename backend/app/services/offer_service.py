@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from app.services.public_token_service import resolve_public_token, revoke_public_tokens
 from app.config.tenant_session import get_tenant_id
-from app.services.recruitment_performance_service import COMPANY_TZ, record_resume_status_event, sync_position_slots
+from app.services.recruitment_performance_service import COMPANY_TZ, record_resume_status_event, sync_position_slots, position_reopen_events
 
 DECISION_REASONS = {
     "salary",
@@ -428,6 +428,11 @@ def confirm_onboarding(db: Session, offer_id: UUID, actual_onboard_date: date, a
         raise ValueError("Offer不存在")
     if not can_decide_offer(offer, actor):
         raise PermissionError("只有该岗位招聘负责人或管理员可以确认入职")
+    # Serialize HC allocation and closure with updates/reopens of this position.
+    position = db.query(Position).filter(Position.id == offer.position_id).with_for_update().populate_existing().one()
+    db.refresh(offer)
+    if offer.actual_onboarded_at is not None:
+        return offer
     if offer.status != OfferStatus.ACCEPTED:
         raise ValueError("只有已接受Offer才能确认入职")
     onboarded_at = datetime.combine(actual_onboard_date, time.min, COMPANY_TZ).astimezone(timezone.utc)
@@ -454,7 +459,14 @@ def confirm_onboarding(db: Session, offer_id: UUID, actual_onboard_date: date, a
         actor_id=actor.id,
         occurred_at=onboarded_at,
     )
-    slots = sync_position_slots(db, offer.position)
+    slots = sync_position_slots(db, position, assigned_at=offer.onboarding_recorded_at)
+    old_candidate = db.query(RecruitmentHcSlot).filter(
+        RecruitmentHcSlot.position_id == position.id,
+        RecruitmentHcSlot.candidate_resume_id == resume.id,
+        RecruitmentHcSlot.completed_at.isnot(None),
+    ).first()
+    if old_candidate is not None and old_candidate not in slots:
+        raise ValueError("该候选人已计入历史招聘轮次，不能重复占用本轮HC")
     slot = next((item for item in slots if item.candidate_resume_id == resume.id), None)
     slot = slot or next((item for item in slots if item.status == "active" and item.completed_at is None), None)
     if slot is None:
@@ -463,6 +475,22 @@ def confirm_onboarding(db: Session, offer_id: UUID, actual_onboard_date: date, a
     slot.accepted_at = accepted_at
     slot.completed_at = onboarded_at
     slot.status = "completed"
+    occupied = sum(item.status == "completed" for item in slots)
+    if occupied >= max(position.headcount or 1, 1) and position.status in {
+        PositionStatus.OPEN, PositionStatus.PUBLISHED, PositionStatus.PAUSED,
+    }:
+        from app.models.models import PositionEventType
+        from app.services.position_service import _add_position_event
+
+        old_position_status = position.status
+        position.status = PositionStatus.CLOSED
+        _add_position_event(
+            db, position, PositionEventType.STATUS_CHANGED, actor=actor,
+            occurred_at=offer.onboarding_recorded_at,
+            old_value=old_position_status.value, new_value=PositionStatus.CLOSED.value,
+            reason="本轮HC已全部确认入职，自动关闭岗位",
+            event_metadata={"automatic": True, "headcount": position.headcount},
+        )
     db.commit()
     db.refresh(offer)
     return offer
@@ -530,6 +558,12 @@ def record_departure(
         occurred_at=departed_at,
     )
 
+    reopens = position_reopen_events(db, offer.position)
+    slot_assigned_at = slot.assigned_at.replace(tzinfo=timezone.utc) if slot.assigned_at.tzinfo is None else slot.assigned_at
+    latest_start = reopens[-1].occurred_at if reopens else None
+    if latest_start is not None and latest_start.tzinfo is None:
+        latest_start = latest_start.replace(tzinfo=timezone.utc)
+    belongs_to_current_cycle = latest_start is None or slot_assigned_at >= latest_start
     if release_hc:
         slot.status = "released"
         slot.status_reason = "员工离职，HC已释放，历史积分已冻结"
@@ -542,16 +576,17 @@ def record_departure(
             .scalar()
             or slot.recruitment_round
         ) + 1
-        db.add(RecruitmentHcSlot(
-            tenant_id=slot.tenant_id,
-            position_id=slot.position_id,
-            slot_number=slot.slot_number,
-            status="active",
-            assigned_at=departed_at,
-            round_started_at=departed_at,
-            recruitment_round=next_round,
-            status_reason="离职释放HC后开始新一轮招聘",
-        ))
+        if belongs_to_current_cycle:
+            db.add(RecruitmentHcSlot(
+                tenant_id=slot.tenant_id,
+                position_id=slot.position_id,
+                slot_number=slot.slot_number,
+                status="active",
+                assigned_at=departed_at,
+                round_started_at=departed_at,
+                recruitment_round=next_round,
+                status_reason="离职释放HC后开始新一轮招聘",
+            ))
     else:
         slot.status = "departed_retained"
         slot.status_reason = "员工离职，HC未释放，历史积分已冻结"

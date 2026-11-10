@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from app.services.recruitment_performance_service import (
     build_handoff_credit_metadata,
     sync_position_slots,
+    start_position_recruitment_cycle,
+    position_reopen_events,
 )
 from app.services.recruitment_access import can_manage_position, is_admin
 
@@ -268,14 +270,18 @@ def get_position_stats(db: Session, position_id: UUID) -> PositionStats:
         .scalar()
         or 0
     )
-    occupied_headcount = (
+    position = db.get(Position, position_id)
+    reopen_events = position_reopen_events(db, position) if position is not None else []
+    occupied_query = (
         db.query(RecruitmentHcSlot)
         .filter(
             RecruitmentHcSlot.position_id == position_id,
             RecruitmentHcSlot.status.in_(["completed", "departed_retained"]),
         )
-        .count()
     )
+    if reopen_events:
+        occupied_query = occupied_query.filter(RecruitmentHcSlot.assigned_at >= reopen_events[-1].occurred_at)
+    occupied_headcount = occupied_query.count()
     return PositionStats(
         total_resumes=len(resumes),
         current_employed=sum(resume.status == ResumeStatus.COMPLETED for resume in resumes),
@@ -338,6 +344,13 @@ def _add_position_event(
     reason: Optional[str] = None,
     event_metadata: Optional[dict] = None,
 ) -> None:
+    metadata = dict(event_metadata or {})
+    if old_value in {"closed", "cancelled", "deleted"} and new_value in {"open", "published"}:
+        metadata["recruitment_cycle_policy_version"] = 1
+        metadata["previous_recruitment_config"] = {
+            "priority": position.priority,
+            "category": position.category.value,
+        }
     db.add(PositionEvent(
         tenant_id=position.tenant_id,
         position_id=position.id,
@@ -348,7 +361,7 @@ def _add_position_event(
         actor_name=_actor_name(actor),
         reason=_clean_reason(reason),
         occurred_at=occurred_at,
-        event_metadata=event_metadata or {},
+        event_metadata=metadata,
     ))
 
 
@@ -428,6 +441,7 @@ def update_position(
     if db_position is None:
         return None
     update_data = position.model_dump(exclude_unset=True)
+    reopen_mode = update_data.pop("reopen_mode", "correction")
     status_reason = _clean_reason(update_data.pop("status_change_reason", None))
     body_owner_reason = _clean_reason(update_data.pop("owner_change_reason", None))
     effective_owner_reason = body_owner_reason or _clean_reason(owner_change_reason)
@@ -463,6 +477,7 @@ def update_position(
             old_value=current_status.value,
             new_value=target_status.value,
             reason=status_reason,
+            event_metadata={"reopen_mode": reopen_mode},
         )
 
     if "hiring_manager_id" in update_data:
@@ -513,7 +528,9 @@ def update_position(
             )
     for key, value in update_data.items():
         setattr(db_position, key, value)
-    if "headcount" in update_data:
+    if current_status in {PositionStatus.CLOSED, PositionStatus.CANCELLED} and target_status in ADMIN_REOPEN_TARGETS and reopen_mode == "new_cycle":
+        start_position_recruitment_cycle(db, db_position, started_at=now)
+    elif "headcount" in update_data:
         sync_position_slots(db, db_position, assigned_at=now)
     db.commit()
     db.refresh(db_position)
@@ -527,6 +544,7 @@ def batch_update_position_status(
     *,
     reason: Optional[str],
     actor: User,
+    reopen_mode: str = "correction",
 ) -> int:
     unique_ids = list(dict.fromkeys(position_ids))
     positions = (
@@ -558,8 +576,10 @@ def batch_update_position_status(
             old_value=old_status.value,
             new_value=target_status.value,
             reason=reason,
-            event_metadata={"batch": True},
+            event_metadata={"batch": True, "reopen_mode": reopen_mode},
         )
+        if old_status in {PositionStatus.CLOSED, PositionStatus.CANCELLED} and target_status in ADMIN_REOPEN_TARGETS and reopen_mode == "new_cycle":
+            start_position_recruitment_cycle(db, db_position, started_at=now)
     db.commit()
     return len(positions)
 
@@ -597,7 +617,7 @@ def soft_delete_position(db: Session, position_id: UUID, *, actor: User, reason:
     return db_position
 
 
-def restore_position(db: Session, position_id: UUID, *, actor: User, reason: str):
+def restore_position(db: Session, position_id: UUID, *, actor: User, reason: str, reopen_mode: str = "correction"):
     if not is_admin(actor):
         raise HTTPException(status_code=403, detail="只有管理员可以恢复岗位")
     cleaned_reason = _clean_reason(reason)
@@ -626,8 +646,10 @@ def restore_position(db: Session, position_id: UUID, *, actor: User, reason: str
         old_value="deleted",
         new_value=PositionStatus.OPEN.value,
         reason=cleaned_reason,
-        event_metadata={"status_before_delete": previous_status.value},
+        event_metadata={"status_before_delete": previous_status.value, "reopen_mode": reopen_mode},
     )
+    if reopen_mode == "new_cycle":
+        start_position_recruitment_cycle(db, db_position, started_at=now)
     db.commit()
     db.refresh(db_position)
     return db_position

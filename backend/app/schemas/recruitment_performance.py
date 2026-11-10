@@ -92,6 +92,8 @@ class HcScore(BaseModel):
 
 class PositionScore(BaseModel):
     position_id: UUID
+    recruitment_cycle: int = 1
+    cycle_started_at: Optional[datetime] = None
     title: str
     position_status: Optional[str] = None
     category: str

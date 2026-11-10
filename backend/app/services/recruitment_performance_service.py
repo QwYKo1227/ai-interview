@@ -230,6 +230,30 @@ def publish_config(db: Session, actor: User, payload: PerformanceConfigPayload) 
     return get_config(db, period)
 
 
+def _starts_new_recruitment_cycle(event: PositionEvent) -> bool:
+    metadata = event.event_metadata or {}
+    # Only explicit new-demand events written under the rollout policy create
+    # cycles. Every pre-rollout reopen, including earlier feature variants,
+    # continues the original cycle without backfilling historical markers.
+    return (
+        metadata.get("reopen_mode") == "new_cycle"
+        and metadata.get("recruitment_cycle_policy_version") == 1
+    )
+
+
+def _is_reopen_event(event: PositionEvent) -> bool:
+    return (event.old_value or "").lower() in {"closed", "cancelled", "deleted"} and (
+        event.new_value or "").lower() in {"open", "published"}
+
+
+def position_reopen_events(db: Session, position: Position) -> list[PositionEvent]:
+    return [event for event in db.query(PositionEvent).filter(
+        PositionEvent.position_id == position.id,
+        PositionEvent.event_type.in_([PositionEventType.STATUS_CHANGED, PositionEventType.RESTORED]),
+    ).order_by(PositionEvent.occurred_at, PositionEvent.id).all()
+        if _is_reopen_event(event) and _starts_new_recruitment_cycle(event)]
+
+
 def sync_position_slots(db: Session, position: Position, *, assigned_at: Optional[datetime] = None) -> list[RecruitmentHcSlot]:
     slots = (
         db.query(RecruitmentHcSlot)
@@ -237,19 +261,24 @@ def sync_position_slots(db: Session, position: Position, *, assigned_at: Optiona
         .order_by(RecruitmentHcSlot.slot_number)
         .all()
     )
+    next_slot_number = max((slot.slot_number for slot in slots), default=0) + 1
+    reopen_events = position_reopen_events(db, position)
+    cycle_start = _aware(reopen_events[-1].occurred_at) if reopen_events else None
+    slots = [slot for slot in slots if cycle_start is None or _aware(slot.assigned_at) >= cycle_start]
     active = [
         slot for slot in slots
         if slot.status not in {"cancelled", *HISTORICAL_HC_STATUSES}
     ]
     desired = max(position.headcount or 1, 1)
     now = _aware(assigned_at) or datetime.now(timezone.utc)
+    if cycle_start is not None:
+        now = cycle_start if not slots else max(now, cycle_start)
     if len(active) < desired:
-        next_number = max((slot.slot_number for slot in slots), default=0) + 1
         for offset in range(desired - len(active)):
             slot = RecruitmentHcSlot(
                 tenant_id=position.tenant_id,
                 position_id=position.id,
-                slot_number=next_number + offset,
+                slot_number=next_slot_number + offset,
                 assigned_at=now,
                 round_started_at=now,
             )
@@ -264,6 +293,23 @@ def sync_position_slots(db: Session, position: Position, *, assigned_at: Optiona
             slot.status = "cancelled"
             slot.status_reason = "岗位Headcount减少"
     return sorted(slots, key=lambda slot: slot.slot_number)
+
+
+def start_position_recruitment_cycle(db: Session, position: Position, *, started_at: datetime) -> None:
+    """Create fresh HC without changing previous cycles' candidate/score records."""
+    # Flush the reopen event first: slot synchronization uses it as the boundary.
+    db.flush()
+    # Slot numbers remain unique across cycles, including replacement rounds.
+    next_number = (db.query(func.max(RecruitmentHcSlot.slot_number)).filter(
+        RecruitmentHcSlot.position_id == position.id,
+    ).scalar() or 0) + 1
+    for offset in range(max(position.headcount or 1, 1)):
+        db.add(RecruitmentHcSlot(
+            tenant_id=position.tenant_id, position_id=position.id,
+            slot_number=next_number + offset, assigned_at=started_at,
+            round_started_at=started_at,
+        ))
+    db.flush()
 
 
 def record_resume_status_event(
@@ -481,6 +527,25 @@ def _historical_result_stage(
     resume: Resume,
     cutoff: datetime,
 ) -> Optional[tuple[str, datetime]]:
+    # Onboarding is a business date (company midnight), while Offer decisions
+    # have a precise timestamp. A same-day acceptance event can therefore sort
+    # after onboarding. Use the actual lifecycle evidence before replaying
+    # resume events, so confirmed hires retain their onboarding coefficient.
+    onboarded_offer = (
+        db.query(Offer)
+        .filter(
+            Offer.resume_id == resume.id,
+            Offer.position_id == resume.position_id,
+            Offer.actual_onboarded_at <= cutoff,
+        )
+        .order_by(Offer.actual_onboarded_at.desc())
+        .first()
+    )
+    if onboarded_offer is not None:
+        departed_at = _aware(onboarded_offer.departed_at)
+        if departed_at is not None and departed_at <= cutoff:
+            return _departed_result_stage(onboarded_offer)
+        return "onboarded", _aware(onboarded_offer.actual_onboarded_at)
     historical_status = _resume_status_at(db, resume, cutoff)
     if historical_status is None:
         return None
@@ -609,6 +674,7 @@ def _position_status_timeline(
                 PositionEventType.INITIAL_STATUS,
                 PositionEventType.STATUS_BASELINE,
                 PositionEventType.STATUS_CHANGED,
+                PositionEventType.RESTORED,
             ]),
         )
         .order_by(PositionEvent.occurred_at, PositionEvent.id)
@@ -616,6 +682,19 @@ def _position_status_timeline(
     )
     # Legacy baselines store enum names in uppercase. With no baseline, the
     # first transition's old value describes the state before that transition.
+    corrected_events = set()
+    for index, event in enumerate(events):
+        if not _is_reopen_event(event) or _starts_new_recruitment_cycle(event):
+            continue
+        # Keep the audit trail, but undo the accidental terminal transition
+        # when replaying performance history. Correction does not stop clocks.
+        for previous in reversed(events[:index]):
+            if (previous.new_value or "").lower() in {"closed", "cancelled"}:
+                corrected_events.add(previous.id)
+                break
+            if _is_reopen_event(previous):
+                break
+    events = [event for event in events if event.id not in corrected_events]
     status = str(getattr(position.status, "value", position.status)).lower()
     if events:
         status = (events[0].old_value or events[0].new_value or status).lower()
@@ -716,7 +795,14 @@ def _owner_at(db: Session, position: Position, cutoff: datetime) -> Optional[UUI
     events = _owner_events(db, position.id, cutoff)
     raw_owner_id = events[-1].new_value if events else None
     if not raw_owner_id:
-        return position.hiring_manager_id
+        next_transfer = db.query(PositionEvent).filter(
+            PositionEvent.position_id == position.id,
+            PositionEvent.event_type == PositionEventType.OWNER_CHANGED,
+            PositionEvent.occurred_at > cutoff,
+        ).order_by(PositionEvent.occurred_at, PositionEvent.id).first()
+        if next_transfer is None:
+            return position.hiring_manager_id
+        raw_owner_id = next_transfer.old_value
     try:
         return UUID(raw_owner_id)
     except (TypeError, ValueError):
@@ -756,8 +842,9 @@ def _owner_holding_intervals(
     resumed intervals are both retained instead of discarding the earlier work.
     """
     events = _owner_events(db, position.id, cutoff)
+    cycle_starts = {_aware(event.occurred_at) for event in position_reopen_events(db, position)}
     if not events:
-        if position.hiring_manager_id != owner_id:
+        if _owner_at(db, position, cutoff) != owner_id:
             return []
         return [(_aware(position.created_at), cutoff)]
 
@@ -782,7 +869,7 @@ def _owner_holding_intervals(
             active_owner = None
         active_start = (
             occurred_at
-            if event.event_type == PositionEventType.INITIAL_OWNER
+            if event.event_type == PositionEventType.INITIAL_OWNER or occurred_at in cycle_starts
             else _next_company_day_start(occurred_at)
         )
 
@@ -801,13 +888,23 @@ def _score_position(
     cutoff: datetime,
     holding_intervals: Optional[list[tuple[datetime, datetime]]],
     eligible_only: bool = False,
+    cycle_start: Optional[datetime] = None,
+    recruitment_cycle: int = 1,
+    cycle_config: Optional[dict] = None,
 ) -> PositionScore:
-    category = getattr(position.category, "value", position.category)
+    if cycle_start is None:
+        prior_reopens = [event for event in position_reopen_events(db, position)
+                         if _aware(event.occurred_at) <= cutoff]
+        if prior_reopens:
+            cycle_start = _aware(prior_reopens[-1].occurred_at)
+            recruitment_cycle = len(prior_reopens) + 1
+    category = (cycle_config or {}).get("category", getattr(position.category, "value", position.category))
+    priority = (cycle_config or {}).get("priority", position.priority)
     target_days = int(config.target_days[category])
     position_status, position_pauses, status_since = _position_status_timeline(db, position, cutoff)
     cancelled = position_status == PositionStatus.CANCELLED.value
-    if cancelled:
-        # Retain the score earned at cancellation, including its result stage
+    if position_status in {PositionStatus.CLOSED.value, PositionStatus.CANCELLED.value}:
+        # Retain the score earned at closure/cancellation, including its result stage
         # and time coefficient. Later days or candidate progress cannot add to it.
         cutoff = min(cutoff, status_since)
         candidates = _candidate_allocations_at(
@@ -820,7 +917,14 @@ def _score_position(
         .all()
     )
     hc_scores = []
-    visible_slots = [slot for slot in slots if _aware(slot.assigned_at) <= cutoff]
+    visible_slots = [slot for slot in slots if _aware(slot.assigned_at) <= cutoff
+                     and (cycle_start is None or _aware(slot.assigned_at) >= cycle_start)]
+    if cycle_start is not None:
+        previous_candidates = {slot.candidate_resume_id for slot in slots
+                               if _aware(slot.assigned_at) < cycle_start and slot.candidate_resume_id}
+        candidates = [candidate for candidate in candidates
+                      if candidate[0].id not in previous_candidates
+                      and _aware(candidate[0].created_at) >= cycle_start]
     fixed_resume_ids = {
         slot.candidate_resume_id for slot in visible_slots if slot.candidate_resume_id is not None
     }
@@ -889,12 +993,12 @@ def _score_position(
                 0,
                 _day_count(interval_start, interval_end) - interval_deducted,
             )
-        cycle_start = max(_aware(slot.round_started_at), period_start)
-        cycle_end = min(accepted_at or cutoff, cutoff)
-        cycle_deducted = _deducted_days(pauses, cycle_start, cycle_end)
-        actual_days = max(1, _day_count(cycle_start, cycle_end) - cycle_deducted)
+        slot_cycle_start = max(_aware(slot.round_started_at), period_start)
+        slot_cycle_end = min(accepted_at or cutoff, cutoff)
+        cycle_deducted = _deducted_days(pauses, slot_cycle_start, slot_cycle_end)
+        actual_days = max(1, _day_count(slot_cycle_start, slot_cycle_end) - cycle_deducted)
         time_coefficient = _time_coefficient(actual_days, target_days, config.time_coefficients)
-        earned_task_points = float(position.priority * effective_days)
+        earned_task_points = float(priority * effective_days)
         score = earned_task_points * time_coefficient * result_coefficient
         task_points = 0.0 if cancelled else earned_task_points
         hc_scores.append(HcScore(
@@ -924,9 +1028,11 @@ def _score_position(
     valid = [item for item in scorable if item.status not in HISTORICAL_HC_STATUSES]
     return PositionScore(
         position_id=position.id,
+        recruitment_cycle=recruitment_cycle,
+        cycle_started_at=cycle_start or _aware(position.created_at),
         title=position.title,
         category=category,
-        priority=position.priority,
+        priority=priority,
         hc_count=len(valid),
         onboarded_count=sum(item.status == "completed" for item in valid),
         current_employed_count=sum(item.status == "completed" for item in valid),
@@ -949,6 +1055,8 @@ def _first_decision_milestone(
     position: Position,
     cutoff: datetime,
 ) -> Optional[ResumeStatusEvent]:
+    reopens = [event for event in position_reopen_events(db, position) if _aware(event.occurred_at) <= cutoff]
+    cycle_start = _aware(reopens[-1].occurred_at) if reopens else _aware(position.created_at)
     return (
         db.query(ResumeStatusEvent)
         .join(Resume, Resume.id == ResumeStatusEvent.resume_id)
@@ -956,6 +1064,8 @@ def _first_decision_milestone(
             Resume.position_id == position.id,
             ResumeStatusEvent.new_status.in_(HANDOFF_CREDIT_STATUSES),
             ResumeStatusEvent.occurred_at <= cutoff,
+            Resume.created_at >= cycle_start,
+            ResumeStatusEvent.occurred_at >= cycle_start,
         )
         .order_by(ResumeStatusEvent.occurred_at, ResumeStatusEvent.id)
         .first()
@@ -1071,6 +1181,11 @@ def _handoff_credits_for_period(
     ) if positions_by_id else []
     result = defaultdict(list)
     for event in events:
+        # A new cycle retains the previous owner's full position ledger.
+        # Changing owner at that boundary must not add a second handoff award.
+        if any(_aware(reopen.occurred_at) == _aware(event.occurred_at)
+               for reopen in position_reopen_events(db, positions_by_id[event.position_id])):
+            continue
         metadata = dict(event.event_metadata or {}).get("handoff_credit")
         recipient_id = None
         detail = None
@@ -1123,17 +1238,26 @@ def _handoff_credits_for_period(
     return result
 
 
-def _with_current_position_statuses(db: Session, overview: PerformanceOverview) -> PerformanceOverview:
+def _with_position_cycle_statuses(db: Session, overview: PerformanceOverview) -> PerformanceOverview:
     # Enrich the response without changing scores or persisted settlement snapshots.
     rows = [row for person in overview.people for row in [*person.positions, *person.handoff_credits]]
     position_ids = {row.position_id for row in rows}
-    statuses = {
-        position_id: getattr(status, "value", status)
-        for position_id, status in db.query(Position.id, Position.status)
-        .filter(Position.id.in_(position_ids)).all()
+    positions = {
+        position.id: position
+        for position in db.query(Position).filter(Position.id.in_(position_ids)).all()
     } if position_ids else {}
+    reopens = {position_id: position_reopen_events(db, position)
+               for position_id, position in positions.items()}
     for row in rows:
-        row.position_status = statuses.get(row.position_id)
+        position = positions.get(row.position_id)
+        row.position_status = getattr(position.status, "value", position.status) if position else None
+        if isinstance(row, PositionScore) and row.recruitment_cycle <= len(reopens.get(row.position_id, [])):
+            # Each reopen ends the preceding cycle. Only the latest cycle uses
+            # the position's live status; historical rows keep their final state.
+            boundary = reopens[row.position_id][row.recruitment_cycle - 1]
+            row.position_status = _position_status_timeline(
+                db, position, _aware(boundary.occurred_at) - timedelta(microseconds=1),
+            )[0]
     return overview
 
 
@@ -1156,7 +1280,7 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
         settled.people = [person for person in settled.people if person.user_id in visible_user_ids]
         if user is not None:
             settled.people = [person for person in settled.people if person.user_id == user.id]
-        return _with_current_position_statuses(db, settled)
+        return _with_position_cycle_statuses(db, settled)
 
     positions = db.query(Position).filter(Position.deleted_at.is_(None)).all()
     for position in positions:
@@ -1169,23 +1293,25 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
         category = getattr(position.category, "value", position.category)
         if category not in config.target_days:
             continue
-        owner_id = position.hiring_manager_id
-        if owner_id is None or (user is not None and owner_id != user.id):
-            continue
-        person_positions[owner_id].append(_score_position(
-            db,
-            position,
-            allocations.get(position.id, []),
-            config,
-            period_start=period_start,
-            cutoff=cutoff,
-            holding_intervals=_owner_holding_intervals(
-                db,
-                position,
-                owner_id,
-                cutoff,
-            ),
-        ))
+        reopens = position_reopen_events(db, position)
+        starts = [None, *[_aware(event.occurred_at) for event in reopens]]
+        for index, cycle_start in enumerate(starts):
+            cycle_end = starts[index + 1] - timedelta(microseconds=1) if index + 1 < len(starts) else cutoff
+            cycle_cutoff = min(cutoff, cycle_end)
+            if cycle_cutoff < period_start or (cycle_start is not None and cycle_start > cycle_cutoff):
+                continue
+            owner_id = _owner_at(db, position, cycle_cutoff) if reopens else position.hiring_manager_id
+            if owner_id is None or (user is not None and owner_id != user.id):
+                continue
+            candidates = (allocations.get(position.id, []) if cycle_cutoff == cutoff else
+                          _candidate_allocations_at(db, [position], config.result_coefficients, cycle_cutoff).get(position.id, []))
+            person_positions[owner_id].append(_score_position(
+                db, position, candidates, config,
+                period_start=period_start, cutoff=cycle_cutoff,
+                holding_intervals=_owner_holding_intervals(db, position, owner_id, cycle_cutoff),
+                cycle_start=cycle_start, recruitment_cycle=index + 1,
+                cycle_config=(reopens[index].event_metadata or {}).get("previous_recruitment_config") if index < len(reopens) else None,
+            ))
 
     person_credits = _handoff_credits_for_period(
         db,
@@ -1229,7 +1355,7 @@ def calculate_overview(db: Session, period: str, *, user: Optional[User] = None,
             handoff_credits=credits,
         ))
     result_people.sort(key=lambda person: person.name)
-    return _with_current_position_statuses(db, PerformanceOverview(
+    return _with_position_cycle_statuses(db, PerformanceOverview(
         period=period,
         as_of=cutoff.astimezone(COMPANY_TZ).date(),
         status="trial" if period == "2026-Q3" else "live",

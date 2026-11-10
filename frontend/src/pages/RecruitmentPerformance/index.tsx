@@ -58,6 +58,8 @@ type HcScore = {
 
 type PositionScore = {
   position_id: string;
+  recruitment_cycle?: number;
+  cycle_started_at?: string | null;
   title: string;
   position_status?: string | null;
   category: string;
@@ -320,13 +322,13 @@ const PositionTable = ({
   onSort?: (field?: string, order?: RememberedSortOrder) => void;
 }) => (
   <Table
-    rowKey="position_id"
+    rowKey={row => `${row.position_id}-${row.recruitment_cycle || 1}`}
     pagination={false}
     scroll={{ x: 760 }}
     dataSource={positions}
     expandable={{ expandedRowRender: row => <SlotLedger slots={row.slots} /> }}
     columns={[
-      { title: '岗位', dataIndex: 'title', render: (value, row) => <div><PositionName title={value} status={row.position_status} /><div><Text type="secondary">{categoryLabels[row.category] || row.category} · P{row.priority}</Text></div></div> },
+      { title: '岗位', dataIndex: 'title', render: (value, row) => <div><PositionName title={value} status={row.position_status} /><div><Text type="secondary">{categoryLabels[row.category] || row.category} · P{row.priority} · 第{row.recruitment_cycle || 1}轮招聘</Text></div></div> },
       { title: 'HC', dataIndex: 'hc_count', render: (value, row) => `${value}（在职 ${row.current_employed_count ?? row.onboarded_count}／累计入职 ${row.cumulative_onboarded_count ?? row.onboarded_count}／离职 ${row.departed_count ?? 0}）` },
       { title: '最高阶段', dataIndex: 'highest_result_stage', render: value => <Tag>{value}</Tag> },
       { title: '任务积分', dataIndex: 'task_points', sorter: (a, b) => a.task_points - b.task_points, sortOrder: sortField === 'task_points' ? sortOrder : null, render: formatScore },

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Literal
 from uuid import UUID
 from datetime import datetime
 from app.models.models import PositionCategory, PositionEventType, PositionStatus, PositionType
@@ -52,6 +52,7 @@ class PositionCreate(PositionBase):
     pass
 
 class PositionUpdate(BaseModel):
+    reopen_mode: Literal["correction", "new_cycle"] = "correction"
     title: Optional[str] = None
     description: Optional[str] = None
     requirements: Optional[str] = None
@@ -128,6 +129,7 @@ class PositionDetailResponse(PositionResponse):
 
 
 class PositionBatchStatusRequest(BaseModel):
+    reopen_mode: Literal["correction", "new_cycle"] = "correction"
     position_ids: List[UUID] = Field(min_length=1, max_length=100)
     status: PositionStatus
     reason: Optional[str] = Field(default=None, max_length=1000)
@@ -138,6 +140,7 @@ class PositionBatchStatusResponse(BaseModel):
 
 
 class PositionRestoreRequest(BaseModel):
+    reopen_mode: Literal["correction", "new_cycle"] = "correction"
     reason: str = Field(min_length=1, max_length=1000)
 
 class QuestionBankBrief(BaseModel):
